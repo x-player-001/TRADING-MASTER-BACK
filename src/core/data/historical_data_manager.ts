@@ -475,4 +475,117 @@ export class HistoricalDataManager {
       throw error;
     }
   }
+
+  /**
+   * 回溯补全历史K线数据（向前补充）
+   * @param symbol 币种符号
+   * @param interval 时间周期
+   * @param batch_size 每批拉取数量（默认1000）
+   * @returns 回溯结果
+   */
+  async backfill_klines(
+    symbol: string,
+    interval: string,
+    batch_size: number = 1000
+  ): Promise<{
+    success: boolean;
+    mode: 'initial_load' | 'backfill';
+    fetched_count: number;
+    time_range?: {
+      start: string;
+      end: string;
+    };
+    database_status: {
+      earliest_before: string | null;
+      earliest_after: string | null;
+      total_records: number;
+    };
+    message: string;
+  }> {
+    try {
+      // 1. 查询数据库最早时间
+      const earliest_time = await this.kline_repository.get_earliest_kline_time(symbol, interval);
+
+      // 2. 如果数据库为空，拉取最新数据作为起点
+      if (!earliest_time) {
+        logger.info(`[Backfill] No existing data for ${symbol}:${interval}, fetching latest data`);
+
+        const latest_data = await this.binance_api.get_klines(
+          symbol,
+          interval,
+          undefined,
+          undefined,
+          batch_size
+        );
+
+        // 存储到MySQL
+        if (latest_data.length > 0) {
+          await this.kline_repository.batch_insert(latest_data);
+        }
+
+        const total_records = await this.kline_repository.get_total_count(symbol, interval);
+
+        return {
+          success: true,
+          mode: 'initial_load',
+          fetched_count: latest_data.length,
+          time_range: latest_data.length > 0 ? {
+            start: new Date(latest_data[0].open_time).toISOString(),
+            end: new Date(latest_data[latest_data.length - 1].close_time).toISOString()
+          } : undefined,
+          database_status: {
+            earliest_before: null,
+            earliest_after: latest_data[0] ? new Date(latest_data[0].open_time).toISOString() : null,
+            total_records
+          },
+          message: `初始加载${latest_data.length}根K线数据`
+        };
+      }
+
+      // 3. 计算回溯时间范围
+      const interval_ms = this.get_interval_milliseconds(interval);
+      const end_time = earliest_time - 1; // 最早时间之前1毫秒
+      const start_time = end_time - (batch_size * interval_ms);
+
+      logger.info(`[Backfill] ${symbol}:${interval} - Fetching from ${new Date(start_time).toISOString()} to ${new Date(end_time).toISOString()}`);
+
+      // 4. 调用币安API获取历史数据
+      const historical_data = await this.binance_api.get_klines(
+        symbol,
+        interval,
+        start_time,
+        end_time,
+        batch_size
+      );
+
+      // 5. 存储到MySQL
+      if (historical_data.length > 0) {
+        await this.kline_repository.batch_insert(historical_data);
+      }
+
+      // 6. 获取更新后的统计信息
+      const total_records = await this.kline_repository.get_total_count(symbol, interval);
+      const new_earliest = historical_data.length > 0 ? historical_data[0].open_time : earliest_time;
+
+      return {
+        success: true,
+        mode: 'backfill',
+        fetched_count: historical_data.length,
+        time_range: historical_data.length > 0 ? {
+          start: new Date(start_time).toISOString(),
+          end: new Date(end_time).toISOString()
+        } : undefined,
+        database_status: {
+          earliest_before: new Date(earliest_time).toISOString(),
+          earliest_after: new Date(new_earliest).toISOString(),
+          total_records
+        },
+        message: `成功向前补全${historical_data.length}根K线数据`
+      };
+
+    } catch (error) {
+      logger.error(`Failed to backfill klines for ${symbol}:${interval}`, error);
+      throw error;
+    }
+  }
 }

@@ -13,6 +13,7 @@ import { ConfigManager } from '@/core/config/config_manager';
 import { MonitoringManager } from '@/core/monitoring/monitoring_manager';
 import { TopSymbolsManager } from '@/core/config/top_symbols_manager';
 import { SignalManager } from '@/signals/signal_manager';
+import { StrategyRegistry } from '@/quantitative/strategies/strategy_registry';
 
 // 加载环境变量
 dotenv.config();
@@ -20,6 +21,9 @@ dotenv.config();
 // 初始化配置管理器
 const config_manager = ConfigManager.getInstance();
 config_manager.initialize();
+
+// 注册量化策略
+StrategyRegistry.initialize();
 
 class TradingMasterApp {
   private symbol_config_manager: SymbolConfigManager;

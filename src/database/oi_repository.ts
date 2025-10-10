@@ -95,7 +95,7 @@ export class OIRepository {
   }
 
   /**
-   * 获取启用的币种列表
+   * 获取启用的币种列表（已过滤黑名单）
    */
   async get_enabled_symbols(): Promise<ContractSymbolConfig[]> {
     // 先尝试从缓存获取币种名称
@@ -115,7 +115,21 @@ export class OIRepository {
       `;
 
       const [rows] = await conn.execute<RowDataPacket[]>(sql);
-      const symbols = rows as ContractSymbolConfig[];
+      let symbols = rows as ContractSymbolConfig[];
+
+      // 获取黑名单并过滤
+      const blacklist = await this.get_symbol_blacklist(conn);
+      if (blacklist.length > 0) {
+        const before_count = symbols.length;
+        symbols = symbols.filter(s => {
+          // 检查symbol是否包含黑名单中的任何关键词
+          return !blacklist.some(blocked => s.symbol.includes(blocked));
+        });
+        const filtered_count = before_count - symbols.length;
+        if (filtered_count > 0) {
+          logger.info(`[OIRepository] Filtered ${filtered_count} symbols by blacklist: ${blacklist.join(', ')}`);
+        }
+      }
 
       // 更新缓存
       if (this.cache_manager && symbols.length > 0) {
@@ -125,6 +139,30 @@ export class OIRepository {
 
       return symbols;
     });
+  }
+
+  /**
+   * 获取币种黑名单
+   */
+  private async get_symbol_blacklist(conn: PoolConnection): Promise<string[]> {
+    try {
+      const sql = `
+        SELECT config_value FROM oi_monitoring_config
+        WHERE config_key = 'symbol_blacklist' AND is_active = 1
+      `;
+
+      const [rows] = await conn.execute<RowDataPacket[]>(sql);
+      if (rows.length === 0) {
+        return [];
+      }
+
+      const config_value = rows[0].config_value;
+      const blacklist = JSON.parse(config_value) as string[];
+      return Array.isArray(blacklist) ? blacklist : [];
+    } catch (error) {
+      logger.error('[OIRepository] Failed to get blacklist config:', error);
+      return [];
+    }
   }
 
   /**

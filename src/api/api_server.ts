@@ -9,7 +9,9 @@ import { HistoricalDataRoutes } from './routes/historical_data_routes';
 import { KlinesRoutes } from './routes/klines_routes';
 import { WebSocketRoutes } from './routes/websocket_routes';
 import { SignalsRoutes } from './routes/signals_routes';
+import { StructureRoutes } from './routes/structure_routes';
 import { MonitoringManager } from '@/core/monitoring/monitoring_manager';
+import quantitative_routes from './routes/quantitative_routes';
 
 /**
  * HTTP API服务器
@@ -25,6 +27,7 @@ export class APIServer {
   private klines_routes: KlinesRoutes;
   private websocket_routes: WebSocketRoutes;
   private signals_routes: SignalsRoutes;
+  private structure_routes: StructureRoutes;
   private monitoring_manager: MonitoringManager;
 
   constructor(oi_data_manager: OIDataManager, port: number = 3000) {
@@ -37,6 +40,7 @@ export class APIServer {
     this.klines_routes = new KlinesRoutes();
     this.websocket_routes = new WebSocketRoutes();
     this.signals_routes = new SignalsRoutes();
+    this.structure_routes = new StructureRoutes();
     this.monitoring_manager = MonitoringManager.getInstance();
     this.setup_middleware();
     this.setup_routes();
@@ -114,6 +118,9 @@ export class APIServer {
           historical: '/api/historical/*',
           klines: '/api/klines/*',
           websocket: '/api/websocket/*',
+          signals: '/api/signals/*',
+          structure: '/api/structure/*',
+          quant: '/api/quant/*',
           status: '/api/status'
         },
         timestamp: new Date().toISOString()
@@ -140,6 +147,12 @@ export class APIServer {
 
     // 交易信号路由
     this.app.use('/api/signals', this.signals_routes.get_router());
+
+    // 结构形态路由
+    this.app.use('/api/structure', this.structure_routes.get_router());
+
+    // 量化交易路由
+    this.app.use('/api/quant', quantitative_routes);
 
     // 系统状态
     this.app.get('/api/status', async (req: Request, res: Response) => {

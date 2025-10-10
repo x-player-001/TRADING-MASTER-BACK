@@ -354,6 +354,72 @@ GET /api/status
 }
 ```
 
+### 11. 获取黑名单 ⭐ 新增
+```http
+GET /api/oi/blacklist
+```
+
+**功能描述**: 获取OI监控的币种黑名单列表
+
+**响应示例**:
+```json
+{
+  "success": true,
+  "data": {
+    "blacklist": ["USDC", "BUSD"],
+    "count": 2
+  }
+}
+```
+
+### 12. 添加币种到黑名单 ⭐ 新增
+```http
+POST /api/oi/blacklist
+```
+
+**功能描述**: 将指定币种添加到黑名单，该币种将不再被OI监控
+
+**请求体**:
+```json
+{
+  "symbol": "USDC"
+}
+```
+
+**响应示例**:
+```json
+{
+  "success": true,
+  "message": "Added USDC to blacklist",
+  "data": {
+    "blacklist": ["USDC"],
+    "count": 1
+  }
+}
+```
+
+### 13. 从黑名单移除币种 ⭐ 新增
+```http
+DELETE /api/oi/blacklist/:symbol
+```
+
+**功能描述**: 从黑名单中移除指定币种，该币种将恢复OI监控
+
+**路径参数**:
+- `symbol`: 币种关键词，如 `USDC`
+
+**响应示例**:
+```json
+{
+  "success": true,
+  "message": "Removed USDC from blacklist",
+  "data": {
+    "blacklist": [],
+    "count": 0
+  }
+}
+```
+
 ---
 
 ## 🔍 系统监控接口
@@ -1346,6 +1412,96 @@ GET /api/historical/cache/stats
 }
 ```
 
+### 6. 回溯补全历史K线数据 ⭐ **新增**
+```http
+POST /api/historical/backfill
+```
+
+**请求体**:
+```json
+{
+  "symbol": "BTCUSDT",
+  "interval": "15m",
+  "batch_size": 1000
+}
+```
+
+**参数说明**:
+- `symbol` (必填): 币种符号，如 `BTCUSDT`
+- `interval` (可选): 时间周期，默认 `15m`
+  - 支持: `1m`, `3m`, `5m`, `15m`, `30m`, `1h`, `2h`, `4h`, `6h`, `8h`, `12h`, `1d`, `3d`, `1w`, `1mo`
+- `batch_size` (可选): 每批拉取数量，默认1000，范围100-1000
+
+**功能说明**:
+- 🔄 **自动向前回溯**: 查询数据库最早K线时间，向前补充历史数据
+- 💾 **增量存储**: 只拉取缺失的数据，自动去重
+- 🎯 **无需返回K线**: 只返回拉取状态和统计信息，节省带宽
+- 🔁 **可循环调用**: 每次调用向前补充一批数据，直到达到目标日期
+
+**响应示例（初次加载）**:
+```json
+{
+  "success": true,
+  "mode": "initial_load",
+  "fetched_count": 1000,
+  "time_range": {
+    "start": "2025-09-20T10:00:00.000Z",
+    "end": "2025-10-08T14:45:00.000Z"
+  },
+  "database_status": {
+    "earliest_before": null,
+    "earliest_after": "2025-09-20T10:00:00.000Z",
+    "total_records": 1000
+  },
+  "message": "初始加载1000根K线数据"
+}
+```
+
+**响应示例（回溯补全）**:
+```json
+{
+  "success": true,
+  "mode": "backfill",
+  "fetched_count": 1000,
+  "time_range": {
+    "start": "2025-09-15T04:00:00.000Z",
+    "end": "2025-09-20T09:45:00.000Z"
+  },
+  "database_status": {
+    "earliest_before": "2025-09-20T10:00:00.000Z",
+    "earliest_after": "2025-09-15T04:00:00.000Z",
+    "total_records": 2000
+  },
+  "message": "成功向前补全1000根K线数据"
+}
+```
+
+**使用示例**:
+```bash
+# 第一次调用：拉取最新1000根K线
+curl -X POST http://localhost:3000/api/historical/backfill \
+  -H "Content-Type: application/json" \
+  -d '{"symbol":"BTCUSDT","interval":"15m","batch_size":1000}'
+
+# 第二次调用：从最早时间向前补充1000根
+curl -X POST http://localhost:3000/api/historical/backfill \
+  -H "Content-Type: application/json" \
+  -d '{"symbol":"BTCUSDT","interval":"15m","batch_size":1000}'
+
+# 循环调用直到补全到目标日期（如2025-01-01）
+for i in {1..30}; do
+  curl -X POST http://localhost:3000/api/historical/backfill \
+    -H "Content-Type: application/json" \
+    -d '{"symbol":"BTCUSDT","interval":"15m","batch_size":1000}'
+  sleep 1
+done
+```
+
+**典型应用场景**:
+1. **准备回测数据**: 补全指定时间段的历史K线
+2. **数据修复**: 补充缺失的历史数据段
+3. **定期更新**: 定时向前回溯，保持数据库完整性
+
 ---
 
 ## 📡 交易信号接口
@@ -1741,10 +1897,337 @@ try {
 
 ---
 
-**文档版本**: v2.0.0
-**最后更新**: 2025-10-01
+## 📊 结构形态检测接口 (7个) ⭐ 最新
+
+### 1. 获取区间形态
+```http
+GET /api/structure/ranges/:symbol/:interval
+```
+
+**路径参数**:
+- `symbol`: 币种符号 (如 BTCUSDT)
+- `interval`: 时间周期 (5m/15m/1h/4h/1d)
+
+**查询参数**:
+- `limit` (可选): 返回数量，默认10
+- `status` (可选): 状态过滤 ('forming' = 仅返回未突破的区间)
+
+**响应示例**:
+```json
+{
+  "success": true,
+  "data": [
+    {
+      "id": 1,
+      "symbol": "BTCUSDT",
+      "interval": "1h",
+      "structure_type": "range",
+      "key_levels": {
+        "support": 45000.00,
+        "resistance": 46000.00,
+        "middle": 45500.00
+      },
+      "pattern_data": {
+        "range_size": 1000.00,
+        "range_percent": 2.22,
+        "touch_count": 6,
+        "support_touches": 3,
+        "resistance_touches": 3,
+        "duration_bars": 24,
+        "avg_volume": 125.5
+      },
+      "breakout_status": "forming",
+      "confidence": 0.85,
+      "strength": 78,
+      "first_touch_time": 1705320000000,
+      "last_touch_time": 1705406400000,
+      "created_at": "2025-10-07T12:00:00.000Z"
+    }
+  ],
+  "count": 1
+}
+```
+
+### 2. 获取突破信号
+```http
+GET /api/structure/breakouts/:symbol/:interval
+```
+
+**路径参数**:
+- `symbol`: 币种符号
+- `interval`: 时间周期
+
+**查询参数**:
+- `limit` (可选): 返回数量，默认20
+
+**响应示例**:
+```json
+{
+  "success": true,
+  "data": [
+    {
+      "id": 1,
+      "pattern_id": 1,
+      "symbol": "BTCUSDT",
+      "interval": "1h",
+      "direction": "up",
+      "breakout_price": 46120.00,
+      "target_price": 47000.00,
+      "stop_loss": 45800.00,
+      "risk_reward_ratio": 2.75,
+      "volume_surge": 1.85,
+      "confirmation_bars": 2,
+      "strength": 82,
+      "result": null,
+      "actual_exit_price": null,
+      "breakout_time": 1705410000000,
+      "created_at": "2025-10-07T13:30:00.000Z"
+    }
+  ],
+  "count": 1
+}
+```
+
+### 3. 获取信号统计
+```http
+GET /api/structure/statistics/:symbol/:interval
+```
+
+**路径参数**:
+- `symbol`: 币种符号
+- `interval`: 时间周期
+
+**查询参数**:
+- `days` (可选): 统计天数，默认30
+
+**响应示例**:
+```json
+{
+  "success": true,
+  "data": {
+    "symbol": "BTCUSDT",
+    "interval": "1h",
+    "period_days": 30,
+    "total_signals": 45,
+    "completed_signals": 38,
+    "pending_signals": 7,
+    "win_count": 28,
+    "loss_count": 10,
+    "win_rate": 73.68,
+    "avg_risk_reward": 2.15,
+    "direction_stats": {
+      "up": {
+        "count": 22,
+        "win_count": 16,
+        "win_rate": 72.73
+      },
+      "down": {
+        "count": 16,
+        "win_count": 12,
+        "win_rate": 75.00
+      }
+    }
+  }
+}
+```
+
+### 4. 更新信号结果
+```http
+POST /api/structure/update-signal-result/:signal_id
+```
+
+**路径参数**:
+- `signal_id`: 信号ID
+
+**请求体**:
+```json
+{
+  "result": "hit_target",
+  "actual_exit_price": 47050.00
+}
+```
+
+**result 值**:
+- `hit_target`: 达到目标价
+- `hit_stop`: 触发止损
+- `failed`: 信号失败
+
+**响应示例**:
+```json
+{
+  "success": true,
+  "message": "Signal result updated"
+}
+```
+
+### 5. 获取检测配置
+```http
+GET /api/structure/config
+```
+
+**响应示例**:
+```json
+{
+  "success": true,
+  "data": {
+    "enabled": true,
+    "detection_interval": 10,
+    "cache_ttl": 300000,
+    "range_detection": {
+      "lookback": 50,
+      "min_duration": 15,
+      "max_duration": 50,
+      "min_touches": 4,
+      "min_confidence": 0.5
+    },
+    "breakout_confirmation": {
+      "price_threshold": 2.0,
+      "volume_multiplier": 1.3,
+      "confirmation_bars": 2,
+      "min_strength": 70,
+      "min_risk_reward": 1.5
+    },
+    "monitored_intervals": ["5m", "15m", "1h", "4h"]
+  }
+}
+```
+
+### 6. 更新检测配置
+```http
+PUT /api/structure/config
+```
+
+**请求体**:
+```json
+{
+  "enabled": true,
+  "detection_interval": 20,
+  "breakout_confirmation": {
+    "min_strength": 75
+  }
+}
+```
+
+**响应示例**:
+```json
+{
+  "success": true,
+  "message": "Configuration updated",
+  "data": {
+    "enabled": true,
+    "detection_interval": 20,
+    ...
+  }
+}
+```
+
+### 7. 重置配置为默认值
+```http
+POST /api/structure/config/reset
+```
+
+**响应示例**:
+```json
+{
+  "success": true,
+  "message": "Configuration reset to default",
+  "data": { ... }
+}
+```
+
+### 8. 手动触发区间检测 ⭐ 新增
+```http
+POST /api/structure/detect/:symbol/:interval
+```
+
+**路径参数**:
+- `symbol`: 币种符号 (如 BTCUSDT)
+- `interval`: 时间周期 (1m/5m/15m/1h/4h/1d)
+
+**查询参数**:
+- `force` (可选): 是否强制检测，忽略去重 (true/false，默认false)
+
+**使用场景**:
+- 测试区间检测算法
+- 手动触发特定币种的检测
+- 强制重新检测（force=true）
+
+**响应示例（检测到区间）**:
+```json
+{
+  "success": true,
+  "message": "Detected 3 ranges, saved 1 unique ranges",
+  "data": {
+    "symbol": "BTCUSDT",
+    "interval": "15m",
+    "kline_count": 250,
+    "detected_count": 3,
+    "saved_count": 1,
+    "ranges": [
+      {
+        "id": 1,
+        "symbol": "BTCUSDT",
+        "interval": "15m",
+        "type": "range",
+        "support": 45000.00,
+        "resistance": 46000.00,
+        "middle": 45500.00,
+        "range_size": 1000.00,
+        "range_percent": 2.22,
+        "touch_count": 6,
+        "support_touches": 3,
+        "resistance_touches": 3,
+        "duration_bars": 30,
+        "confidence": 0.85,
+        "strength": 78,
+        "start_time": 1705320000000,
+        "end_time": 1705406400000
+      }
+    ]
+  }
+}
+```
+
+**响应示例（未检测到区间）**:
+```json
+{
+  "success": true,
+  "message": "No ranges detected",
+  "data": {
+    "symbol": "BTCUSDT",
+    "interval": "15m",
+    "kline_count": 250,
+    "ranges": [],
+    "detected_count": 0
+  }
+}
+```
+
+**错误响应示例**:
+```json
+{
+  "success": false,
+  "error": "Insufficient K-line data. Got 30, need at least 50"
+}
+```
+
+**调用示例**:
+```bash
+# 普通检测（会去重）
+curl -X POST http://localhost:3000/api/structure/detect/BTCUSDT/15m
+
+# 强制检测（忽略去重）
+curl -X POST http://localhost:3000/api/structure/detect/BTCUSDT/15m?force=true
+```
+
+---
+
+**文档版本**: v3.1.0
+**最后更新**: 2025-10-07
 
 **更新内容**:
+- ✨ 新增 **手动触发检测接口** - 支持手动触发区间检测，方便测试和调试 ⭐ 最新
+- ✨ 新增 **结构形态检测接口** (8个接口) - 交易区间识别、突破信号、统计数据
 - ✨ 新增 **K线数据接口** (8个接口) - 支持多表存储、数据完整性检查、批量查询
 - ✨ 新增 **WebSocket管理接口** (4个接口) - 连接状态管理、订阅流监控
 - ✨ 新增 **TOP币种配置接口** (10个接口) - 币种管理、排序、启用/禁用
@@ -1754,14 +2237,15 @@ try {
 
 **接口分类汇总**:
 - 基础信息接口: 2个
-- OI数据接口: 10个
+- OI数据接口: 13个 ⭐ 新增黑名单管理
 - 系统监控接口: 10个
-- K线数据接口: 8个 ⭐ 新增
-- WebSocket管理接口: 4个 ⭐ 新增
-- TOP币种配置接口: 10个 ⭐ 新增
-- 历史数据接口: 5个 ⭐ 新增
-- 交易信号接口: 5个 ⭐ 新增
+- K线数据接口: 8个
+- WebSocket管理接口: 4个
+- TOP币种配置接口: 10个
+- 历史数据接口: 5个
+- 交易信号接口: 5个
+- 结构形态检测接口: 8个
 
-**总计**: 54个API接口
+**总计**: 65个API接口
 
 **维护团队**: Trading Master Development Team

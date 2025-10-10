@@ -58,6 +58,11 @@ export class OIRoutes {
 
     // 获取配置
     this.router.get('/config', this.get_config.bind(this));
+
+    // 黑名单管理
+    this.router.get('/blacklist', this.get_blacklist.bind(this));
+    this.router.post('/blacklist', this.add_to_blacklist.bind(this));
+    this.router.delete('/blacklist/:symbol', this.remove_from_blacklist.bind(this));
   }
 
   /**
@@ -424,6 +429,132 @@ export class OIRoutes {
       res.status(500).json({
         success: false,
         error: 'Failed to get all config',
+        message: error instanceof Error ? error.message : 'Unknown error'
+      });
+    }
+  }
+
+  /**
+   * 获取黑名单
+   */
+  private async get_blacklist(req: Request, res: Response): Promise<void> {
+    try {
+      const blacklist = await this.oi_repository.get_monitoring_config('symbol_blacklist');
+
+      res.json({
+        success: true,
+        data: {
+          blacklist: blacklist || [],
+          count: Array.isArray(blacklist) ? blacklist.length : 0
+        }
+      });
+    } catch (error) {
+      console.error('[OIRoutes] Failed to get blacklist:', error);
+      res.status(500).json({
+        success: false,
+        error: 'Failed to get blacklist',
+        message: error instanceof Error ? error.message : 'Unknown error'
+      });
+    }
+  }
+
+  /**
+   * 添加币种到黑名单
+   */
+  private async add_to_blacklist(req: Request, res: Response): Promise<void> {
+    try {
+      const { symbol } = req.body;
+
+      if (!symbol || typeof symbol !== 'string') {
+        res.status(400).json({
+          success: false,
+          error: 'Invalid request body',
+          message: 'symbol is required and must be a string'
+        });
+        return;
+      }
+
+      // 获取当前黑名单
+      const current_blacklist = await this.oi_repository.get_monitoring_config('symbol_blacklist') || [];
+
+      // 检查是否已存在
+      if (current_blacklist.includes(symbol)) {
+        res.status(400).json({
+          success: false,
+          error: 'Symbol already in blacklist',
+          message: `${symbol} is already in the blacklist`
+        });
+        return;
+      }
+
+      // 添加到黑名单
+      const new_blacklist = [...current_blacklist, symbol];
+      await this.oi_repository.update_monitoring_config('symbol_blacklist', new_blacklist);
+
+      res.json({
+        success: true,
+        message: `Added ${symbol} to blacklist`,
+        data: {
+          blacklist: new_blacklist,
+          count: new_blacklist.length
+        }
+      });
+    } catch (error) {
+      console.error('[OIRoutes] Failed to add to blacklist:', error);
+      res.status(500).json({
+        success: false,
+        error: 'Failed to add to blacklist',
+        message: error instanceof Error ? error.message : 'Unknown error'
+      });
+    }
+  }
+
+  /**
+   * 从黑名单移除币种
+   */
+  private async remove_from_blacklist(req: Request, res: Response): Promise<void> {
+    try {
+      const { symbol } = req.params;
+
+      if (!symbol) {
+        res.status(400).json({
+          success: false,
+          error: 'Invalid request',
+          message: 'symbol parameter is required'
+        });
+        return;
+      }
+
+      // 获取当前黑名单
+      const current_blacklist = await this.oi_repository.get_monitoring_config('symbol_blacklist') || [];
+
+      // 检查是否存在
+      if (!current_blacklist.includes(symbol)) {
+        res.status(404).json({
+          success: false,
+          error: 'Symbol not found in blacklist',
+          message: `${symbol} is not in the blacklist`
+        });
+        return;
+      }
+
+      // 从黑名单移除
+      const new_blacklist = current_blacklist.filter((s: string) => s !== symbol);
+      await this.oi_repository.update_monitoring_config('symbol_blacklist', new_blacklist);
+
+      res.json({
+        success: true,
+        message: `Removed ${symbol} from blacklist`,
+        data: {
+          blacklist: new_blacklist,
+          count: new_blacklist.length
+        }
+      });
+    } catch (error) {
+      console.error('[OIRoutes] Failed to remove from blacklist:', error);
+      res.status(500).json({
+        success: false,
+        error: 'Failed to remove from blacklist',
         message: error instanceof Error ? error.message : 'Unknown error'
       });
     }

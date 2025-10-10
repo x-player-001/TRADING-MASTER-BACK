@@ -30,6 +30,9 @@ export class HistoricalDataRoutes {
 
     // 获取缓存统计信息
     this.router.get('/cache/stats', this.get_cache_stats.bind(this));
+
+    // 回溯补全历史数据
+    this.router.post('/backfill', this.backfill_klines.bind(this));
   }
 
   /**
@@ -263,6 +266,64 @@ export class HistoricalDataRoutes {
     } catch (error) {
       logger.error('Failed to get cache stats', error);
       res.status(500).json({
+        error: 'Internal server error',
+        message: error instanceof Error ? error.message : 'Unknown error',
+        code: 'SERVER_ERROR'
+      });
+    }
+  }
+
+  /**
+   * 回溯补全历史K线数据
+   * @param req - 请求对象
+   * @param res - 响应对象
+   */
+  private async backfill_klines(req: Request, res: Response): Promise<void> {
+    try {
+      const { symbol, interval = '15m', batch_size = 1000 } = req.body;
+
+      if (!symbol) {
+        res.status(400).json({
+          success: false,
+          error: 'Symbol is required',
+          code: 'INVALID_SYMBOL'
+        });
+        return;
+      }
+
+      // 验证interval
+      const valid_intervals = ['1m', '3m', '5m', '15m', '30m', '1h', '2h', '4h', '6h', '8h', '12h', '1d', '3d', '1w', '1mo'];
+      if (!valid_intervals.includes(interval as string)) {
+        res.status(400).json({
+          success: false,
+          error: `Invalid interval. Supported intervals: ${valid_intervals.join(', ')}`,
+          code: 'INVALID_INTERVAL'
+        });
+        return;
+      }
+
+      // 验证batch_size
+      const parsed_batch_size = Math.min(Math.max(parseInt(batch_size as string) || 1000, 100), 1000);
+
+      const symbol_upper = symbol.toUpperCase();
+
+      logger.info(`[Backfill] Starting backfill for ${symbol_upper}:${interval}, batch_size: ${parsed_batch_size}`);
+
+      // 调用回溯方法
+      const result = await this.historical_data_manager.backfill_klines(
+        symbol_upper,
+        interval as string,
+        parsed_batch_size
+      );
+
+      logger.info(`[Backfill] Completed for ${symbol_upper}:${interval}, fetched: ${result.fetched_count} records`);
+
+      res.json(result);
+
+    } catch (error) {
+      logger.error('Failed to backfill klines', error);
+      res.status(500).json({
+        success: false,
         error: 'Internal server error',
         message: error instanceof Error ? error.message : 'Unknown error',
         code: 'SERVER_ERROR'

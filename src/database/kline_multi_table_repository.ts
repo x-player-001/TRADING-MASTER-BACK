@@ -211,8 +211,13 @@ export class KlineMultiTableRepository extends BaseRepository {
         params.push(new Date(end_time));
       }
 
-      sql += ' ORDER BY open_time DESC LIMIT ?';
-      params.push(Math.floor(Number(limit)) || 300);
+      // 如果指定了时间范围，返回范围内所有数据；否则使用LIMIT
+      if (start_time && end_time) {
+        sql += ' ORDER BY open_time DESC';
+      } else {
+        sql += ' ORDER BY open_time DESC LIMIT ?';
+        params.push(Math.floor(Number(limit)) || 300);
+      }
 
       const [rows] = await conn.execute<RowDataPacket[]>(sql, params);
       const records = rows as KlineMultiTableRecord[];
@@ -298,6 +303,57 @@ export class KlineMultiTableRepository extends BaseRepository {
       }
 
       return stats;
+    });
+  }
+
+  /**
+   * 获取指定币种和周期的最早K线时间戳
+   * @param symbol 币种符号
+   * @param interval 时间周期
+   * @returns 最早K线的open_time时间戳(毫秒)，如果没有数据返回null
+   */
+  async get_earliest_kline_time(symbol: string, interval: string): Promise<number | null> {
+    return this.execute_with_connection(async (conn) => {
+      const table_name = this.get_table_name(interval);
+
+      const sql = `
+        SELECT MIN(open_time) as earliest_time
+        FROM ${table_name}
+        WHERE symbol = ?
+      `;
+
+      const [rows] = await conn.execute<RowDataPacket[]>(sql, [symbol.toUpperCase()]);
+      const earliest = rows[0]?.earliest_time;
+
+      // 如果是Date对象，转换为时间戳；如果已经是数字，直接返回
+      if (earliest instanceof Date) {
+        return earliest.getTime();
+      } else if (typeof earliest === 'number') {
+        return earliest;
+      }
+
+      return null;
+    });
+  }
+
+  /**
+   * 获取指定币种和周期的总记录数
+   * @param symbol 币种符号
+   * @param interval 时间周期
+   * @returns 总记录数
+   */
+  async get_total_count(symbol: string, interval: string): Promise<number> {
+    return this.execute_with_connection(async (conn) => {
+      const table_name = this.get_table_name(interval);
+
+      const sql = `
+        SELECT COUNT(*) as total_count
+        FROM ${table_name}
+        WHERE symbol = ?
+      `;
+
+      const [rows] = await conn.execute<RowDataPacket[]>(sql, [symbol.toUpperCase()]);
+      return rows[0]?.total_count || 0;
     });
   }
 
