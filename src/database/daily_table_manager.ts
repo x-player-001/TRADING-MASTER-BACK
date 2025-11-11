@@ -3,7 +3,7 @@
  * 负责OI快照数据的日期分表管理：自动创建、查询路由、旧表清理
  */
 
-import { get_pool } from './connection';
+import { DatabaseConfig } from '../core/config/database';
 import { format } from 'date-fns';
 import { logger } from '../utils/logger';
 
@@ -36,15 +36,19 @@ export class DailyTableManager {
    * 检查表是否存在
    */
   private async table_exists(table_name: string): Promise<boolean> {
-    const pool = get_pool();
-    const [rows] = await pool.query(
-      `SELECT COUNT(*) as count
-       FROM information_schema.TABLES
-       WHERE TABLE_SCHEMA = DATABASE()
-       AND TABLE_NAME = ?`,
-      [table_name]
-    );
-    return (rows as any)[0].count > 0;
+    const conn = await DatabaseConfig.get_mysql_connection();
+    try {
+      const [rows] = await conn.query(
+        `SELECT COUNT(*) as count
+         FROM information_schema.TABLES
+         WHERE TABLE_SCHEMA = DATABASE()
+         AND TABLE_NAME = ?`,
+        [table_name]
+      );
+      return (rows as any)[0].count > 0;
+    } finally {
+      conn.release();
+    }
   }
 
   /**
@@ -60,7 +64,7 @@ export class DailyTableManager {
       return;
     }
 
-    const pool = get_pool();
+    const conn = await DatabaseConfig.get_mysql_connection();
     const create_sql = `
       CREATE TABLE ${table_name} (
         id BIGINT PRIMARY KEY AUTO_INCREMENT,
@@ -74,11 +78,11 @@ export class DailyTableManager {
         INDEX idx_snapshot_time (snapshot_time),
         INDEX idx_symbol (symbol),
         INDEX idx_snapshot_symbol (snapshot_time, symbol, timestamp_ms, open_interest)
-      ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COMMENT='OI快照数据-${format(new Date(date), 'yyyy-MM-dd')}';
+      ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COMMENT='OI snapshots - ${format(new Date(date), 'yyyy-MM-dd')}';
     `;
 
     try {
-      await pool.query(create_sql);
+      await conn.query(create_sql);
       logger.info(`[DailyTableManager] 成功创建日期表: ${table_name}`);
     } catch (error: any) {
       // 如果是表已存在错误（并发创建），忽略
@@ -88,6 +92,8 @@ export class DailyTableManager {
       }
       logger.error(`[DailyTableManager] 创建表失败: ${table_name}`, error);
       throw error;
+    } finally {
+      conn.release();
     }
   }
 
@@ -102,61 +108,67 @@ export class DailyTableManager {
       return;
     }
 
-    const pool = get_pool();
+    const conn = await DatabaseConfig.get_mysql_connection();
     try {
-      await pool.query(`DROP TABLE ${table_name}`);
+      await conn.query(`DROP TABLE ${table_name}`);
       logger.info(`[DailyTableManager] 成功删除旧表: ${table_name}`);
     } catch (error) {
       logger.error(`[DailyTableManager] 删除表失败: ${table_name}`, error);
       throw error;
+    } finally {
+      conn.release();
     }
   }
 
   /**
-   * 清理7天前的旧表
+   * 清理20天前的旧表
    * @returns 删除的表数量
    */
   public async cleanup_old_tables(): Promise<number> {
-    const pool = get_pool();
+    const conn = await DatabaseConfig.get_mysql_connection();
 
-    // 查找所有日期分表
-    const [tables] = await pool.query(
-      `SELECT TABLE_NAME
-       FROM information_schema.TABLES
-       WHERE TABLE_SCHEMA = DATABASE()
-       AND TABLE_NAME LIKE '${this.table_prefix}_%'`
-    );
+    try {
+      // 查找所有日期分表
+      const [tables] = await conn.query(
+        `SELECT TABLE_NAME
+         FROM information_schema.TABLES
+         WHERE TABLE_SCHEMA = DATABASE()
+         AND TABLE_NAME LIKE '${this.table_prefix}_%'`
+      );
 
-    const cutoff_date = new Date();
-    cutoff_date.setDate(cutoff_date.getDate() - this.retention_days);
-    const cutoff_date_str = format(cutoff_date, 'yyyyMMdd');
+      const cutoff_date = new Date();
+      cutoff_date.setDate(cutoff_date.getDate() - this.retention_days);
+      const cutoff_date_str = format(cutoff_date, 'yyyyMMdd');
 
-    let deleted_count = 0;
+      let deleted_count = 0;
 
-    for (const row of tables as any[]) {
-      const table_name = row.TABLE_NAME;
-      // 提取日期部分：open_interest_snapshots_20251111 -> 20251111
-      const date_str = table_name.replace(`${this.table_prefix}_`, '');
+      for (const row of tables as any[]) {
+        const table_name = row.TABLE_NAME;
+        // 提取日期部分：open_interest_snapshots_20251111 -> 20251111
+        const date_str = table_name.replace(`${this.table_prefix}_`, '');
 
-      // 验证日期格式（8位数字）
-      if (!/^\d{8}$/.test(date_str)) {
-        continue;
-      }
+        // 验证日期格式（8位数字）
+        if (!/^\d{8}$/.test(date_str)) {
+          continue;
+        }
 
-      // 如果表的日期早于截止日期，删除
-      if (date_str < cutoff_date_str) {
-        try {
-          await pool.query(`DROP TABLE ${table_name}`);
-          logger.info(`[DailyTableManager] 清理旧表: ${table_name} (${date_str} < ${cutoff_date_str})`);
-          deleted_count++;
-        } catch (error) {
-          logger.error(`[DailyTableManager] 清理旧表失败: ${table_name}`, error);
+        // 如果表的日期早于截止日期，删除
+        if (date_str < cutoff_date_str) {
+          try {
+            await conn.query(`DROP TABLE ${table_name}`);
+            logger.info(`[DailyTableManager] 清理旧表: ${table_name} (${date_str} < ${cutoff_date_str})`);
+            deleted_count++;
+          } catch (error) {
+            logger.error(`[DailyTableManager] 清理旧表失败: ${table_name}`, error);
+          }
         }
       }
-    }
 
-    logger.info(`[DailyTableManager] 旧表清理完成，共删除 ${deleted_count} 个表`);
-    return deleted_count;
+      logger.info(`[DailyTableManager] 旧表清理完成，共删除 ${deleted_count} 个表`);
+      return deleted_count;
+    } finally {
+      conn.release();
+    }
   }
 
   /**
