@@ -98,23 +98,27 @@ class TradingMasterApp {
       logger.info(`📴 Received ${signal}, shutting down gracefully...`);
 
       try {
-        // 停止多币种管理器
-        await this.multi_symbol_manager.stop();
-
-        // 停止API服务器
+        // 1. 先停止API服务器（停止接收新请求）
         await this.api_server.stop();
+        logger.info('✅ API server stopped');
 
-        // 停止系统监控服务
+        // 2. 停止系统监控服务
         await this.monitoring_manager.stop();
+        logger.info('✅ Monitoring service stopped');
 
-        // 停止OI监控服务
+        // 3. 停止OI监控服务
         await this.oi_data_manager.stop_monitoring();
+        logger.info('✅ OI monitoring stopped');
 
-        // 清理缓存
-        // await this.stream_dispatcher.cleanup_expired_cache();
+        // 4. 停止多币种管理器（会更新Redis订阅状态）
+        await this.multi_symbol_manager.stop();
+        logger.info('✅ Multi-symbol manager stopped');
+
+        // 5. 清理缓存
         await this.historical_data_manager.cleanup_expired_cache();
+        logger.info('✅ Cache cleaned');
 
-        // 关闭数据库连接池
+        // 6. 最后关闭数据库连接池（确保前面的操作都完成）
         await DatabaseConfig.close_connections();
         logger.info('✅ Database connections closed');
 
