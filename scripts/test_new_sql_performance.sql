@@ -9,7 +9,7 @@ SET @start_time = DATE_SUB(NOW(), INTERVAL 1 DAY);
 SET @end_time = NOW();
 
 SELECT '========== 性能对比测试 ==========' as '';
-SELECT CONCAT('时间范围: ', @start_time, ' ~ ', @end_time) as '';
+SELECT CONCAT('时间范围: ', CAST(@start_time AS CHAR), ' ~ ', CAST(@end_time AS CHAR)) as '';
 
 -- =============================================
 -- 测试1: 旧SQL（使用窗口函数）
