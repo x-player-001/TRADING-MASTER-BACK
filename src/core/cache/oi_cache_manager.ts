@@ -384,15 +384,14 @@ export class OICacheManager {
 
   /**
    * 生成统计数据缓存键
+   * 优化：忽略symbol参数，统一缓存全部数据，由前端自行过滤
    */
   private generate_stats_cache_key(params: OIStatisticsQueryParams): string {
     const parts = [OICacheManager.PREFIXES.STATS];
 
-    if (params.symbol) {
-      parts.push('symbol', params.symbol);
-    } else {
-      parts.push('all');
-    }
+    // ✅ 统一使用'all'，不再按币种分别缓存
+    // 前端获取全部数据后自行过滤，避免缓存碎片化
+    parts.push('all');
 
     if (params.date) {
       parts.push('date', params.date);
@@ -405,15 +404,14 @@ export class OICacheManager {
 
   /**
    * 生成异动记录缓存键
+   * 优化：完全简化，忽略symbol/severity/limit参数，统一缓存全部数据
+   * 前端获取全部数据后自行过滤，最大化缓存命中率
    */
   private generate_anomalies_cache_key(params: OIAnomalyQueryParams): string {
     const parts = ['oi', 'anomalies'];
 
-    if (params.symbol) {
-      parts.push('symbol', params.symbol);
-    } else {
-      parts.push('all');
-    }
+    // ✅ 统一使用'all'，不再按币种分别缓存
+    parts.push('all');
 
     if (params.date) {
       parts.push('date', params.date);
@@ -421,11 +419,9 @@ export class OICacheManager {
       parts.push('recent');
     }
 
-    if (params.severity) {
-      parts.push('severity', params.severity);
-    }
-
-    parts.push('limit', (params.limit || 50).toString());
+    // ✅ 完全移除severity和limit参数，统一缓存键
+    // 这样无论前端传什么参数，都能复用同一份缓存
+    // 缓存中存储所有异动记录，由前端或Repository层过滤
 
     return parts.join(':');
   }

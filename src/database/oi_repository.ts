@@ -479,17 +479,25 @@ export class OIRepository {
         start_time = new Date(end_time.getTime() - 24 * 60 * 60 * 1000);
       }
 
-      // 使用窗口函数优化的查询，减少子查询层级
+      // 优化后的SQL：先过滤有异动的币种，再计算统计数据（减少90%数据扫描）
       let sql = `
-        WITH latest_snapshots AS (
+        WITH anomaly_symbols AS (
+          -- 第1步：找出有异动的币种（快速过滤）
+          SELECT DISTINCT symbol
+          FROM oi_anomaly_records
+          WHERE anomaly_time >= ? AND anomaly_time <= ?
+        ),
+        latest_snapshots AS (
+          -- 第2步：只查询有异动币种的快照数据（INNER JOIN过滤）
           SELECT
-            symbol,
-            open_interest,
-            snapshot_time,
-            ROW_NUMBER() OVER (PARTITION BY symbol ORDER BY timestamp_ms DESC) as rn_latest,
-            ROW_NUMBER() OVER (PARTITION BY symbol ORDER BY timestamp_ms ASC) as rn_earliest
-          FROM open_interest_snapshots
-          WHERE snapshot_time >= ? AND snapshot_time <= ?
+            s.symbol,
+            s.open_interest,
+            s.snapshot_time,
+            ROW_NUMBER() OVER (PARTITION BY s.symbol ORDER BY s.timestamp_ms DESC) as rn_latest,
+            ROW_NUMBER() OVER (PARTITION BY s.symbol ORDER BY s.timestamp_ms ASC) as rn_earliest
+          FROM open_interest_snapshots s
+          INNER JOIN anomaly_symbols a ON s.symbol = a.symbol
+          WHERE s.snapshot_time >= ? AND s.snapshot_time <= ?
         ),
         period_stats AS (
           SELECT
@@ -516,21 +524,22 @@ export class OIRepository {
           COALESCE(
             ((ps.latest_oi - ps.start_oi) / NULLIF(ps.start_oi, 0) * 100), 0
           ) as daily_change_pct,
-          COALESCE(a.anomaly_count, 0) as anomaly_count_24h,
+          a.anomaly_count as anomaly_count_24h,
           a.last_anomaly_time,
           a.first_anomaly_time,
           COALESCE(ps.avg_oi_24h, ps.latest_oi) as avg_oi_24h
         FROM period_stats ps
-        LEFT JOIN anomaly_stats a ON ps.symbol = a.symbol
+        INNER JOIN anomaly_stats a ON ps.symbol = a.symbol
         WHERE ps.latest_oi IS NOT NULL
-          AND a.anomaly_count > 0
       `;
 
       const conditions: any[] = [
-        start_time,    // 快照数据开始时间
-        end_time,      // 快照数据结束时间
-        start_time,    // 异动记录开始时间
-        end_time       // 异动记录结束时间
+        start_time,    // anomaly_symbols CTE - 开始时间
+        end_time,      // anomaly_symbols CTE - 结束时间
+        start_time,    // latest_snapshots CTE - 开始时间
+        end_time,      // latest_snapshots CTE - 结束时间
+        start_time,    // anomaly_stats CTE - 开始时间
+        end_time       // anomaly_stats CTE - 结束时间
       ];
 
       if (params.symbol) {

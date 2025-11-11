@@ -96,11 +96,11 @@ export const ConfigDefaults: AppConfig = {
   },
   oi_monitoring: {
     cache_ttl: {
-      latest_oi: 120,        // 2分钟
+      latest_oi: 300,        // 5分钟 (优化：从2分钟延长到5分钟)
       config: 3600,          // 1小时
       symbols: 1800,         // 30分钟
-      stats: 300,            // 5分钟
-      anomalies: 120,        // 2分钟
+      stats: 600,            // 10分钟 (优化：从5分钟延长到10分钟)
+      anomalies: 600,        // 10分钟 (优化：从2分钟延长到10分钟)
       history_1m: 1200,      // 20分钟
       history_5m: 7200,      // 2小时
       dedup_by_period: true  // 去重缓存按周期时间过期

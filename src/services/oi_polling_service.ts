@@ -249,6 +249,9 @@ export class OIPollingService {
       // 4. 保存异动记录
       await this.save_anomalies(anomalies);
 
+      // 5. ✅ 缓存预热：主动查询统计数据并缓存
+      await this.preheat_statistics_cache();
+
       const duration = Date.now() - start_time;
       if (anomalies.length > 0) {
         logger.oi(`${current_time.time_string} - ${oi_results.length} symbols, ${anomalies.length} anomalies detected (${duration}ms):`);
@@ -514,5 +517,27 @@ export class OIPollingService {
 
     logger.info('[OIPolling] Manual poll triggered');
     await this.poll();
+  }
+
+  /**
+   * 缓存预热：主动查询统计数据并写入Redis
+   * 在每次轮询完成后调用，确保缓存始终是热的
+   */
+  private async preheat_statistics_cache(): Promise<void> {
+    try {
+      const today = new Date().toISOString().split('T')[0];
+
+      // 预热当天的全部统计数据（忽略symbol参数，统一缓存全部数据）
+      // 内部会自动调用cache_statistics将结果写入Redis
+      await this.oi_repository.get_oi_statistics({ date: today });
+
+      // 可选：预热无日期参数的查询（最近24小时数据）
+      await this.oi_repository.get_oi_statistics({});
+
+      logger.debug('[OIPolling] ✅ Statistics cache preheated');
+    } catch (error) {
+      // 预热失败不影响主流程，只记录日志
+      logger.error('[OIPolling] ❌ Failed to preheat statistics cache:', error);
+    }
   }
 }
