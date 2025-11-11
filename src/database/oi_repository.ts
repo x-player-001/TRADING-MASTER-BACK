@@ -579,7 +579,7 @@ export class OIRepository {
         ),
         anomaly_stats AS (
           SELECT
-            symbol,
+            symbol COLLATE utf8mb4_general_ci as symbol,
             COUNT(*) as anomaly_count,
             MAX(anomaly_time) as last_anomaly_time,
             MIN(anomaly_time) as first_anomaly_time
