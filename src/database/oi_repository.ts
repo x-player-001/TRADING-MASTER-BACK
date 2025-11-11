@@ -521,7 +521,7 @@ export class OIRepository {
       let sql = `
         WITH anomaly_symbols AS (
           -- 第1步：找出有异动的币种（快速过滤）
-          SELECT DISTINCT symbol
+          SELECT DISTINCT symbol COLLATE utf8mb4_general_ci as symbol
           FROM oi_anomaly_records
           WHERE anomaly_time >= ? AND anomaly_time <= ?
         ),
