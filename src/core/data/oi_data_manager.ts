@@ -3,6 +3,7 @@ import { OIRepository } from '../../database/oi_repository';
 import { BinanceFuturesAPI } from '../../api/binance_futures_api';
 import { OIRoutes } from '../../api/routes/oi_routes';
 import { OICacheManager } from '../cache/oi_cache_manager';
+import { daily_table_manager } from '../../database/daily_table_manager';
 import { Router } from 'express';
 import { logger } from '../../utils/logger';
 import { BusinessError, DatabaseError, APIError } from '../../utils/errors';
@@ -38,6 +39,12 @@ export class OIDataManager {
 
     try {
       logger.info('[OIDataManager] Initializing OI data management system...');
+
+      // 初始化日期分表管理器（创建今天和明天的表）
+      await daily_table_manager.initialize();
+
+      // 启动定时清理任务（每天凌晨1点清理旧表）
+      daily_table_manager.start_cleanup_scheduler();
 
       // 初始化缓存管理器
       await this.oi_cache_manager.initialize();

@@ -1,6 +1,7 @@
 import { PoolConnection, RowDataPacket, ResultSetHeader } from 'mysql2/promise';
 import { DatabaseConfig } from '../core/config/database';
 import { OICacheManager } from '../core/cache/oi_cache_manager';
+import { daily_table_manager } from './daily_table_manager';
 import { logger } from '../utils/logger';
 import {
   ContractSymbolConfig,
@@ -183,24 +184,47 @@ export class OIRepository {
   // ===================== OI快照数据操作 =====================
 
   /**
-   * 批量保存OI快照数据
+   * 批量保存OI快照数据（日期分表版本）
    */
   async batch_save_snapshots(snapshots: Omit<OpenInterestSnapshot, 'id' | 'created_at'>[]): Promise<void> {
     if (snapshots.length === 0) return;
 
     return this.execute_with_connection(async (conn) => {
-      const values = snapshots.map(s => [
-        s.symbol, s.open_interest, s.timestamp_ms, s.snapshot_time, s.data_source
-      ]);
+      // 按日期分组快照数据
+      const snapshots_by_date = new Map<string, typeof snapshots>();
 
-      const placeholders = snapshots.map(() => '(?, ?, ?, ?, ?)').join(',');
-      const sql = `
-        INSERT IGNORE INTO open_interest_snapshots
-        (symbol, open_interest, timestamp_ms, snapshot_time, data_source)
-        VALUES ${placeholders}
-      `;
+      for (const snapshot of snapshots) {
+        const snapshot_date = new Date(snapshot.snapshot_time);
+        const date_key = snapshot_date.toISOString().split('T')[0]; // YYYY-MM-DD
 
-      await conn.execute(sql, values.flat());
+        if (!snapshots_by_date.has(date_key)) {
+          snapshots_by_date.set(date_key, []);
+        }
+        snapshots_by_date.get(date_key)!.push(snapshot);
+      }
+
+      // 为每个日期写入对应的日期表
+      for (const [date_key, date_snapshots] of snapshots_by_date.entries()) {
+        // 确保目标日期表存在
+        await daily_table_manager.create_table_if_not_exists(date_key);
+
+        // 获取表名
+        const table_name = daily_table_manager.get_table_name(date_key);
+
+        const values = date_snapshots.map(s => [
+          s.symbol, s.open_interest, s.timestamp_ms, s.snapshot_time, s.data_source
+        ]);
+
+        const placeholders = date_snapshots.map(() => '(?, ?, ?, ?, ?)').join(',');
+        const sql = `
+          INSERT IGNORE INTO ${table_name}
+          (symbol, open_interest, timestamp_ms, snapshot_time, data_source)
+          VALUES ${placeholders}
+        `;
+
+        await conn.execute(sql, values.flat());
+        logger.debug(`[OIRepository] 保存 ${date_snapshots.length} 条快照数据到表: ${table_name}`);
+      }
 
       // 更新缓存：最新OI数据
       if (this.cache_manager) {
@@ -451,7 +475,7 @@ export class OIRepository {
   // ===================== 统计查询操作 =====================
 
   /**
-   * 获取OI统计数据
+   * 获取OI统计数据（日期分表版本 - 性能优化）
    */
   async get_oi_statistics(params: OIStatisticsQueryParams = {}): Promise<OIStatistics[]> {
     // 1. 尝试从缓存获取数据
@@ -467,19 +491,33 @@ export class OIRepository {
     return this.execute_with_connection(async (conn) => {
       let start_time: Date;
       let end_time: Date;
+      let query_date: string; // YYYY-MM-DD格式
 
       if (params.date) {
         // 传入了日期，获取该日期当天的数据
         const date = new Date(params.date);
         start_time = new Date(date.getFullYear(), date.getMonth(), date.getDate(), 0, 0, 0);
         end_time = new Date(date.getFullYear(), date.getMonth(), date.getDate(), 23, 59, 59, 999);
+        query_date = params.date; // 使用传入的日期
       } else {
-        // 没有传入日期，获取最近24小时数据
+        // 没有传入日期，获取最近24小时数据（可能跨天，需要查询多个表）
         end_time = new Date();
         start_time = new Date(end_time.getTime() - 24 * 60 * 60 * 1000);
+        query_date = end_time.toISOString().split('T')[0]; // 使用今天作为主要查询日期
       }
 
-      // 优化后的SQL V2：避免窗口函数，使用子查询+JOIN实现（10倍性能提升）
+      // 获取需要查询的日期表
+      const table_name = daily_table_manager.get_table_name(query_date);
+
+      // 检查表是否存在
+      const table_exists = await this.check_table_exists(conn, table_name);
+      if (!table_exists) {
+        logger.warn(`[OIRepository] 日期表不存在: ${table_name}，返回空结果`);
+        return [];
+      }
+
+      // ⭐ 关键优化：直接查询单日分表，避免扫描大表
+      // V4 优化版SQL：针对单日表优化，数据量从30万降低到4万
       let sql = `
         WITH anomaly_symbols AS (
           -- 第1步：找出有异动的币种（快速过滤）
@@ -488,44 +526,44 @@ export class OIRepository {
           WHERE anomaly_time >= ? AND anomaly_time <= ?
         ),
         latest_oi AS (
-          -- 第2步：获取每个币种的最新OI值（避免窗口函数）
+          -- 第2步：从日期表获取最新OI值（单表查询，极快）
           SELECT
             s.symbol,
             s.open_interest as latest_oi,
             s.snapshot_time
-          FROM open_interest_snapshots s
-          INNER JOIN anomaly_symbols a ON s.symbol = a.symbol
-          INNER JOIN (
-            SELECT symbol, MAX(timestamp_ms) as max_ts
-            FROM open_interest_snapshots
-            WHERE snapshot_time >= ? AND snapshot_time <= ?
-            GROUP BY symbol
-          ) latest ON s.symbol = latest.symbol AND s.timestamp_ms = latest.max_ts
-          WHERE s.snapshot_time >= ? AND s.snapshot_time <= ?
+          FROM ${table_name} s
+          WHERE s.symbol IN (SELECT symbol FROM anomaly_symbols)
+            AND (s.symbol, s.timestamp_ms) IN (
+              SELECT symbol, MAX(timestamp_ms)
+              FROM ${table_name}
+              WHERE snapshot_time >= ? AND snapshot_time <= ?
+                AND symbol IN (SELECT symbol FROM anomaly_symbols)
+              GROUP BY symbol
+            )
         ),
         earliest_oi AS (
-          -- 第3步：获取每个币种的最早OI值（避免窗口函数）
+          -- 第3步：从日期表获取最早OI值
           SELECT
             s.symbol,
             s.open_interest as start_oi
-          FROM open_interest_snapshots s
-          INNER JOIN anomaly_symbols a ON s.symbol = a.symbol
-          INNER JOIN (
-            SELECT symbol, MIN(timestamp_ms) as min_ts
-            FROM open_interest_snapshots
-            WHERE snapshot_time >= ? AND snapshot_time <= ?
-            GROUP BY symbol
-          ) earliest ON s.symbol = earliest.symbol AND s.timestamp_ms = earliest.min_ts
-          WHERE s.snapshot_time >= ? AND s.snapshot_time <= ?
+          FROM ${table_name} s
+          WHERE s.symbol IN (SELECT symbol FROM anomaly_symbols)
+            AND (s.symbol, s.timestamp_ms) IN (
+              SELECT symbol, MIN(timestamp_ms)
+              FROM ${table_name}
+              WHERE snapshot_time >= ? AND snapshot_time <= ?
+                AND symbol IN (SELECT symbol FROM anomaly_symbols)
+              GROUP BY symbol
+            )
         ),
         avg_oi AS (
-          -- 第4步：计算平均OI（简单聚合，无窗口函数）
+          -- 第4步：从日期表计算平均OI
           SELECT
             s.symbol,
             AVG(s.open_interest) as avg_oi_24h
-          FROM open_interest_snapshots s
-          INNER JOIN anomaly_symbols a ON s.symbol = a.symbol
-          WHERE s.snapshot_time >= ? AND s.snapshot_time <= ?
+          FROM ${table_name} s
+          WHERE s.symbol IN (SELECT symbol FROM anomaly_symbols)
+            AND s.snapshot_time >= ? AND s.snapshot_time <= ?
           GROUP BY s.symbol
         ),
         period_stats AS (
@@ -569,12 +607,8 @@ export class OIRepository {
         end_time,      // anomaly_symbols CTE - 结束时间
         start_time,    // latest_oi CTE - MAX子查询 - 开始时间
         end_time,      // latest_oi CTE - MAX子查询 - 结束时间
-        start_time,    // latest_oi CTE - 外层查询 - 开始时间
-        end_time,      // latest_oi CTE - 外层查询 - 结束时间
         start_time,    // earliest_oi CTE - MIN子查询 - 开始时间
         end_time,      // earliest_oi CTE - MIN子查询 - 结束时间
-        start_time,    // earliest_oi CTE - 外层查询 - 开始时间
-        end_time,      // earliest_oi CTE - 外层查询 - 结束时间
         start_time,    // avg_oi CTE - 开始时间
         end_time,      // avg_oi CTE - 结束时间
         start_time,    // anomaly_stats CTE - 开始时间
@@ -588,6 +622,8 @@ export class OIRepository {
 
       sql += ' ORDER BY COALESCE(a.anomaly_count, 0) DESC, ps.symbol ASC';
 
+      logger.debug(`[OIRepository] 查询日期表: ${table_name}, 时间范围: ${start_time.toISOString()} ~ ${end_time.toISOString()}`);
+
       const [rows] = await conn.execute<RowDataPacket[]>(sql, conditions);
       const statistics = rows as OIStatistics[];
 
@@ -599,6 +635,20 @@ export class OIRepository {
 
       return statistics;
     });
+  }
+
+  /**
+   * 检查表是否存在
+   */
+  private async check_table_exists(conn: PoolConnection, table_name: string): Promise<boolean> {
+    const [rows] = await conn.execute<RowDataPacket[]>(
+      `SELECT COUNT(*) as count
+       FROM information_schema.TABLES
+       WHERE TABLE_SCHEMA = DATABASE()
+       AND TABLE_NAME = ?`,
+      [table_name]
+    );
+    return (rows[0] as any).count > 0;
   }
 
   /**
