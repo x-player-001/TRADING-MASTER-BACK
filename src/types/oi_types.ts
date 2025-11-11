@@ -107,6 +107,7 @@ export interface OffHoursConfig {
 export interface OIMonitoringSystemConfig {
   polling_interval_ms: number;
   max_concurrent_requests: number;
+  max_monitored_symbols: number | 'max'; // 最大监控币种数量，'max'表示不限制
   thresholds: ThresholdConfig;
   symbol_refresh_interval_ms: number;
   off_hours_config: OffHoursConfig;

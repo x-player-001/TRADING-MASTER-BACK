@@ -70,29 +70,36 @@ export class BinanceFuturesAPI {
 
   /**
    * 获取USDT永续合约列表
+   * @param max_symbols 最大币种数量，'max'表示不限制，返回所有币种
    */
-  async get_usdt_perpetual_symbols(): Promise<ContractSymbolConfig[]> {
+  async get_usdt_perpetual_symbols(max_symbols: number | 'max' = 300): Promise<ContractSymbolConfig[]> {
     try {
       const exchange_info = await this.get_exchange_info();
 
-      const usdt_symbols = exchange_info.symbols
+      let filtered_symbols = exchange_info.symbols
         .filter(symbol =>
           symbol.contractType === 'PERPETUAL' &&
           symbol.quoteAsset === 'USDT' &&
           symbol.status === 'TRADING'
         )
-        .sort((a, b) => this.calculate_symbol_priority(b) - this.calculate_symbol_priority(a))
-        .slice(0, 300)  // 只取前100个币种进行测试
-        .map(symbol => ({
-          symbol: symbol.symbol,
-          base_asset: symbol.baseAsset,
-          quote_asset: symbol.quoteAsset,
-          contract_type: 'PERPETUAL' as const,
-          status: 'TRADING' as const,
-          enabled: true,
-          priority: this.calculate_symbol_priority(symbol)
-        }));
+        .sort((a, b) => this.calculate_symbol_priority(b) - this.calculate_symbol_priority(a));
 
+      // 如果不是 'max'，则限制数量
+      if (max_symbols !== 'max') {
+        filtered_symbols = filtered_symbols.slice(0, max_symbols);
+      }
+
+      const usdt_symbols = filtered_symbols.map(symbol => ({
+        symbol: symbol.symbol,
+        base_asset: symbol.baseAsset,
+        quote_asset: symbol.quoteAsset,
+        contract_type: 'PERPETUAL' as const,
+        status: 'TRADING' as const,
+        enabled: true,
+        priority: this.calculate_symbol_priority(symbol)
+      }));
+
+      console.log(`[BinanceAPI] Fetched ${usdt_symbols.length} USDT perpetual symbols (limit: ${max_symbols})`);
       return usdt_symbols;
 
     } catch (error: any) {

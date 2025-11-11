@@ -33,6 +33,7 @@ export class OIPollingService {
   private config: OIMonitoringSystemConfig = {
     polling_interval_ms: 60000,        // 1分钟
     max_concurrent_requests: 50,
+    max_monitored_symbols: 300,        // 默认监控300个币种
     thresholds: {
       60: 3,     // 1分钟: 3%
       120: 3,    // 2分钟: 3%
@@ -130,6 +131,21 @@ export class OIPollingService {
    */
   private async load_configuration(): Promise<void> {
     try {
+      // 从环境变量读取最大监控币种数
+      const env_max_symbols = process.env.OI_MAX_MONITORED_SYMBOLS;
+      if (env_max_symbols) {
+        if (env_max_symbols.toLowerCase() === 'max') {
+          this.config.max_monitored_symbols = 'max';
+          logger.info('[OIPolling] Max monitored symbols set to unlimited (max)');
+        } else {
+          const parsed = parseInt(env_max_symbols);
+          if (!isNaN(parsed) && parsed > 0) {
+            this.config.max_monitored_symbols = parsed;
+            logger.info(`[OIPolling] Max monitored symbols set to ${parsed}`);
+          }
+        }
+      }
+
       const configs = await this.oi_repository.get_monitoring_config();
 
       for (const config of configs) {
@@ -139,6 +155,20 @@ export class OIPollingService {
             break;
           case 'max_concurrent_requests':
             this.config.max_concurrent_requests = parseInt(config.config_value);
+            break;
+          case 'max_monitored_symbols':
+            // 数据库配置优先级高于环境变量
+            if (!env_max_symbols) {
+              const value = config.config_value.toLowerCase();
+              if (value === 'max') {
+                this.config.max_monitored_symbols = 'max';
+              } else {
+                const parsed = parseInt(config.config_value);
+                if (!isNaN(parsed) && parsed > 0) {
+                  this.config.max_monitored_symbols = parsed;
+                }
+              }
+            }
             break;
           case 'thresholds':
             this.config.thresholds = JSON.parse(config.config_value);
@@ -159,6 +189,7 @@ export class OIPollingService {
       }
 
       logger.info('[OIPolling] Configuration loaded successfully', {
+        max_monitored_symbols: this.config.max_monitored_symbols,
         dedup_threshold: this.dedup_threshold,
         severity_thresholds: this.severity_thresholds
       });
@@ -174,8 +205,10 @@ export class OIPollingService {
     try {
       logger.info('[OIPolling] Refreshing symbol list...');
 
-      // 从币安获取最新币种列表
-      const latest_symbols = await this.binance_api.get_usdt_perpetual_symbols();
+      // 从币安获取最新币种列表，传递配置的最大币种数
+      const latest_symbols = await this.binance_api.get_usdt_perpetual_symbols(
+        this.config.max_monitored_symbols
+      );
 
       // 保存到数据库
       await this.oi_repository.save_symbol_configs(latest_symbols);
@@ -183,7 +216,7 @@ export class OIPollingService {
       // 获取启用的币种
       this.current_symbols = await this.oi_repository.get_enabled_symbols();
 
-      logger.info(`[OIPolling] Symbol list refreshed: ${this.current_symbols.length} active symbols`);
+      logger.info(`[OIPolling] Symbol list refreshed: ${this.current_symbols.length} active symbols (config limit: ${this.config.max_monitored_symbols})`);
     } catch (error) {
       logger.error('[OIPolling] Failed to refresh symbols:', error);
       // 如果刷新失败，继续使用现有币种列表
