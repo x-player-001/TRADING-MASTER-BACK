@@ -58,7 +58,7 @@ class OIAnomalyRedetector {
   private detected_anomalies: AnomalyResult[] = [];
 
   constructor(target_date?: string) {
-    this.oi_repository = OIRepository.get_instance();
+    this.oi_repository = new OIRepository();
     this.target_date = target_date || format(new Date(), 'yyyy-MM-dd');
   }
 
