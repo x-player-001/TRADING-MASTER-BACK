@@ -484,8 +484,8 @@ export class OIRepository {
       const sql = `
         INSERT INTO oi_anomaly_records
         (symbol, period_seconds, percent_change, oi_before, oi_after, oi_change,
-         threshold_value, anomaly_time, severity)
-        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+         threshold_value, anomaly_time, severity, price_before, price_after, price_change, price_change_percent)
+        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
       `;
 
       const [result] = await conn.execute<ResultSetHeader>(sql, [
@@ -497,7 +497,11 @@ export class OIRepository {
         anomaly.oi_change,
         anomaly.threshold_value,
         anomaly.anomaly_time,
-        anomaly.severity
+        anomaly.severity,
+        anomaly.price_before ?? null,
+        anomaly.price_after ?? null,
+        anomaly.price_change ?? null,
+        anomaly.price_change_percent ?? null
       ]);
 
       return result.insertId;

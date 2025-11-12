@@ -46,6 +46,12 @@ export interface OIAnomalyRecord {
   anomaly_time: Date;
   severity: 'low' | 'medium' | 'high';
   created_at?: Date;
+
+  // 价格变化相关字段
+  price_before?: number;
+  price_after?: number;
+  price_change?: number;
+  price_change_percent?: number;
 }
 
 // OI监控配置
@@ -107,6 +113,12 @@ export interface OIAnomalyDetectionResult {
   oi_after: number;
   threshold: number;
   severity: 'low' | 'medium' | 'high';
+
+  // 价格变化相关字段
+  price_before?: number;           // 变化前价格
+  price_after?: number;            // 变化后价格
+  price_change?: number;           // 价格绝对变化量
+  price_change_percent?: number;   // 价格变化百分比
 }
 
 // 阈值配置

@@ -246,8 +246,8 @@ export class OIPollingService {
       // 3. 保存快照数据（合并资金费率）
       await this.save_snapshots_with_premium(oi_results, premium_data, current_time.time_string);
 
-      // 4. 检测异动
-      const anomalies = await this.detect_anomalies(oi_results, current_time.time_string);
+      // 4. 检测异动（传入资金费率数据用于价格变化计算）
+      const anomalies = await this.detect_anomalies(oi_results, premium_data, current_time.time_string);
 
       // 5. 保存异动记录
       await this.save_anomalies(anomalies);
@@ -259,7 +259,10 @@ export class OIPollingService {
       if (anomalies.length > 0) {
         logger.oi(`${current_time.time_string} - ${oi_results.length} symbols, ${anomalies.length} anomalies detected (${duration}ms):`);
         anomalies.forEach(anomaly => {
-          logger.oi(`  🚨 ${anomaly.symbol} [${anomaly.period_minutes}m]: ${anomaly.percent_change.toFixed(2)}% [${anomaly.severity}]`);
+          const priceInfo = anomaly.price_change_percent !== undefined
+            ? `, Price: ${anomaly.price_change_percent > 0 ? '+' : ''}${anomaly.price_change_percent.toFixed(2)}%`
+            : '';
+          logger.oi(`  🚨 ${anomaly.symbol} [${anomaly.period_minutes}m]: OI ${anomaly.percent_change.toFixed(2)}%${priceInfo} [${anomaly.severity}]`);
         });
       } else {
         logger.oi(`${current_time.time_string} - ${oi_results.length} symbols, no anomalies (${duration}ms)`);
@@ -331,11 +334,21 @@ export class OIPollingService {
   /**
    * 检测OI异动
    */
-  private async detect_anomalies(oi_results: OIPollingResult[], timestamp_string: string): Promise<OIAnomalyDetectionResult[]> {
+  private async detect_anomalies(
+    oi_results: OIPollingResult[],
+    premium_data: any[],
+    timestamp_string: string
+  ): Promise<OIAnomalyDetectionResult[]> {
     const anomalies: OIAnomalyDetectionResult[] = [];
+
+    // 构建价格Map用于快速查找
+    const price_map = new Map(premium_data.map(p => [p.symbol, parseFloat(p.markPrice)]));
 
     for (const result of oi_results) {
       try {
+        // 获取当前价格
+        const current_price = price_map.get(result.symbol);
+
         // 检测每个时间周期的异动
         for (const [period_seconds_str, threshold] of Object.entries(this.config.thresholds)) {
           const period_seconds = parseInt(period_seconds_str);
@@ -354,10 +367,23 @@ export class OIPollingService {
           const closest_snapshot = this.find_closest_snapshot(historical_snapshots, since_timestamp);
           if (!closest_snapshot || closest_snapshot.open_interest <= 0) continue;
 
-          // 计算变化率
+          // 计算OI变化率
           const oi_before = closest_snapshot.open_interest;
           const oi_after = result.open_interest;
           const percent_change = ((oi_after - oi_before) / oi_before) * 100;
+
+          // 计算价格变化（如果有历史价格和当前价格）
+          let price_before: number | undefined;
+          let price_after: number | undefined;
+          let price_change: number | undefined;
+          let price_change_percent: number | undefined;
+
+          if (closest_snapshot.mark_price && current_price) {
+            price_before = closest_snapshot.mark_price;
+            price_after = current_price;
+            price_change = price_after - price_before;
+            price_change_percent = (price_change / price_before) * 100;
+          }
 
           // 检查是否超过阈值
           if (Math.abs(percent_change) >= threshold) {
@@ -403,7 +429,11 @@ export class OIPollingService {
                 oi_before,
                 oi_after,
                 threshold,
-                severity
+                severity,
+                price_before,
+                price_after,
+                price_change,
+                price_change_percent
               });
             }
           }
@@ -463,7 +493,11 @@ export class OIPollingService {
           oi_change: anomaly.oi_after - anomaly.oi_before,
           threshold_value: anomaly.threshold,
           anomaly_time: new Date(),
-          severity: anomaly.severity
+          severity: anomaly.severity,
+          price_before: anomaly.price_before,
+          price_after: anomaly.price_after,
+          price_change: anomaly.price_change,
+          price_change_percent: anomaly.price_change_percent
         };
 
         // 插入数据库
