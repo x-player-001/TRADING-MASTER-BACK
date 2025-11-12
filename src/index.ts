@@ -75,9 +75,9 @@ class TradingMasterApp {
       // 启动系统监控服务
       await this.monitoring_manager.start();
 
-      // 初始化并启动信号管理器
-      await this.signal_manager.initialize();
-      logger.info('✅ Signal Manager started');
+      // 初始化并启动信号管理器（暂时禁用）
+      // await this.signal_manager.initialize();
+      // logger.info('✅ Signal Manager started');
 
       // 启动API服务器
       await this.api_server.start();
