@@ -713,26 +713,14 @@ export class OIRepository {
               GROUP BY symbol
             )
         ),
-        avg_oi AS (
-          -- 第4步：从日期表计算平均OI
-          SELECT
-            s.symbol,
-            AVG(s.open_interest) as avg_oi_24h
-          FROM ${table_name} s
-          WHERE s.symbol IN (SELECT symbol FROM anomaly_symbols)
-            AND s.snapshot_time >= ? AND s.snapshot_time <= ?
-          GROUP BY s.symbol
-        ),
         period_stats AS (
-          -- 第5步：合并统计数据
+          -- 第4步：合并统计数据
           SELECT
             l.symbol,
             l.latest_oi,
-            e.start_oi,
-            a.avg_oi_24h
+            e.start_oi
           FROM latest_oi l
           INNER JOIN earliest_oi e ON l.symbol = e.symbol
-          INNER JOIN avg_oi a ON l.symbol = a.symbol
         ),
         anomaly_stats AS (
           SELECT
@@ -752,8 +740,7 @@ export class OIRepository {
           ) as daily_change_pct,
           a.anomaly_count as anomaly_count_24h,
           a.last_anomaly_time,
-          a.first_anomaly_time,
-          COALESCE(ps.avg_oi_24h, ps.latest_oi) as avg_oi_24h
+          a.first_anomaly_time
         FROM period_stats ps
         INNER JOIN anomaly_stats a ON ps.symbol = a.symbol
         WHERE ps.latest_oi IS NOT NULL
@@ -766,8 +753,6 @@ export class OIRepository {
         end_time,      // latest_oi CTE - MAX子查询 - 结束时间
         start_time,    // earliest_oi CTE - MIN子查询 - 开始时间
         end_time,      // earliest_oi CTE - MIN子查询 - 结束时间
-        start_time,    // avg_oi CTE - 开始时间
-        end_time,      // avg_oi CTE - 结束时间
         start_time,    // anomaly_stats CTE - 开始时间
         end_time       // anomaly_stats CTE - 结束时间
       ];

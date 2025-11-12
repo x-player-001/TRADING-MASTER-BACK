@@ -162,7 +162,6 @@ export interface OIStatistics {
   anomaly_count_24h: number;
   last_anomaly_time?: Date;
   first_anomaly_time?: Date;
-  avg_oi_24h: number;
 }
 
 // 错误类型

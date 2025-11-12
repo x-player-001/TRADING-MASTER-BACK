@@ -84,8 +84,7 @@ GET /api/oi/statistics
       "daily_change_pct": 2.5,
       "anomaly_count_24h": 3,
       "last_anomaly_time": "2024-01-15T10:25:00.000Z",
-      "first_anomaly_time": "2024-01-15T08:15:00.000Z",
-      "avg_oi_24h": 1200000000.00
+      "first_anomaly_time": "2024-01-15T08:15:00.000Z"
     },
     {
       "symbol": "ETH",
@@ -93,8 +92,7 @@ GET /api/oi/statistics
       "daily_change_pct": -1.2,
       "anomaly_count_24h": 1,
       "last_anomaly_time": "2024-01-15T09:30:00.000Z",
-      "first_anomaly_time": "2024-01-15T09:30:00.000Z",
-      "avg_oi_24h": 950000000.00
+      "first_anomaly_time": "2024-01-15T09:30:00.000Z"
     }
   ],
   "params": {
