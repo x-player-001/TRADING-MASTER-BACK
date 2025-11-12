@@ -52,6 +52,12 @@ export interface OIAnomalyRecord {
   price_after?: number;
   price_change?: number;
   price_change_percent?: number;
+
+  // 市场情绪相关字段
+  top_trader_long_short_ratio?: number;    // 大户持仓量多空比
+  top_account_long_short_ratio?: number;   // 大户账户数多空比
+  global_long_short_ratio?: number;        // 全市场多空人数比
+  taker_buy_sell_ratio?: number;           // 主动买卖量比
 }
 
 // OI监控配置
@@ -95,6 +101,53 @@ export interface BinancePremiumIndexResponse {
   interestRate: string;          // "0.00010000" 标的资产基础利率
   nextFundingTime: number;       // 1597392000000 下次资金费时间
   time: number;                  // 1597370495002 更新时间
+}
+
+// 币安市场情绪API响应 - 大户持仓量多空比
+export interface BinanceTopLongShortPositionRatioResponse {
+  symbol: string;
+  longShortRatio: string;   // 大户多空持仓量比值
+  longAccount: string;      // 大户多仓持仓量比例
+  shortAccount: string;     // 大户空仓持仓量比例
+  timestamp: number;
+}
+
+// 币安市场情绪API响应 - 大户账户数多空比
+export interface BinanceTopLongShortAccountRatioResponse {
+  symbol: string;
+  longShortRatio: string;   // 大户多空账户数比值
+  longAccount: string;      // 大户多仓账户数比例
+  shortAccount: string;     // 大户空仓账户数比例
+  timestamp: number;
+}
+
+// 币安市场情绪API响应 - 全市场多空人数比
+export interface BinanceGlobalLongShortAccountRatioResponse {
+  symbol: string;
+  longShortRatio: string;   // 多空人数比值
+  longAccount: string;      // 多仓人数比例
+  shortAccount: string;     // 空仓人数比例
+  timestamp: number;
+}
+
+// 币安市场情绪API响应 - 主动买卖量
+export interface BinanceTakerBuySellVolumeResponse {
+  symbol: string;
+  buySellRatio: string;     // 买卖比值
+  buyVol: string;           // 主动买入量
+  sellVol: string;          // 主动卖出量
+  timestamp: number;
+}
+
+// 市场情绪数据聚合
+export interface MarketSentimentData {
+  symbol: string;
+  top_trader_long_short_ratio: number;    // 大户持仓量多空比
+  top_account_long_short_ratio: number;   // 大户账户数多空比
+  global_long_short_ratio: number;        // 全市场多空人数比
+  taker_buy_sell_ratio: number;           // 主动买卖量比
+  timestamp: number;                       // 数据时间戳
+  fetched_at: number;                     // 获取时间戳（用于缓存判断）
 }
 
 // OI数据轮询结果

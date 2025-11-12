@@ -6,7 +6,11 @@ import {
   BinanceExchangeInfoSymbol,
   BinancePremiumIndexResponse,
   ContractSymbolConfig,
-  OIPollingResult
+  OIPollingResult,
+  BinanceTopLongShortPositionRatioResponse,
+  BinanceTopLongShortAccountRatioResponse,
+  BinanceGlobalLongShortAccountRatioResponse,
+  BinanceTakerBuySellVolumeResponse
 } from '../types/oi_types';
 
 /**
@@ -315,6 +319,112 @@ export class BinanceFuturesAPI {
       max_concurrent: this.max_concurrent,
       base_url: this.base_url
     };
+  }
+
+  // ==================== 市场情绪API ====================
+
+  /**
+   * 获取大户持仓量多空比
+   * 权重: 1
+   * @param symbol 交易对符号
+   * @param period 时间周期 "5m","15m","30m","1h","2h","4h","6h","12h","1d"
+   * @param limit 返回数量，默认30，最大500
+   */
+  async get_top_long_short_position_ratio(
+    symbol: string,
+    period: string = '5m',
+    limit: number = 1
+  ): Promise<BinanceTopLongShortPositionRatioResponse[]> {
+    try {
+      const response = await this.api_client.get<BinanceTopLongShortPositionRatioResponse[]>(
+        '/futures/data/topLongShortPositionRatio',
+        {
+          params: { symbol, period, limit }
+        }
+      );
+      return response.data;
+    } catch (error: any) {
+      console.error(`[BinanceAPI] Failed to get top long/short position ratio for ${symbol}:`, error.message);
+      throw new Error(`Failed to fetch top long/short position ratio: ${error.message}`);
+    }
+  }
+
+  /**
+   * 获取大户账户数多空比
+   * 权重: 1
+   * @param symbol 交易对符号
+   * @param period 时间周期 "5m","15m","30m","1h","2h","4h","6h","12h","1d"
+   * @param limit 返回数量，默认30，最大500
+   */
+  async get_top_long_short_account_ratio(
+    symbol: string,
+    period: string = '5m',
+    limit: number = 1
+  ): Promise<BinanceTopLongShortAccountRatioResponse[]> {
+    try {
+      const response = await this.api_client.get<BinanceTopLongShortAccountRatioResponse[]>(
+        '/futures/data/topLongShortAccountRatio',
+        {
+          params: { symbol, period, limit }
+        }
+      );
+      return response.data;
+    } catch (error: any) {
+      console.error(`[BinanceAPI] Failed to get top account ratio for ${symbol}:`, error.message);
+      throw new Error(`Failed to fetch top account ratio: ${error.message}`);
+    }
+  }
+
+  /**
+   * 获取全市场多空人数比
+   * 权重: 1
+   * @param symbol 交易对符号
+   * @param period 时间周期 "5m","15m","30m","1h","2h","4h","6h","12h","1d"
+   * @param limit 返回数量，默认30，最大500
+   */
+  async get_global_long_short_account_ratio(
+    symbol: string,
+    period: string = '5m',
+    limit: number = 1
+  ): Promise<BinanceGlobalLongShortAccountRatioResponse[]> {
+    try {
+      const response = await this.api_client.get<BinanceGlobalLongShortAccountRatioResponse[]>(
+        '/futures/data/globalLongShortAccountRatio',
+        {
+          params: { symbol, period, limit }
+        }
+      );
+      return response.data;
+    } catch (error: any) {
+      console.error(`[BinanceAPI] Failed to get global account ratio for ${symbol}:`, error.message);
+      throw new Error(`Failed to fetch global account ratio: ${error.message}`);
+    }
+  }
+
+  /**
+   * 获取合约主动买卖量
+   * 权重: 1
+   * @param symbol 交易对符号
+   * @param period 时间周期 "5m","15m","30m","1h","2h","4h","6h","12h","1d"
+   * @param limit 返回数量，默认30，最大500
+   */
+  async get_taker_buy_sell_volume(
+    symbol: string,
+    period: string = '5m',
+    limit: number = 1
+  ): Promise<BinanceTakerBuySellVolumeResponse[]> {
+    try {
+      const response = await this.api_client.get<BinanceTakerBuySellVolumeResponse[]>(
+        '/futures/data/takerlongshortRatio',
+        {
+          params: { symbol, period, limit }
+        }
+      );
+      return response.data;
+    } catch (error: any) {
+      console.error(`[BinanceAPI] Failed to get taker buy/sell volume for ${symbol}:`, error.message);
+      throw new Error(`Failed to fetch taker buy/sell volume: ${error.message}`);
+    }
   }
 
 }

@@ -160,7 +160,11 @@ GET /api/oi/anomalies
       "oi_change": 155000000,
       "severity": "medium",
       "anomaly_time": "2024-01-15T10:25:00.000Z",
-      "threshold_value": 10.0
+      "threshold_value": 10.0,
+      "price_before": 89234.56,
+      "price_after": 90345.78,
+      "price_change": 1111.22,
+      "price_change_percent": 1.25
     }
   ],
   "count": 5,
@@ -200,7 +204,11 @@ GET /api/oi/recent-anomalies
       "oi_change": 155000000,
       "severity": "medium",
       "anomaly_time": "2024-01-15T10:25:00.000Z",
-      "threshold_value": 10.0
+      "threshold_value": 10.0,
+      "price_before": 89234.56,
+      "price_after": 90345.78,
+      "price_change": 1111.22,
+      "price_change_percent": 1.25
     }
   ],
   "count": 1,

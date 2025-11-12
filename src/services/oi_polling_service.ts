@@ -2,6 +2,8 @@ import { BinanceFuturesAPI } from '../api/binance_futures_api';
 import { OIRepository } from '../database/oi_repository';
 // DatabaseConfig no longer needed - using connection_pool through repository
 import { OICacheManager } from '../core/cache/oi_cache_manager';
+import { MarketSentimentManager } from './market_sentiment_manager';
+import { CacheManager } from '../core/cache/cache_manager';
 import { logger } from '../utils/logger';
 import {
   ContractSymbolConfig,
@@ -22,6 +24,7 @@ export class OIPollingService {
   private binance_api: BinanceFuturesAPI;
   private oi_repository: OIRepository;
   private oi_cache_manager: OICacheManager | null = null;
+  private sentiment_manager: MarketSentimentManager | null = null;
   private polling_timer: NodeJS.Timeout | null = null;
   private symbol_refresh_timer: NodeJS.Timeout | null = null;
 
@@ -67,6 +70,14 @@ export class OIPollingService {
     this.oi_cache_manager = cache_manager;
     // 同时设置给仓库
     this.oi_repository.set_cache_manager(cache_manager);
+  }
+
+  /**
+   * 初始化情绪数据管理器
+   */
+  initialize_sentiment_manager(cache_manager?: CacheManager): void {
+    this.sentiment_manager = new MarketSentimentManager(this.binance_api, cache_manager);
+    logger.info('[OIPolling] Market sentiment manager initialized');
   }
 
   /**
@@ -476,14 +487,31 @@ export class OIPollingService {
   }
 
   /**
-   * 保存异动记录
+   * 保存异动记录（含情绪数据）
    */
   private async save_anomalies(anomalies: OIAnomalyDetectionResult[]): Promise<void> {
     if (anomalies.length === 0) return;
 
     try {
+      // 1. 如果有情绪管理器，批量获取所有异动币种的情绪数据
+      const sentiment_map = new Map<string, any>();
+      if (this.sentiment_manager) {
+        const unique_symbols = [...new Set(anomalies.map(a => a.symbol))];
+        logger.debug(`[OIPolling] Fetching sentiment for ${unique_symbols.length} anomaly symbols...`);
+
+        const sentiment_data = await this.sentiment_manager.get_batch_sentiment_data(unique_symbols, '5m');
+        sentiment_data.forEach((data, symbol) => {
+          sentiment_map.set(symbol, data);
+        });
+      }
+
+      // 2. 保存每个异动记录
       for (const anomaly of anomalies) {
         const period_seconds = anomaly.period_minutes * 60;
+
+        // 获取该币种的情绪数据
+        const sentiment = sentiment_map.get(anomaly.symbol);
+
         const record: Omit<OIAnomalyRecord, 'id' | 'created_at'> = {
           symbol: anomaly.symbol,
           period_seconds,
@@ -497,7 +525,12 @@ export class OIPollingService {
           price_before: anomaly.price_before,
           price_after: anomaly.price_after,
           price_change: anomaly.price_change,
-          price_change_percent: anomaly.price_change_percent
+          price_change_percent: anomaly.price_change_percent,
+          // 添加情绪数据
+          top_trader_long_short_ratio: sentiment?.top_trader_long_short_ratio,
+          top_account_long_short_ratio: sentiment?.top_account_long_short_ratio,
+          global_long_short_ratio: sentiment?.global_long_short_ratio,
+          taker_buy_sell_ratio: sentiment?.taker_buy_sell_ratio
         };
 
         // 插入数据库
@@ -513,7 +546,8 @@ export class OIPollingService {
         }
       }
 
-      logger.info(`[OIPolling] Saved ${anomalies.length} anomaly records`);
+      const with_sentiment = Array.from(sentiment_map.keys()).length;
+      logger.info(`[OIPolling] Saved ${anomalies.length} anomaly records (${with_sentiment} with sentiment data)`);
     } catch (error) {
       logger.error('[OIPolling] Failed to save anomalies:', error);
     }
