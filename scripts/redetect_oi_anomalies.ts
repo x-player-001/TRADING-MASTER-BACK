@@ -11,11 +11,16 @@
 import dotenv from 'dotenv';
 import { format } from 'date-fns';
 import { DatabaseConfig } from '../src/core/config/database';
+import { ConfigManager } from '../src/core/config/config_manager';
 import { OIRepository } from '../src/database/oi_repository';
 import { daily_table_manager } from '../src/database/daily_table_manager';
 import { logger, LogLevel } from '../src/utils/logger';
 
 dotenv.config();
+
+// 初始化配置管理器
+const config_manager = ConfigManager.getInstance();
+config_manager.initialize();
 
 // 检测配置（与oi_polling_service.ts保持一致）
 const DETECTION_CONFIG = {
