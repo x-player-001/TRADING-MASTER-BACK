@@ -238,6 +238,66 @@ export class OIRepository {
   }
 
   /**
+   * 获取指定币种在指定日期的OI曲线数据（用于前端绘图）
+   * @param symbol 币种符号（如：BTCUSDT）
+   * @param date 日期字符串（格式：YYYY-MM-DD）
+   * @returns 按时间排序的OI快照数组
+   */
+  async get_symbol_oi_curve(symbol: string, date: string): Promise<OpenInterestSnapshot[]> {
+    return this.execute_with_connection(async (conn) => {
+      // 获取日期表名
+      const table_name = daily_table_manager.get_table_name(date);
+
+      // 查询该币种当天的所有OI快照，按时间升序排列
+      const sql = `
+        SELECT
+          id,
+          symbol,
+          open_interest,
+          timestamp_ms,
+          snapshot_time,
+          data_source,
+          created_at
+        FROM ${table_name}
+        WHERE symbol = ?
+        ORDER BY timestamp_ms ASC
+      `;
+
+      try {
+        const [rows] = await conn.execute<RowDataPacket[]>(sql, [symbol]);
+        logger.debug(`[OIRepository] 查询到 ${rows.length} 条 ${symbol} 在 ${date} 的OI曲线数据`);
+        return rows as OpenInterestSnapshot[];
+      } catch (error: any) {
+        // 如果日期表不存在，尝试从原始表查询
+        if (error.code === 'ER_NO_SUCH_TABLE') {
+          logger.warn(`[OIRepository] 日期表 ${table_name} 不存在，尝试从原始表查询`);
+
+          const fallback_sql = `
+            SELECT
+              id,
+              symbol,
+              open_interest,
+              timestamp_ms,
+              snapshot_time,
+              data_source,
+              created_at
+            FROM open_interest_snapshots
+            WHERE symbol = ?
+              AND DATE(snapshot_time) = ?
+            ORDER BY timestamp_ms ASC
+          `;
+
+          const [fallback_rows] = await conn.execute<RowDataPacket[]>(fallback_sql, [symbol, date]);
+          logger.debug(`[OIRepository] 从原始表查询到 ${fallback_rows.length} 条数据`);
+          return fallback_rows as OpenInterestSnapshot[];
+        }
+
+        throw error;
+      }
+    });
+  }
+
+  /**
    * 查询OI快照数据
    */
   async get_snapshots(params: OISnapshotQueryParams): Promise<OpenInterestSnapshot[]> {

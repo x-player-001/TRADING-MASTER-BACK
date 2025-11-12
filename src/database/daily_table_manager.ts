@@ -72,6 +72,7 @@ export class DailyTableManager {
         open_interest DECIMAL(30,8) NOT NULL,
         timestamp_ms BIGINT NOT NULL,
         snapshot_time TIMESTAMP NOT NULL,
+        data_source VARCHAR(20) DEFAULT 'binance',
         created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
 
         UNIQUE KEY uk_symbol_timestamp (symbol, timestamp_ms),

@@ -53,6 +53,9 @@ export class OIRoutes {
     // 获取完整配置(聚合接口)
     this.router.get('/config/all', this.get_all_config.bind(this));
 
+    // OI曲线数据（前端绘图）
+    this.router.get('/curve', this.get_oi_curve.bind(this));
+
     // 更新配置
     this.router.put('/config/:key', this.update_config.bind(this));
 
@@ -295,6 +298,77 @@ export class OIRoutes {
       res.status(500).json({
         success: false,
         error: 'Failed to trigger manual poll',
+        message: error instanceof Error ? error.message : 'Unknown error'
+      });
+    }
+  }
+
+  /**
+   * 获取OI曲线数据（用于前端绘图）
+   * 查询参数：
+   *   - symbol: 币种符号（必填，如：BTCUSDT）
+   *   - date: 日期（必填，格式：YYYY-MM-DD）
+   */
+  private async get_oi_curve(req: Request, res: Response): Promise<void> {
+    try {
+      const { symbol, date } = req.query;
+
+      // 参数验证
+      if (!symbol || typeof symbol !== 'string') {
+        res.status(400).json({
+          success: false,
+          error: 'Missing or invalid parameter: symbol',
+          message: 'symbol is required and must be a string (e.g., BTCUSDT)'
+        });
+        return;
+      }
+
+      if (!date || typeof date !== 'string') {
+        res.status(400).json({
+          success: false,
+          error: 'Missing or invalid parameter: date',
+          message: 'date is required and must be in format YYYY-MM-DD (e.g., 2025-11-11)'
+        });
+        return;
+      }
+
+      // 验证日期格式
+      const date_regex = /^\d{4}-\d{2}-\d{2}$/;
+      if (!date_regex.test(date)) {
+        res.status(400).json({
+          success: false,
+          error: 'Invalid date format',
+          message: 'date must be in format YYYY-MM-DD (e.g., 2025-11-11)'
+        });
+        return;
+      }
+
+      // 查询OI曲线数据
+      const curve_data = await this.oi_repository.get_symbol_oi_curve(symbol, date);
+
+      // 格式化返回数据：移除USDT后缀，并转换为前端需要的格式
+      const formatted_data = curve_data.map(item => ({
+        timestamp: item.timestamp_ms,
+        snapshot_time: item.snapshot_time,
+        open_interest: parseFloat(item.open_interest.toString()),
+        data_source: item.data_source
+      }));
+
+      res.json({
+        success: true,
+        data: {
+          symbol: symbol.replace('USDT', ''),
+          date: date,
+          curve: formatted_data,
+          count: formatted_data.length
+        },
+        timestamp: new Date().toISOString()
+      });
+    } catch (error) {
+      console.error('[OIRoutes] Failed to get OI curve:', error);
+      res.status(500).json({
+        success: false,
+        error: 'Failed to get OI curve',
         message: error instanceof Error ? error.message : 'Unknown error'
       });
     }

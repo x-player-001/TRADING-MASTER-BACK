@@ -50,7 +50,7 @@ BEGIN
     DEALLOCATE PREPARE stmt;
 
     IF @table_exists = 0 THEN
-        -- 创建日期表
+        -- 创建日期表（包含data_source字段）
         SET @create_sql = CONCAT('
             CREATE TABLE ', table_name, ' (
                 id BIGINT PRIMARY KEY AUTO_INCREMENT,
