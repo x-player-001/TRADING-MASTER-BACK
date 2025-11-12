@@ -329,34 +329,123 @@ export class OIRepository {
 
   /**
    * 获取指定时间范围内的快照数据（用于异动检测）
+   * 支持日期分表查询，跨天时合并多个表的数据
    */
   async get_snapshots_for_anomaly_detection(symbol: string, since_timestamp: number): Promise<OpenInterestSnapshot[]> {
     return this.execute_with_connection(async (conn) => {
-      const sql = `
-        SELECT * FROM open_interest_snapshots
+      // 计算时间范围对应的日期
+      const since_date = new Date(since_timestamp);
+      const now_date = new Date();
+
+      // 获取需要查询的日期范围内的所有表
+      const tables: string[] = [];
+      const current_date = new Date(since_date);
+
+      while (current_date <= now_date) {
+        const table_name = daily_table_manager.get_table_name(current_date);
+        tables.push(table_name);
+        current_date.setDate(current_date.getDate() + 1);
+      }
+
+      // 如果只有一个表，直接查询
+      if (tables.length === 1) {
+        try {
+          const sql = `
+            SELECT * FROM ${tables[0]}
+            WHERE symbol = ? AND timestamp_ms >= ?
+            ORDER BY timestamp_ms ASC
+          `;
+          const [rows] = await conn.execute<RowDataPacket[]>(sql, [symbol, since_timestamp]);
+          return rows as OpenInterestSnapshot[];
+        } catch (error: any) {
+          // 如果表不存在，降级到原始表
+          if (error.code === 'ER_NO_SUCH_TABLE') {
+            logger.debug(`[OIRepository] Daily table ${tables[0]} not found, fallback to original table`);
+            const fallback_sql = `
+              SELECT * FROM open_interest_snapshots
+              WHERE symbol = ? AND timestamp_ms >= ?
+              ORDER BY timestamp_ms ASC
+            `;
+            const [fallback_rows] = await conn.execute<RowDataPacket[]>(fallback_sql, [symbol, since_timestamp]);
+            return fallback_rows as OpenInterestSnapshot[];
+          }
+          throw error;
+        }
+      }
+
+      // 跨天查询：使用 UNION ALL 合并多个表
+      const union_queries = tables.map(table => `
+        SELECT * FROM ${table}
         WHERE symbol = ? AND timestamp_ms >= ?
+      `).join(' UNION ALL ');
+
+      const final_sql = `
+        SELECT * FROM (${union_queries}) AS combined
         ORDER BY timestamp_ms ASC
       `;
 
-      const [rows] = await conn.execute<RowDataPacket[]>(sql, [symbol, since_timestamp]);
-      return rows as OpenInterestSnapshot[];
+      // 为每个UNION部分准备参数
+      const params: any[] = [];
+      tables.forEach(() => {
+        params.push(symbol, since_timestamp);
+      });
+
+      try {
+        const [rows] = await conn.execute<RowDataPacket[]>(final_sql, params);
+        return rows as OpenInterestSnapshot[];
+      } catch (error: any) {
+        // 如果任何表不存在，降级到原始表
+        if (error.code === 'ER_NO_SUCH_TABLE') {
+          logger.warn(`[OIRepository] Some daily tables not found, fallback to original table`);
+          const fallback_sql = `
+            SELECT * FROM open_interest_snapshots
+            WHERE symbol = ? AND timestamp_ms >= ?
+            ORDER BY timestamp_ms ASC
+          `;
+          const [fallback_rows] = await conn.execute<RowDataPacket[]>(fallback_sql, [symbol, since_timestamp]);
+          return fallback_rows as OpenInterestSnapshot[];
+        }
+        throw error;
+      }
     });
   }
 
   /**
    * 获取最新的OI快照
+   * 优先查询今天的日期表，失败则降级到原始表
    */
   async get_latest_snapshot(symbol: string): Promise<OpenInterestSnapshot | null> {
     return this.execute_with_connection(async (conn) => {
-      const sql = `
+      // 先尝试今天的日期表
+      const today_table = daily_table_manager.get_table_name(new Date());
+
+      try {
+        const sql = `
+          SELECT * FROM ${today_table}
+          WHERE symbol = ?
+          ORDER BY timestamp_ms DESC
+          LIMIT 1
+        `;
+        const [rows] = await conn.execute<RowDataPacket[]>(sql, [symbol]);
+        if (rows.length > 0) {
+          return rows[0] as OpenInterestSnapshot;
+        }
+      } catch (error: any) {
+        // 表不存在，继续降级
+        if (error.code !== 'ER_NO_SUCH_TABLE') {
+          throw error;
+        }
+      }
+
+      // 降级到原始表
+      const fallback_sql = `
         SELECT * FROM open_interest_snapshots
         WHERE symbol = ?
         ORDER BY timestamp_ms DESC
         LIMIT 1
       `;
-
-      const [rows] = await conn.execute<RowDataPacket[]>(sql, [symbol]);
-      return rows.length > 0 ? rows[0] as OpenInterestSnapshot : null;
+      const [fallback_rows] = await conn.execute<RowDataPacket[]>(fallback_sql, [symbol]);
+      return fallback_rows.length > 0 ? fallback_rows[0] as OpenInterestSnapshot : null;
     });
   }
 
