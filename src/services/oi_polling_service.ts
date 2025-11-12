@@ -3,7 +3,6 @@ import { OIRepository } from '../database/oi_repository';
 // DatabaseConfig no longer needed - using connection_pool through repository
 import { OICacheManager } from '../core/cache/oi_cache_manager';
 import { MarketSentimentManager } from './market_sentiment_manager';
-import { CacheManager } from '../core/cache/cache_manager';
 import { logger } from '../utils/logger';
 import {
   ContractSymbolConfig,
@@ -75,7 +74,7 @@ export class OIPollingService {
   /**
    * 初始化情绪数据管理器
    */
-  initialize_sentiment_manager(cache_manager?: CacheManager): void {
+  initialize_sentiment_manager(cache_manager?: OICacheManager): void {
     this.sentiment_manager = new MarketSentimentManager(this.binance_api, cache_manager);
     logger.info('[OIPolling] Market sentiment manager initialized');
   }

@@ -53,10 +53,8 @@ export class OIDataManager {
       this.oi_repository.set_cache_manager(this.oi_cache_manager);
       this.oi_polling_service.set_cache_manager(this.oi_cache_manager);
 
-      // 初始化情绪数据管理器
-      const cache_manager = new (await import('../cache/cache_manager')).CacheManager();
-      await cache_manager.initialize();
-      this.oi_polling_service.initialize_sentiment_manager(cache_manager);
+      // 初始化情绪数据管理器（复用OI的缓存管理器）
+      this.oi_polling_service.initialize_sentiment_manager(this.oi_cache_manager);
 
       // 测试数据库连接
       await this.test_database_connection();

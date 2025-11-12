@@ -4,17 +4,17 @@
  */
 
 import { BinanceFuturesAPI } from '../api/binance_futures_api';
-import { CacheManager } from '../core/cache/cache_manager';
+import { OICacheManager } from '../core/cache/oi_cache_manager';
 import { MarketSentimentData } from '../types/oi_types';
 import { logger } from '../utils/logger';
 
 export class MarketSentimentManager {
   private binance_api: BinanceFuturesAPI;
-  private cache_manager: CacheManager | null;
+  private cache_manager: OICacheManager | null;
   private readonly cache_ttl = 300; // 5分钟缓存
   private readonly cache_key_prefix = 'sentiment';
 
-  constructor(binance_api: BinanceFuturesAPI, cache_manager?: CacheManager) {
+  constructor(binance_api: BinanceFuturesAPI, cache_manager?: OICacheManager) {
     this.binance_api = binance_api;
     this.cache_manager = cache_manager || null;
   }
