@@ -52,7 +52,7 @@ export class OIPollingService {
   };
 
   // 去重阈值和严重程度配置(从数据库加载)
-  private dedup_threshold = 1;  // 默认1%
+  private dedup_threshold = 2;  // 默认2%
   private severity_thresholds = {
     high: 30,    // 默认30%
     medium: 15   // 默认15%
