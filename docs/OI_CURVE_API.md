@@ -32,13 +32,19 @@ GET /api/oi/curve
         "timestamp": 1731283200000,
         "snapshot_time": "2025-11-11T00:00:00.000Z",
         "open_interest": 123456.789,
-        "data_source": "binance"
+        "data_source": "binance",
+        "mark_price": 89234.56,
+        "funding_rate": 0.0001,
+        "next_funding_time": 1731312000000
       },
       {
         "timestamp": 1731283260000,
         "snapshot_time": "2025-11-11T00:01:00.000Z",
         "open_interest": 123500.123,
-        "data_source": "binance"
+        "data_source": "binance",
+        "mark_price": 89245.78,
+        "funding_rate": 0.0001,
+        "next_funding_time": 1731312000000
       }
       // ... 更多数据点
     ],
@@ -87,6 +93,9 @@ GET /api/oi/curve
 | snapshot_time | string | ISO格式时间字符串 |
 | open_interest | number | 持仓量数值 |
 | data_source | string | 数据来源（binance） |
+| mark_price | number \| null | 标记价格（可能为null） |
+| funding_rate | number \| null | 资金费率（可能为null） |
+| next_funding_time | number \| null | 下次资金费时间戳（毫秒，可能为null） |
 
 ## 🔍 使用示例
 

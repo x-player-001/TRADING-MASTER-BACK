@@ -265,6 +265,9 @@ export class OIRepository {
           timestamp_ms,
           snapshot_time,
           data_source,
+          mark_price,
+          funding_rate,
+          next_funding_time,
           created_at
         FROM ${table_name}
         WHERE symbol = ?
@@ -288,6 +291,9 @@ export class OIRepository {
               timestamp_ms,
               snapshot_time,
               data_source,
+              mark_price,
+              funding_rate,
+              next_funding_time,
               created_at
             FROM open_interest_snapshots
             WHERE symbol = ?

@@ -351,7 +351,10 @@ export class OIRoutes {
         timestamp: item.timestamp_ms,
         snapshot_time: item.snapshot_time,
         open_interest: parseFloat(item.open_interest.toString()),
-        data_source: item.data_source
+        data_source: item.data_source,
+        mark_price: item.mark_price ? parseFloat(item.mark_price.toString()) : null,
+        funding_rate: item.funding_rate ? parseFloat(item.funding_rate.toString()) : null,
+        next_funding_time: item.next_funding_time || null
       }));
 
       res.json({
