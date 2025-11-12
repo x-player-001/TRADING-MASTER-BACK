@@ -212,18 +212,26 @@ export class OIRepository {
         const table_name = daily_table_manager.get_table_name(date_key);
 
         const values = date_snapshots.map(s => [
-          s.symbol, s.open_interest, s.timestamp_ms, s.snapshot_time, s.data_source
+          s.symbol,
+          s.open_interest,
+          s.timestamp_ms,
+          s.snapshot_time,
+          s.data_source,
+          s.mark_price ?? null,
+          s.funding_rate ?? null,
+          s.next_funding_time ?? null
         ]);
 
-        const placeholders = date_snapshots.map(() => '(?, ?, ?, ?, ?)').join(',');
+        const placeholders = date_snapshots.map(() => '(?, ?, ?, ?, ?, ?, ?, ?)').join(',');
         const sql = `
           INSERT IGNORE INTO ${table_name}
-          (symbol, open_interest, timestamp_ms, snapshot_time, data_source)
+          (symbol, open_interest, timestamp_ms, snapshot_time, data_source,
+           mark_price, funding_rate, next_funding_time)
           VALUES ${placeholders}
         `;
 
         await conn.execute(sql, values.flat());
-        logger.debug(`[OIRepository] 保存 ${date_snapshots.length} 条快照数据到表: ${table_name}`);
+        logger.debug(`[OIRepository] 保存 ${date_snapshots.length} 条快照数据（含资金费率）到表: ${table_name}`);
       }
 
       // 更新缓存：最新OI数据

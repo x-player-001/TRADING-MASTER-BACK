@@ -73,6 +73,11 @@ export class DailyTableManager {
         timestamp_ms BIGINT NOT NULL,
         snapshot_time TIMESTAMP NOT NULL,
         data_source VARCHAR(20) DEFAULT 'binance',
+
+        mark_price DECIMAL(20,8) NULL COMMENT '标记价格',
+        funding_rate DECIMAL(10,8) NULL COMMENT '资金费率',
+        next_funding_time BIGINT NULL COMMENT '下次资金费时间',
+
         created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
 
         UNIQUE KEY uk_symbol_timestamp (symbol, timestamp_ms),

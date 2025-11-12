@@ -24,6 +24,12 @@ export interface OpenInterestSnapshot {
   timestamp_ms: number;
   snapshot_time: Date;
   data_source: string;
+
+  // 资金费率相关字段（可选，向后兼容）
+  mark_price?: number;          // 标记价格
+  funding_rate?: number;        // 资金费率
+  next_funding_time?: number;   // 下次资金费时间（毫秒时间戳）
+
   created_at?: Date;
 }
 
@@ -71,6 +77,18 @@ export interface BinanceExchangeInfoSymbol {
 
 export interface BinanceExchangeInfoResponse {
   symbols: BinanceExchangeInfoSymbol[];
+}
+
+// 币安标记价格和资金费率API响应
+export interface BinancePremiumIndexResponse {
+  symbol: string;                // "BTCUSDT"
+  markPrice: string;             // "89234.56" 标记价格
+  indexPrice: string;            // "89123.45" 指数价格
+  estimatedSettlePrice: string;  // "89100.00" 预估结算价
+  lastFundingRate: string;       // "0.00010000" 最近更新的资金费率
+  interestRate: string;          // "0.00010000" 标的资产基础利率
+  nextFundingTime: number;       // 1597392000000 下次资金费时间
+  time: number;                  // 1597370495002 更新时间
 }
 
 // OI数据轮询结果

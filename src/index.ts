@@ -63,7 +63,8 @@ class TradingMasterApp {
       await this.top_symbols_manager.initialize();
       // 暂时跳过WebSocket相关组件
       // await this.stream_dispatcher.initialize();
-      await this.multi_symbol_manager.initialize();
+      // 注释掉WebSocket订阅 - 停止实时数据订阅
+      // await this.multi_symbol_manager.initialize();
       await this.historical_data_manager.initialize();
 
       // 初始化OI数据管理器
@@ -111,8 +112,9 @@ class TradingMasterApp {
         logger.info('✅ OI monitoring stopped');
 
         // 4. 停止多币种管理器（会更新Redis订阅状态）
-        await this.multi_symbol_manager.stop();
-        logger.info('✅ Multi-symbol manager stopped');
+        // 注释掉WebSocket订阅停止操作
+        // await this.multi_symbol_manager.stop();
+        // logger.info('✅ Multi-symbol manager stopped');
 
         // 5. 清理缓存
         await this.historical_data_manager.cleanup_expired_cache();

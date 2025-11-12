@@ -32,7 +32,7 @@ export class OIPollingService {
   // 默认配置
   private config: OIMonitoringSystemConfig = {
     polling_interval_ms: 60000,        // 1分钟
-    max_concurrent_requests: 50,
+    max_concurrent_requests: 40,       // 优化：从50降低到40，约13秒完成530个请求
     max_monitored_symbols: 300,        // 默认监控300个币种
     thresholds: {
       60: 3,     // 1分钟: 3%
@@ -240,16 +240,19 @@ export class OIPollingService {
         return;
       }
 
-      // 2. 保存快照数据
-      await this.save_snapshots(oi_results, current_time.time_string);
+      // 2. 批量获取资金费率数据（权重10）
+      const premium_data = await this.binance_api.get_all_premium_index();
 
-      // 3. 检测异动
+      // 3. 保存快照数据（合并资金费率）
+      await this.save_snapshots_with_premium(oi_results, premium_data, current_time.time_string);
+
+      // 4. 检测异动
       const anomalies = await this.detect_anomalies(oi_results, current_time.time_string);
 
-      // 4. 保存异动记录
+      // 5. 保存异动记录
       await this.save_anomalies(anomalies);
 
-      // 5. ✅ 缓存预热：主动查询统计数据并缓存
+      // 6. ✅ 缓存预热：主动查询统计数据并缓存
       await this.preheat_statistics_cache();
 
       const duration = Date.now() - start_time;
@@ -268,7 +271,46 @@ export class OIPollingService {
   }
 
   /**
-   * 保存OI快照数据
+   * 保存OI快照数据（合并资金费率数据）
+   */
+  private async save_snapshots_with_premium(
+    oi_results: OIPollingResult[],
+    premium_data: any[],
+    timestamp_string: string
+  ): Promise<void> {
+    try {
+      // 构建Map用于快速查找资金费率数据
+      const premium_map = new Map(
+        premium_data.map(p => [p.symbol, p])
+      );
+
+      const snapshots: Omit<OpenInterestSnapshot, 'id' | 'created_at'>[] = oi_results.map(result => {
+        const premium = premium_map.get(result.symbol);
+
+        return {
+          symbol: result.symbol,
+          open_interest: result.open_interest,
+          timestamp_ms: result.timestamp_ms,
+          snapshot_time: new Date(result.timestamp_ms),
+          data_source: 'binance_api',
+
+          // 新增资金费率字段
+          mark_price: premium ? parseFloat(premium.markPrice) : undefined,
+          funding_rate: premium ? parseFloat(premium.lastFundingRate) : undefined,
+          next_funding_time: premium?.nextFundingTime
+        };
+      });
+
+      await this.oi_repository.batch_save_snapshots(snapshots);
+      logger.debug(`[OIPolling] Saved ${snapshots.length} snapshots with funding rates`);
+    } catch (error) {
+      logger.error('[OIPolling] Failed to save snapshots with premium:', error);
+    }
+  }
+
+  /**
+   * 保存OI快照数据（旧方法，保留兼容性）
+   * @deprecated 使用 save_snapshots_with_premium 替代
    */
   private async save_snapshots(oi_results: OIPollingResult[], timestamp_string: string): Promise<void> {
     try {

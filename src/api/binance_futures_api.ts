@@ -4,6 +4,7 @@ import {
   BinanceOpenInterestResponse,
   BinanceExchangeInfoResponse,
   BinanceExchangeInfoSymbol,
+  BinancePremiumIndexResponse,
   ContractSymbolConfig,
   OIPollingResult
 } from '../types/oi_types';
@@ -129,16 +130,23 @@ export class BinanceFuturesAPI {
   async get_batch_open_interest(symbols: string[]): Promise<OIPollingResult[]> {
     try {
       const start_time = Date.now();
+      let last_used_weight: string | undefined;
 
       // 使用rate_limiter限制并发请求
       const tasks = symbols.map(symbol =>
         this.rate_limiter(async () => {
           try {
-            const response = await this.get_open_interest(symbol);
+            const response = await this.api_client.get<BinanceOpenInterestResponse>('/fapi/v1/openInterest', {
+              params: { symbol }
+            });
+
+            // 获取响应头中的权重信息
+            last_used_weight = response.headers?.['x-mbx-used-weight-1m'];
+
             return {
-              symbol: response.symbol,
-              open_interest: parseFloat(response.openInterest),
-              timestamp_ms: response.time || Date.now()
+              symbol: response.data.symbol,
+              open_interest: parseFloat(response.data.openInterest),
+              timestamp_ms: response.data.time || Date.now()
             };
           } catch (error: any) {
             console.error(`[BinanceAPI] Failed to fetch OI for ${symbol}:`, error.message);
@@ -154,6 +162,9 @@ export class BinanceFuturesAPI {
       const valid_results = results.filter(result => result !== null) as OIPollingResult[];
 
       const duration = Date.now() - start_time;
+
+      console.log(`[BinanceAPI] Batch OI - 请求 ${symbols.length} 个币种, 成功 ${valid_results.length} 个, 耗时 ${duration}ms`);
+      console.log(`[BinanceAPI] API权重使用: ${last_used_weight || 'N/A'}/2400 (1分钟)`);
 
       return valid_results;
 
@@ -174,6 +185,44 @@ export class BinanceFuturesAPI {
     } catch (error: any) {
       console.error('[BinanceAPI] Failed to get 24hr ticker:', error.message);
       throw new Error(`Failed to fetch 24hr ticker: ${error.message}`);
+    }
+  }
+
+  /**
+   * 批量获取所有币种的标记价格和资金费率
+   * 权重: 10 (不带symbol参数，返回所有币种)
+   */
+  async get_all_premium_index(): Promise<BinancePremiumIndexResponse[]> {
+    try {
+      const response = await this.api_client.get<BinancePremiumIndexResponse[]>('/fapi/v1/premiumIndex');
+
+      // 打印响应头中的权重信息
+      const usedWeight = response.headers['x-mbx-used-weight-1m'];
+      const orderCount = response.headers['x-mbx-order-count-1m'];
+
+      console.log(`[BinanceAPI] Premium Index - 返回 ${response.data.length} 个交易对`);
+      console.log(`[BinanceAPI] API权重使用: ${usedWeight || 'N/A'}/2400 (1分钟), 订单数: ${orderCount || 'N/A'}`);
+
+      return response.data;
+    } catch (error: any) {
+      console.error('[BinanceAPI] Failed to get premium index:', error.message);
+      throw new Error(`Failed to fetch premium index: ${error.message}`);
+    }
+  }
+
+  /**
+   * 获取单个币种的标记价格和资金费率
+   * 权重: 1 (带symbol参数)
+   */
+  async get_premium_index(symbol: string): Promise<BinancePremiumIndexResponse> {
+    try {
+      const response = await this.api_client.get<BinancePremiumIndexResponse>('/fapi/v1/premiumIndex', {
+        params: { symbol }
+      });
+      return response.data;
+    } catch (error: any) {
+      console.error(`[BinanceAPI] Failed to get premium index for ${symbol}:`, error.message);
+      throw new Error(`Failed to fetch premium index for ${symbol}: ${error.message}`);
     }
   }
 
