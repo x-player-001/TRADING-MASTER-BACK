@@ -13,7 +13,8 @@
     "lint": "eslint src/**/*.ts",
     "typecheck": "tsc --noEmit",
     "db:setup": "node -e \"console.log('请先安装并启动 MySQL 和 Redis 服务')\"",
-    "setup": "npm install && npm run build"
+    "setup": "npm install && npm run build",
+    "redetect-oi": "ts-node -r tsconfig-paths/register scripts/redetect_oi_anomalies.ts"
   },
   "keywords": [
     "crypto",
