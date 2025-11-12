@@ -212,7 +212,17 @@ export class OIRoutes {
         oi_change: anomaly.oi_change,
         severity: anomaly.severity,
         anomaly_time: anomaly.anomaly_time,
-        threshold_value: anomaly.threshold_value
+        threshold_value: anomaly.threshold_value,
+        // 价格变化字段
+        price_before: anomaly.price_before,
+        price_after: anomaly.price_after,
+        price_change: anomaly.price_change,
+        price_change_percent: anomaly.price_change_percent,
+        // 市场情绪字段
+        top_trader_long_short_ratio: anomaly.top_trader_long_short_ratio,
+        top_account_long_short_ratio: anomaly.top_account_long_short_ratio,
+        global_long_short_ratio: anomaly.global_long_short_ratio,
+        taker_buy_sell_ratio: anomaly.taker_buy_sell_ratio
       }));
 
       res.json({
