@@ -499,9 +499,11 @@ export class OIRepository {
       const sql = `
         INSERT INTO oi_anomaly_records
         (symbol, period_seconds, percent_change, oi_before, oi_after, oi_change,
-         threshold_value, anomaly_time, severity, price_before, price_after, price_change, price_change_percent,
+         threshold_value, anomaly_time, severity, anomaly_type,
+         price_before, price_after, price_change, price_change_percent,
+         funding_rate_before, funding_rate_after, funding_rate_change, funding_rate_change_percent,
          top_trader_long_short_ratio, top_account_long_short_ratio, global_long_short_ratio, taker_buy_sell_ratio)
-        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
       `;
 
       const [result] = await conn.execute<ResultSetHeader>(sql, [
@@ -514,10 +516,15 @@ export class OIRepository {
         anomaly.threshold_value,
         anomaly.anomaly_time,
         anomaly.severity,
+        anomaly.anomaly_type ?? 'oi',
         anomaly.price_before ?? null,
         anomaly.price_after ?? null,
         anomaly.price_change ?? null,
         anomaly.price_change_percent ?? null,
+        anomaly.funding_rate_before ?? null,
+        anomaly.funding_rate_after ?? null,
+        anomaly.funding_rate_change ?? null,
+        anomaly.funding_rate_change_percent ?? null,
         anomaly.top_trader_long_short_ratio ?? null,
         anomaly.top_account_long_short_ratio ?? null,
         anomaly.global_long_short_ratio ?? null,
