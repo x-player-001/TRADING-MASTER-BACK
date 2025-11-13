@@ -395,12 +395,11 @@ export class OIPollingService {
             price_change_percent = (price_change / price_before) * 100;
           }
 
-          // 计算资金费率变化
+          // 计算资金费率变化（仅记录数据，不作为异动判断条件）
           let funding_rate_before: number | undefined;
           let funding_rate_after: number | undefined;
           let funding_rate_change: number | undefined;
           let funding_rate_change_percent: number | undefined;
-          let has_funding_rate_anomaly = false;
 
           const current_funding_rate = premium_data.find(p => p.symbol === result.symbol);
           if (closest_snapshot.funding_rate !== undefined && current_funding_rate) {
@@ -414,20 +413,10 @@ export class OIPollingService {
             } else if (funding_rate_after !== 0) {
               funding_rate_change_percent = 100; // 从0变化到非0，视为100%变化
             }
-
-            // 资金费率异动判断：
-            // 1. 绝对值超过0.1% (过热)
-            // 2. 或者变化幅度超过50%
-            if (Math.abs(funding_rate_after) >= 0.001 ||
-                (funding_rate_change_percent && Math.abs(funding_rate_change_percent) >= 50)) {
-              has_funding_rate_anomaly = true;
-            }
           }
 
-          // 检查是否有OI异动或资金费率异动
-          const has_oi_anomaly = Math.abs(percent_change) >= threshold;
-
-          if (has_oi_anomaly || has_funding_rate_anomaly) {
+          // 检查是否超过OI阈值
+          if (Math.abs(percent_change) >= threshold) {
             // 缓存优先的去重检测
             let should_insert = true;
 
@@ -463,14 +452,6 @@ export class OIPollingService {
             if (should_insert) {
               const severity = this.calculate_severity(percent_change);
 
-              // 确定异动类型
-              let anomaly_type: 'oi' | 'funding_rate' | 'both' = 'oi';
-              if (has_oi_anomaly && has_funding_rate_anomaly) {
-                anomaly_type = 'both';
-              } else if (has_funding_rate_anomaly) {
-                anomaly_type = 'funding_rate';
-              }
-
               anomalies.push({
                 symbol: result.symbol,
                 period_minutes,
@@ -479,7 +460,7 @@ export class OIPollingService {
                 oi_after,
                 threshold,
                 severity,
-                anomaly_type,
+                anomaly_type: 'oi', // 仅基于OI判断异动，资金费率只是附加数据
                 price_before,
                 price_after,
                 price_change,
