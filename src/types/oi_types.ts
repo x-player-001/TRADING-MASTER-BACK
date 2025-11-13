@@ -45,6 +45,7 @@ export interface OIAnomalyRecord {
   threshold_value: number;
   anomaly_time: Date;
   severity: 'low' | 'medium' | 'high';
+  anomaly_type: 'oi' | 'funding_rate' | 'both';  // 异动类型
   created_at?: Date;
 
   // 价格变化相关字段
@@ -52,6 +53,12 @@ export interface OIAnomalyRecord {
   price_after?: number;
   price_change?: number;
   price_change_percent?: number;
+
+  // 资金费率变化相关字段
+  funding_rate_before?: number;
+  funding_rate_after?: number;
+  funding_rate_change?: number;
+  funding_rate_change_percent?: number;
 
   // 市场情绪相关字段
   top_trader_long_short_ratio?: number;    // 大户持仓量多空比
@@ -166,12 +173,19 @@ export interface OIAnomalyDetectionResult {
   oi_after: number;
   threshold: number;
   severity: 'low' | 'medium' | 'high';
+  anomaly_type: 'oi' | 'funding_rate' | 'both';  // 异动类型
 
   // 价格变化相关字段
   price_before?: number;           // 变化前价格
   price_after?: number;            // 变化后价格
   price_change?: number;           // 价格绝对变化量
   price_change_percent?: number;   // 价格变化百分比
+
+  // 资金费率变化相关字段
+  funding_rate_before?: number;
+  funding_rate_after?: number;
+  funding_rate_change?: number;
+  funding_rate_change_percent?: number;
 }
 
 // 阈值配置
