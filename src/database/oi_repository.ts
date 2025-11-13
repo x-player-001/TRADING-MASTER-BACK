@@ -349,16 +349,20 @@ export class OIRepository {
    */
   async get_snapshots_for_anomaly_detection(symbol: string, since_timestamp: number): Promise<OpenInterestSnapshot[]> {
     return this.execute_with_connection(async (conn) => {
-      // 计算时间范围对应的日期
-      const since_date = new Date(since_timestamp);
-      const now_date = new Date();
+      // 将UTC时间转换为北京时间（UTC+8）后计算日期范围
+      const since_date_utc = new Date(since_timestamp);
+      const since_date_beijing = new Date(since_date_utc.getTime() + 8 * 60 * 60 * 1000);
 
-      // 获取需要查询的日期范围内的所有表
+      const now_date_utc = new Date();
+      const now_date_beijing = new Date(now_date_utc.getTime() + 8 * 60 * 60 * 1000);
+
+      // 获取需要查询的日期范围内的所有表（基于北京时间）
       const tables: string[] = [];
-      const current_date = new Date(since_date);
+      const current_date = new Date(since_date_beijing);
 
-      while (current_date <= now_date) {
-        const table_name = daily_table_manager.get_table_name(current_date);
+      while (current_date <= now_date_beijing) {
+        const date_key = current_date.toISOString().split('T')[0]; // YYYY-MM-DD (北京时间)
+        const table_name = daily_table_manager.get_table_name(date_key);
         tables.push(table_name);
         current_date.setDate(current_date.getDate() + 1);
       }
@@ -432,8 +436,11 @@ export class OIRepository {
    */
   async get_latest_snapshot(symbol: string): Promise<OpenInterestSnapshot | null> {
     return this.execute_with_connection(async (conn) => {
-      // 先尝试今天的日期表
-      const today_table = daily_table_manager.get_table_name(new Date());
+      // 先尝试今天的日期表（转换为北京时间）
+      const now_utc = new Date();
+      const now_beijing = new Date(now_utc.getTime() + 8 * 60 * 60 * 1000);
+      const today_date_key = now_beijing.toISOString().split('T')[0]; // YYYY-MM-DD (北京时间)
+      const today_table = daily_table_manager.get_table_name(today_date_key);
 
       try {
         const sql = `
