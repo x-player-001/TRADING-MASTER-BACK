@@ -253,11 +253,14 @@ export class OIPollingService {
       // 2. 批量获取资金费率数据（权重10）
       const premium_data = await this.binance_api.get_all_premium_index();
 
+      // 2.1. 构建premium数据Map（避免重复遍历）
+      const premium_map = new Map(premium_data.map(p => [p.symbol, p]));
+
       // 3. 保存快照数据（合并资金费率）
-      await this.save_snapshots_with_premium(oi_results, premium_data, current_time.time_string);
+      await this.save_snapshots_with_premium(oi_results, premium_map, current_time.time_string);
 
       // 4. 检测异动（传入资金费率数据用于价格变化计算）
-      const anomalies = await this.detect_anomalies(oi_results, premium_data, current_time.time_string);
+      const anomalies = await this.detect_anomalies(oi_results, premium_map, current_time.time_string);
 
       // 5. 保存异动记录
       await this.save_anomalies(anomalies);
@@ -288,15 +291,10 @@ export class OIPollingService {
    */
   private async save_snapshots_with_premium(
     oi_results: OIPollingResult[],
-    premium_data: any[],
+    premium_map: Map<string, any>,
     timestamp_string: string
   ): Promise<void> {
     try {
-      // 构建Map用于快速查找资金费率数据
-      const premium_map = new Map(
-        premium_data.map(p => [p.symbol, p])
-      );
-
       const snapshots: Omit<OpenInterestSnapshot, 'id' | 'created_at'>[] = oi_results.map(result => {
         const premium = premium_map.get(result.symbol);
 
@@ -346,19 +344,16 @@ export class OIPollingService {
    */
   private async detect_anomalies(
     oi_results: OIPollingResult[],
-    premium_data: any[],
+    premium_map: Map<string, any>,
     timestamp_string: string
   ): Promise<OIAnomalyDetectionResult[]> {
     const anomalies: OIAnomalyDetectionResult[] = [];
 
-    // 构建价格和资金费率Map用于快速查找
-    const price_map = new Map(premium_data.map(p => [p.symbol, parseFloat(p.markPrice)]));
-    const funding_rate_map = new Map(premium_data.map(p => [p.symbol, p]));
-
     for (const result of oi_results) {
       try {
-        // 获取当前价格
-        const current_price = price_map.get(result.symbol);
+        // 从premium_map获取当前币种的premium数据
+        const premium = premium_map.get(result.symbol);
+        const current_price = premium ? parseFloat(premium.markPrice) : undefined;
 
         // 检测每个时间周期的异动
         for (const [period_seconds_str, threshold] of Object.entries(this.config.thresholds)) {
@@ -404,12 +399,12 @@ export class OIPollingService {
           let funding_rate_change: number | undefined;
           let funding_rate_change_percent: number | undefined;
 
-          const current_funding_rate = funding_rate_map.get(result.symbol);
-          if (closest_snapshot.funding_rate !== undefined && current_funding_rate && current_funding_rate.lastFundingRate !== undefined) {
+          // 使用已获取的premium数据
+          if (closest_snapshot.funding_rate !== undefined && premium && premium.lastFundingRate !== undefined) {
             funding_rate_before = typeof closest_snapshot.funding_rate === 'string'
               ? parseFloat(closest_snapshot.funding_rate)
               : closest_snapshot.funding_rate;
-            funding_rate_after = parseFloat(current_funding_rate.lastFundingRate);
+            funding_rate_after = parseFloat(premium.lastFundingRate);
             funding_rate_change = funding_rate_after - funding_rate_before;
 
             // 计算资金费率变化百分比（避免除以0）
@@ -423,7 +418,7 @@ export class OIPollingService {
             if (closest_snapshot.funding_rate === undefined) {
               logger.debug(`[OIPolling] ${result.symbol}: Historical snapshot missing funding_rate`);
             }
-            if (!current_funding_rate?.lastFundingRate) {
+            if (!premium?.lastFundingRate) {
               logger.debug(`[OIPolling] ${result.symbol}: Current premium data missing lastFundingRate`);
             }
           }
