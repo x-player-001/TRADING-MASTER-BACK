@@ -413,19 +413,6 @@ export class OIPollingService {
             } else if (funding_rate_after !== 0) {
               funding_rate_change_percent = 100; // 从0变化到非0，视为100%变化
             }
-
-            // 调试日志：记录成功计算资金费率
-            logger.debug(`[OIPolling] ${result.symbol} [${period_minutes}m]: funding_rate_before=${funding_rate_before}, after=${funding_rate_after}, change=${funding_rate_change_percent?.toFixed(2)}%`);
-          } else {
-            // 调试日志：记录为什么资金费率数据缺失
-            if (closest_snapshot.funding_rate === undefined) {
-              logger.warn(`[OIPolling] ${result.symbol} [${period_minutes}m]: Historical snapshot funding_rate is undefined (typeof=${typeof closest_snapshot.funding_rate})`);
-            }
-            if (!premium) {
-              logger.warn(`[OIPolling] ${result.symbol} [${period_minutes}m]: Premium data not found in premium_map`);
-            } else if (premium.lastFundingRate === undefined) {
-              logger.warn(`[OIPolling] ${result.symbol} [${period_minutes}m]: Premium lastFundingRate is undefined (typeof=${typeof premium.lastFundingRate})`);
-            }
           }
 
           // 检查是否超过OI阈值
