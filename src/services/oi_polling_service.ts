@@ -430,6 +430,9 @@ export class OIPollingService {
 
           // 检查是否超过OI阈值
           if (Math.abs(percent_change) >= threshold) {
+            // 🔍 调试日志：异动触发时检查资金费率变量状态
+            logger.debug(`[OIPolling] ${result.symbol} [${period_minutes}m] ANOMALY TRIGGERED - funding_rate_before=${funding_rate_before}, after=${funding_rate_after}, change=${funding_rate_change}, percent=${funding_rate_change_percent}`);
+
             // 缓存优先的去重检测
             let should_insert = true;
 
@@ -464,6 +467,9 @@ export class OIPollingService {
 
             if (should_insert) {
               const severity = this.calculate_severity(percent_change);
+
+              // 🔍 调试日志：确认即将保存的资金费率数据
+              logger.debug(`[OIPolling] ${result.symbol} [${period_minutes}m] BEFORE PUSH - funding_rate_before=${funding_rate_before}, after=${funding_rate_after}, change=${funding_rate_change}, percent=${funding_rate_change_percent}`);
 
               anomalies.push({
                 symbol: result.symbol,
