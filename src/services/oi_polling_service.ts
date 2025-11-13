@@ -351,8 +351,9 @@ export class OIPollingService {
   ): Promise<OIAnomalyDetectionResult[]> {
     const anomalies: OIAnomalyDetectionResult[] = [];
 
-    // 构建价格Map用于快速查找
+    // 构建价格和资金费率Map用于快速查找
     const price_map = new Map(premium_data.map(p => [p.symbol, parseFloat(p.markPrice)]));
+    const funding_rate_map = new Map(premium_data.map(p => [p.symbol, p]));
 
     for (const result of oi_results) {
       try {
@@ -401,8 +402,8 @@ export class OIPollingService {
           let funding_rate_change: number | undefined;
           let funding_rate_change_percent: number | undefined;
 
-          const current_funding_rate = premium_data.find(p => p.symbol === result.symbol);
-          if (closest_snapshot.funding_rate !== undefined && current_funding_rate) {
+          const current_funding_rate = funding_rate_map.get(result.symbol);
+          if (closest_snapshot.funding_rate !== undefined && current_funding_rate && current_funding_rate.lastFundingRate !== undefined) {
             funding_rate_before = closest_snapshot.funding_rate;
             funding_rate_after = parseFloat(current_funding_rate.lastFundingRate);
             funding_rate_change = funding_rate_after - funding_rate_before;
@@ -412,6 +413,14 @@ export class OIPollingService {
               funding_rate_change_percent = (funding_rate_change / Math.abs(funding_rate_before)) * 100;
             } else if (funding_rate_after !== 0) {
               funding_rate_change_percent = 100; // 从0变化到非0，视为100%变化
+            }
+          } else {
+            // 调试日志：记录为什么资金费率数据缺失
+            if (closest_snapshot.funding_rate === undefined) {
+              logger.debug(`[OIPolling] ${result.symbol}: Historical snapshot missing funding_rate`);
+            }
+            if (!current_funding_rate?.lastFundingRate) {
+              logger.debug(`[OIPolling] ${result.symbol}: Current premium data missing lastFundingRate`);
             }
           }
 
