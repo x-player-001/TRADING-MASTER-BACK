@@ -211,6 +211,7 @@ export class OIRoutes {
         oi_after: anomaly.oi_after,
         oi_change: anomaly.oi_change,
         severity: anomaly.severity,
+        anomaly_type: anomaly.anomaly_type,
         anomaly_time: anomaly.anomaly_time,
         threshold_value: anomaly.threshold_value,
         // 价格变化字段
@@ -218,6 +219,11 @@ export class OIRoutes {
         price_after: anomaly.price_after,
         price_change: anomaly.price_change,
         price_change_percent: anomaly.price_change_percent,
+        // 资金费率变化字段
+        funding_rate_before: anomaly.funding_rate_before,
+        funding_rate_after: anomaly.funding_rate_after,
+        funding_rate_change: anomaly.funding_rate_change,
+        funding_rate_change_percent: anomaly.funding_rate_change_percent,
         // 市场情绪字段
         top_trader_long_short_ratio: anomaly.top_trader_long_short_ratio,
         top_account_long_short_ratio: anomaly.top_account_long_short_ratio,
