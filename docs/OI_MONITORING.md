@@ -270,6 +270,29 @@ Query参数:
 - **降级策略**: 日期表不存在时，降级到原始表
 - **性能**: 单表查询 < 100ms
 
+### 6. 数据类型处理 ⚠️ **重要**
+- **MySQL Decimal → Node.js String**:
+  - MySQL的decimal字段返回到Node.js是**string类型**，不是number
+  - `mark_price` 和 `funding_rate` 从数据库读取时都是string
+  - 必须使用 `parseFloat()` 转换后才能进行数值运算
+  - 否则会导致 `number - string = NaN`，保存到数据库变成NULL
+
+  ```typescript
+  // ❌ 错误写法
+  const change = current_value - snapshot.funding_rate;  // NaN
+
+  // ✅ 正确写法
+  const rate = typeof snapshot.funding_rate === 'string'
+    ? parseFloat(snapshot.funding_rate)
+    : snapshot.funding_rate;
+  const change = current_value - rate;  // 正确计算
+  ```
+
+### 7. 性能优化
+- **premium数据Map化**: 统一构建一次Map，避免多次遍历（~530个币种）
+- **Redis缓存优先**: 异动去重检测优先查Redis，减少数据库查询
+- **批量API请求**: 使用币安批量接口，减少API调用次数
+
 ---
 
 ## 🔍 故障排查
@@ -335,16 +358,29 @@ Query参数:
 
 ## 📝 更新日志
 
+### v1.2.1 (2025-11-13 晚)
+- 🐛 **修复资金费率数据无法记录的Bug**
+  - 问题：异动记录表中资金费率字段全部为NULL
+  - 根因：MySQL返回的decimal字段是string类型，直接运算导致NaN
+  - 修复：添加类型检查和parseFloat()转换
+- 🚀 **性能优化：消除重复遍历**
+  - 优化前：premium_data被遍历3次（save_snapshots + detect_anomalies构建2个Map）
+  - 优化后：统一在poll()中构建1次Map，传递给子函数使用
+  - 性能提升：减少2次数组遍历（~530个币种）
+- ✨ **API完善**
+  - 修复 `/api/oi/recent-anomalies` 接口缺失资金费率字段
+  - 现在返回完整的anomaly_type和4个资金费率字段
+
 ### v1.2.0 (2025-11-13)
-- ✨ 新增资金费率数据记录
-- ✨ 取消非交易时段降频，全天1分钟采集
-- 🐛 修复跨表查询时区问题
+- ✨ 新增资金费率数据记录（作为附加数据，不作为异动判断条件）
+- ✨ 取消非交易时段降频，全天24小时按1分钟采集
+- 🐛 修复跨表查询时区问题（UTC转北京时间）
 - 🐛 修复北京时间分表逻辑
 
 ### v1.1.0 (2025-11-12)
 - ✨ 实现日期分表存储（按北京时间）
-- ✨ 添加市场情绪数据收集
-- 🔧 优化异动去重机制
+- ✨ 添加市场情绪数据收集（大户多空比等）
+- 🔧 优化异动去重机制（Redis缓存优先）
 
 ### v1.0.0 (2025-09-28)
 - 🎉 初始版本发布
@@ -353,5 +389,21 @@ Query参数:
 
 ---
 
+## 🔧 已知问题和解决方案
+
+### 问题1: 资金费率字段为NULL
+**现象**: 早期的异动记录中资金费率字段为NULL
+
+**原因**:
+1. 数据库返回的decimal类型在Node.js中是string
+2. 代码未进行类型转换直接进行数值运算
+3. 导致 `number - string = NaN`，保存到数据库变成NULL
+
+**解决**: 已在v1.2.1中修复，新的异动记录会包含完整资金费率数据
+
+**影响范围**: 2025-11-13 早期的异动记录
+
+---
+
 **维护人员**: Trading Master Team
-**最后更新**: 2025-11-13
+**最后更新**: 2025-11-13 晚
