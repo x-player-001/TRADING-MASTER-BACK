@@ -390,7 +390,9 @@ export class OIPollingService {
           let price_change_percent: number | undefined;
 
           if (closest_snapshot.mark_price && current_price) {
-            price_before = closest_snapshot.mark_price;
+            price_before = typeof closest_snapshot.mark_price === 'string'
+              ? parseFloat(closest_snapshot.mark_price)
+              : closest_snapshot.mark_price;
             price_after = current_price;
             price_change = price_after - price_before;
             price_change_percent = (price_change / price_before) * 100;
@@ -404,7 +406,9 @@ export class OIPollingService {
 
           const current_funding_rate = funding_rate_map.get(result.symbol);
           if (closest_snapshot.funding_rate !== undefined && current_funding_rate && current_funding_rate.lastFundingRate !== undefined) {
-            funding_rate_before = closest_snapshot.funding_rate;
+            funding_rate_before = typeof closest_snapshot.funding_rate === 'string'
+              ? parseFloat(closest_snapshot.funding_rate)
+              : closest_snapshot.funding_rate;
             funding_rate_after = parseFloat(current_funding_rate.lastFundingRate);
             funding_rate_change = funding_rate_after - funding_rate_before;
 
