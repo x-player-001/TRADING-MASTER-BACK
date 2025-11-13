@@ -454,4 +454,33 @@ export class OICacheManager {
       return false;
     }
   }
+
+  /**
+   * 通用get方法（用于其他模块如MarketSentimentManager）
+   */
+  async get(key: string): Promise<string | null> {
+    try {
+      const redis = await this.get_redis();
+      return await redis.get(key);
+    } catch (error) {
+      console.error(`[OICache] Failed to get key ${key}:`, error);
+      return null;
+    }
+  }
+
+  /**
+   * 通用set方法（用于其他模块如MarketSentimentManager）
+   */
+  async set(key: string, value: string, ttl_seconds?: number): Promise<void> {
+    try {
+      const redis = await this.get_redis();
+      if (ttl_seconds) {
+        await redis.setEx(key, ttl_seconds, value);
+      } else {
+        await redis.set(key, value);
+      }
+    } catch (error) {
+      console.error(`[OICache] Failed to set key ${key}:`, error);
+    }
+  }
 }
