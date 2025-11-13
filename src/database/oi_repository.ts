@@ -194,8 +194,10 @@ export class OIRepository {
       const snapshots_by_date = new Map<string, typeof snapshots>();
 
       for (const snapshot of snapshots) {
+        // 将UTC时间转换为北京时间（UTC+8）后提取日期
         const snapshot_date = new Date(snapshot.snapshot_time);
-        const date_key = snapshot_date.toISOString().split('T')[0]; // YYYY-MM-DD
+        const beijing_time = new Date(snapshot_date.getTime() + 8 * 60 * 60 * 1000);
+        const date_key = beijing_time.toISOString().split('T')[0]; // YYYY-MM-DD (北京时间)
 
         if (!snapshots_by_date.has(date_key)) {
           snapshots_by_date.set(date_key, []);
