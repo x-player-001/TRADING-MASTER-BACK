@@ -557,6 +557,77 @@ export class OIRepository {
     });
   }
 
+  /**
+   * 获取指定币种在指定日期的价格极值（最高价和最低价）
+   * 优先查询日期表，失败则降级到原始表
+   */
+  async get_daily_price_extremes(symbol: string, date: string): Promise<{
+    daily_low: number | null;
+    daily_high: number | null;
+  }> {
+    return this.execute_with_connection(async (conn) => {
+      const table_name = daily_table_manager.get_table_name(date);
+
+      try {
+        // 查询日期表中的价格极值
+        const sql = `
+          SELECT
+            MIN(mark_price) as daily_low,
+            MAX(mark_price) as daily_high
+          FROM ${table_name}
+          WHERE symbol = ?
+            AND mark_price IS NOT NULL
+            AND mark_price > 0
+        `;
+
+        const [rows] = await conn.execute<RowDataPacket[]>(sql, [symbol]);
+
+        if (rows.length > 0 && rows[0].daily_low !== null) {
+          const result = rows[0] as { daily_low: any; daily_high: any };
+          // MySQL DECIMAL 类型返回string，需要转换
+          const daily_low = typeof result.daily_low === 'string' ? parseFloat(result.daily_low) : result.daily_low;
+          const daily_high = typeof result.daily_high === 'string' ? parseFloat(result.daily_high) : result.daily_high;
+
+          logger.debug(`[OIRepository] ${symbol} 在 ${date} 的价格极值: low=${daily_low}, high=${daily_high}`);
+          return { daily_low, daily_high };
+        }
+
+        return { daily_low: null, daily_high: null };
+      } catch (error: any) {
+        // 如果日期表不存在，尝试从原始表查询
+        if (error.code === 'ER_NO_SUCH_TABLE') {
+          logger.warn(`[OIRepository] 日期表 ${table_name} 不存在，尝试从原始表查询`);
+
+          const fallback_sql = `
+            SELECT
+              MIN(mark_price) as daily_low,
+              MAX(mark_price) as daily_high
+            FROM open_interest_snapshots
+            WHERE symbol = ?
+              AND DATE(snapshot_time) = ?
+              AND mark_price IS NOT NULL
+              AND mark_price > 0
+          `;
+
+          const [fallback_rows] = await conn.execute<RowDataPacket[]>(fallback_sql, [symbol, date]);
+
+          if (fallback_rows.length > 0 && fallback_rows[0].daily_low !== null) {
+            const result = fallback_rows[0] as { daily_low: any; daily_high: any };
+            const daily_low = typeof result.daily_low === 'string' ? parseFloat(result.daily_low) : result.daily_low;
+            const daily_high = typeof result.daily_high === 'string' ? parseFloat(result.daily_high) : result.daily_high;
+
+            logger.debug(`[OIRepository] 从原始表查询到 ${symbol} 的价格极值: low=${daily_low}, high=${daily_high}`);
+            return { daily_low, daily_high };
+          }
+
+          return { daily_low: null, daily_high: null };
+        }
+
+        throw error;
+      }
+    });
+  }
+
   // ===================== OI异动记录操作 =====================
 
   /**

@@ -576,7 +576,7 @@ export class OIPollingService {
         // 🎯 获取或更新每日价格极值
         const current_price = anomaly.price_after || 0;
         const price_extremes = current_price > 0
-          ? this.get_or_update_daily_price_extremes(anomaly.symbol, current_price)
+          ? await this.get_or_update_daily_price_extremes(anomaly.symbol, current_price)
           : {
               daily_low: undefined,
               daily_high: undefined,
@@ -747,13 +747,14 @@ export class OIPollingService {
   /**
    * 获取或更新币种的每日价格极值
    * 使用内存缓存避免重复查询数据库
+   * 首次初始化或跨日时会查询数据库获取当天已有的真实极值
    */
-  private get_or_update_daily_price_extremes(symbol: string, current_price: number): {
+  private async get_or_update_daily_price_extremes(symbol: string, current_price: number): Promise<{
     daily_low: number;
     daily_high: number;
     price_from_low_pct: number;
     price_from_high_pct: number;
-  } {
+  }> {
     const today = new Date().toISOString().split('T')[0]; // YYYY-MM-DD
     const now = Date.now();
 
@@ -762,16 +763,41 @@ export class OIPollingService {
 
     // 检查是否需要重置（新的一天或首次记录）
     if (!extremes || extremes.date !== today) {
-      // 新的一天，初始化极值
-      extremes = {
-        date: today,
-        low: current_price,
-        high: current_price,
-        last_update: now
-      };
-      logger.debug(`[OIPolling] ${symbol} - 初始化日内价格极值: low=${current_price}, high=${current_price}`);
+      // 🎯 新的一天或首次记录：查询数据库获取当天已有的极值
+      try {
+        const db_extremes = await this.oi_repository.get_daily_price_extremes(symbol, today);
+
+        if (db_extremes.daily_low !== null && db_extremes.daily_high !== null) {
+          // 数据库中有当天的历史数据，使用真实极值
+          extremes = {
+            date: today,
+            low: Math.min(db_extremes.daily_low, current_price),
+            high: Math.max(db_extremes.daily_high, current_price),
+            last_update: now
+          };
+          logger.debug(`[OIPolling] ${symbol} - 从数据库加载日内价格极值并更新: low=${extremes.low}, high=${extremes.high}`);
+        } else {
+          // 数据库中没有数据（服务刚启动且是当天第一条记录），用当前价格初始化
+          extremes = {
+            date: today,
+            low: current_price,
+            high: current_price,
+            last_update: now
+          };
+          logger.debug(`[OIPolling] ${symbol} - 数据库无历史数据，用当前价格初始化日内极值: low=${current_price}, high=${current_price}`);
+        }
+      } catch (error) {
+        // 数据库查询失败，降级使用当前价格初始化
+        logger.warn(`[OIPolling] ${symbol} - 查询数据库极值失败，降级使用当前价格初始化:`, error);
+        extremes = {
+          date: today,
+          low: current_price,
+          high: current_price,
+          last_update: now
+        };
+      }
     } else {
-      // 更新极值
+      // 同一天的后续更新：直接更新内存缓存
       const old_low = extremes.low;
       const old_high = extremes.high;
 
