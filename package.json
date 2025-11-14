@@ -14,7 +14,9 @@
     "typecheck": "tsc --noEmit",
     "db:setup": "node -e \"console.log('请先安装并启动 MySQL 和 Redis 服务')\"",
     "setup": "npm install && npm run build",
-    "redetect-oi": "ts-node -r tsconfig-paths/register scripts/redetect_oi_anomalies.ts"
+    "redetect-oi": "ts-node -r tsconfig-paths/register scripts/redetect_oi_anomalies.ts",
+    "backtest": "ts-node -r tsconfig-paths/register scripts/run_backtest.ts",
+    "trade": "ts-node -r tsconfig-paths/register scripts/run_live_trading.ts"
   },
   "keywords": [
     "crypto",

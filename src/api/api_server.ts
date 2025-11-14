@@ -10,6 +10,8 @@ import { KlinesRoutes } from './routes/klines_routes';
 import { WebSocketRoutes } from './routes/websocket_routes';
 import { SignalsRoutes } from './routes/signals_routes';
 import { StructureRoutes } from './routes/structure_routes';
+import { TradingRoutes } from './routes/trading_routes';
+import { BacktestRoutes } from './routes/backtest_routes';
 import { MonitoringManager } from '@/core/monitoring/monitoring_manager';
 import quantitative_routes from './routes/quantitative_routes';
 
@@ -28,6 +30,8 @@ export class APIServer {
   private websocket_routes: WebSocketRoutes;
   private signals_routes: SignalsRoutes;
   private structure_routes: StructureRoutes;
+  private trading_routes: TradingRoutes;
+  private backtest_routes: BacktestRoutes;
   private monitoring_manager: MonitoringManager;
 
   constructor(oi_data_manager: OIDataManager, port: number = 3000) {
@@ -41,6 +45,8 @@ export class APIServer {
     this.websocket_routes = new WebSocketRoutes();
     this.signals_routes = new SignalsRoutes();
     this.structure_routes = new StructureRoutes();
+    this.trading_routes = new TradingRoutes(this.oi_data_manager.get_oi_polling_service());
+    this.backtest_routes = new BacktestRoutes();
     this.monitoring_manager = MonitoringManager.getInstance();
     this.setup_middleware();
     this.setup_routes();
@@ -121,6 +127,8 @@ export class APIServer {
           signals: '/api/signals/*',
           structure: '/api/structure/*',
           quant: '/api/quant/*',
+          trading: '/api/trading/*',
+          backtest: '/api/backtest/*',
           status: '/api/status'
         },
         timestamp: new Date().toISOString()
@@ -153,6 +161,12 @@ export class APIServer {
 
     // 量化交易路由
     this.app.use('/api/quant', quantitative_routes);
+
+    // 自动交易路由
+    this.app.use('/api/trading', this.trading_routes.router);
+
+    // 回测路由
+    this.app.use('/api/backtest', this.backtest_routes.router);
 
     // 系统状态
     this.app.get('/api/status', async (req: Request, res: Response) => {

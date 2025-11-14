@@ -65,6 +65,18 @@ export interface OIAnomalyRecord {
   top_account_long_short_ratio?: number;   // 大户账户数多空比
   global_long_short_ratio?: number;        // 全市场多空人数比
   taker_buy_sell_ratio?: number;           // 主动买卖量比
+
+  // 交易信号评分相关字段
+  signal_score?: number;                   // 信号总分 (0-10)
+  signal_confidence?: number;              // 信号置信度 (0-1)
+  signal_direction?: 'LONG' | 'SHORT' | 'NEUTRAL';  // 信号方向
+  avoid_chase_reason?: string;             // 避免追高原因（如果被拒绝）
+
+  // 每日价格极值相关字段
+  daily_price_low?: number;                // 触发时的日内最低价
+  daily_price_high?: number;               // 触发时的日内最高价
+  price_from_low_pct?: number;             // 相对日内低点的涨幅(%)
+  price_from_high_pct?: number;            // 相对日内高点的跌幅(%)
 }
 
 // OI监控配置

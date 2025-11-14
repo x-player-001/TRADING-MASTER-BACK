@@ -1,0 +1,624 @@
+/**
+ * 回测引擎
+ * 基于历史异动数据进行策略回测
+ */
+
+import { OIAnomalyRecord } from '../types/oi_types';
+import {
+  BacktestConfig,
+  BacktestResult,
+  TradingSignal,
+  PositionRecord,
+  PositionSide,
+  TradingStatistics,
+  HistoricalPriceSnapshot
+} from '../types/trading_types';
+import { OIRepository } from '../database/oi_repository';
+import { SignalGenerator } from './signal_generator';
+import { StrategyEngine } from './strategy_engine';
+import { RiskManager } from './risk_manager';
+import { logger } from '../utils/logger';
+
+export class BacktestEngine {
+  private oi_repository: OIRepository;
+  private signal_generator: SignalGenerator;
+  private strategy_engine: StrategyEngine;
+  private risk_manager: RiskManager;
+
+  constructor(oi_repository?: OIRepository) {
+    this.oi_repository = oi_repository || new OIRepository();
+    this.signal_generator = new SignalGenerator();
+    this.strategy_engine = new StrategyEngine();
+    this.risk_manager = new RiskManager();
+  }
+
+  /**
+   * 运行回测
+   */
+  async run_backtest(config: BacktestConfig): Promise<BacktestResult> {
+    const start_time = Date.now();
+    logger.info(`[BacktestEngine] Starting backtest from ${config.start_date.toISOString()} to ${config.end_date.toISOString()}`);
+
+    // 应用配置
+    this.strategy_engine.update_config(config.strategy_config);
+    this.risk_manager.update_config(config.risk_config);
+
+    // 1. 获取历史异动记录
+    const anomalies = await this.get_historical_anomalies(config);
+    logger.info(`[BacktestEngine] Loaded ${anomalies.length} historical anomalies`);
+
+    if (anomalies.length === 0) {
+      logger.warn('[BacktestEngine] No anomalies found in the specified period');
+      return this.create_empty_result(config, start_time);
+    }
+
+    // 2. 初始化回测状态
+    let balance = config.initial_balance;
+    const open_positions: PositionRecord[] = [];
+    const closed_positions: PositionRecord[] = [];
+    const all_signals: TradingSignal[] = [];
+    const rejected_signals: { signal: TradingSignal; reason: string }[] = [];
+    const equity_curve: { timestamp: Date; equity: number; drawdown_percent: number }[] = [];
+
+    let peak_equity = balance;
+    let position_id_counter = 1;
+
+    // 3. 按时间顺序处理每个异动
+    for (const anomaly of anomalies) {
+      // ⚡ 补充价格极值数据（如果缺失）
+      // 必须在信号生成之前补充，因为信号生成器的避免追高检查需要这些数据
+      if (anomaly.daily_price_low === undefined || anomaly.daily_price_low === null) {
+        const price_extremes = await this.calculate_historical_price_extremes(anomaly);
+        anomaly.daily_price_low = price_extremes.daily_price_low;
+        anomaly.daily_price_high = price_extremes.daily_price_high;
+        anomaly.price_from_low_pct = price_extremes.price_from_low_pct;
+        anomaly.price_from_high_pct = price_extremes.price_from_high_pct;
+      }
+
+      // 生成交易信号
+      const signal = this.signal_generator.generate_signal(anomaly);
+      if (!signal) {
+        continue;
+      }
+
+      all_signals.push(signal);
+
+      // 策略评估
+      const strategy_result = this.strategy_engine.evaluate_signal(signal);
+      if (!strategy_result.passed) {
+        rejected_signals.push({ signal, reason: strategy_result.reason || 'Unknown' });
+        continue;
+      }
+
+      // 风险检查
+      const risk_check = this.risk_manager.can_open_position(
+        signal,
+        open_positions,
+        balance
+      );
+
+      if (!risk_check.allowed) {
+        rejected_signals.push({ signal, reason: risk_check.reason || 'Risk check failed' });
+        continue;
+      }
+
+      // 4. 模拟开仓
+      const entry_price = this.apply_slippage(
+        signal.entry_price || 0,
+        signal.direction as 'LONG' | 'SHORT',
+        config
+      );
+
+      const position_size = risk_check.position_size!;
+      const leverage = risk_check.leverage!;
+      const quantity = position_size / entry_price;
+
+      // 计算止损止盈
+      const { stop_loss, take_profit } = this.risk_manager.calculate_stop_loss_take_profit(signal);
+
+      const position: PositionRecord = {
+        id: position_id_counter++,
+        symbol: signal.symbol,
+        side: signal.direction === 'LONG' ? PositionSide.LONG : PositionSide.SHORT,
+        entry_price,
+        current_price: entry_price,
+        quantity,
+        leverage,
+        unrealized_pnl: 0,
+        unrealized_pnl_percent: 0,
+        stop_loss_price: stop_loss,
+        take_profit_price: take_profit,
+        signal_id: signal.source_anomaly_id,
+        is_open: true,
+        opened_at: anomaly.anomaly_time,
+        updated_at: anomaly.anomaly_time
+      };
+
+      open_positions.push(position);
+      balance -= position_size / leverage; // 扣除保证金
+
+      logger.debug(`[BacktestEngine] Position opened: ${position.symbol} ${position.side} @ ${entry_price}`);
+
+      // 5. 获取后续价格并检查止损/止盈
+      const exit_result = await this.simulate_position_holding(
+        position,
+        anomaly.anomaly_time,
+        config
+      );
+
+      if (exit_result) {
+        // 平仓
+        const exit_price = this.apply_slippage(exit_result.exit_price, position.side, config, true);
+        const commission = this.calculate_commission(position, exit_price, config);
+
+        position.is_open = false;
+        position.current_price = exit_price;
+        position.closed_at = exit_result.exit_time;
+        position.close_reason = exit_result.reason;
+
+        // 计算盈亏
+        const pnl = this.calculate_pnl(position, exit_price) - commission;
+        position.realized_pnl = pnl;
+
+        balance += (position_size / leverage) + pnl; // 返还保证金 + 盈亏
+
+        // 更新风险管理器
+        const is_win = pnl > 0;
+        this.risk_manager.record_trade_result(pnl, is_win);
+
+        // 移到已平仓列表
+        const index = open_positions.indexOf(position);
+        if (index > -1) {
+          open_positions.splice(index, 1);
+        }
+        closed_positions.push(position);
+
+        logger.debug(`[BacktestEngine] Position closed: ${position.symbol} @ ${exit_price}, PnL=${pnl.toFixed(2)} (${exit_result.reason})`);
+      }
+
+      // 记录资金曲线
+      const current_equity = balance + this.calculate_unrealized_pnl(open_positions);
+      if (current_equity > peak_equity) {
+        peak_equity = current_equity;
+      }
+      const drawdown_percent = peak_equity > 0 ? ((peak_equity - current_equity) / peak_equity) * 100 : 0;
+
+      equity_curve.push({
+        timestamp: anomaly.anomaly_time,
+        equity: current_equity,
+        drawdown_percent
+      });
+    }
+
+    // 6. 强制平仓所有未平仓位（回测结束）
+    for (const position of open_positions) {
+      const final_price = position.current_price;
+      position.is_open = false;
+      position.closed_at = config.end_date;
+      position.close_reason = 'TIMEOUT';
+
+      const pnl = this.calculate_pnl(position, final_price);
+      position.realized_pnl = pnl;
+      balance += (position.entry_price * position.quantity / position.leverage) + pnl;
+
+      closed_positions.push(position);
+    }
+
+    // 7. 计算统计数据
+    const statistics = this.calculate_statistics(closed_positions, config);
+
+    const execution_time = Date.now() - start_time;
+    logger.info(`[BacktestEngine] Backtest completed in ${execution_time}ms: ${closed_positions.length} trades, Win rate: ${statistics.win_rate.toFixed(2)}%`);
+
+    return {
+      config,
+      strategy_type: config.strategy_config.strategy_type,
+      statistics,
+      trades: closed_positions,
+      signals: all_signals,
+      rejected_signals,
+      equity_curve,
+      execution_time_ms: execution_time,
+      created_at: new Date()
+    };
+  }
+
+  /**
+   * 获取历史异动记录
+   */
+  private async get_historical_anomalies(config: BacktestConfig): Promise<OIAnomalyRecord[]> {
+    const anomalies = await this.oi_repository.get_anomaly_records({
+      start_time: config.start_date,
+      end_time: config.end_date,
+      symbol: config.symbols?.[0], // TODO: 支持多币种
+      severity: config.min_anomaly_severity,
+      order: 'ASC' // 按时间升序
+    });
+
+    // 过滤币种
+    if (config.symbols && config.symbols.length > 0) {
+      return anomalies.filter(a => config.symbols!.includes(a.symbol));
+    }
+
+    return anomalies;
+  }
+
+  /**
+   * 模拟持仓期间的价格变化，检查止损/止盈
+   */
+  private async simulate_position_holding(
+    position: PositionRecord,
+    entry_time: Date,
+    config: BacktestConfig
+  ): Promise<{ exit_price: number; exit_time: Date; reason: 'STOP_LOSS' | 'TAKE_PROFIT' | 'TIMEOUT' } | null> {
+    const max_holding_ms = (config.max_holding_time_minutes || 60) * 60 * 1000;
+    const end_time = new Date(entry_time.getTime() + max_holding_ms);
+
+    // 获取该时间段的价格数据
+    const prices = await this.get_historical_prices(
+      position.symbol,
+      entry_time,
+      end_time
+    );
+
+    if (prices.length === 0) {
+      // 没有价格数据，按超时处理
+      return {
+        exit_price: position.entry_price,
+        exit_time: end_time,
+        reason: 'TIMEOUT'
+      };
+    }
+
+    // 遍历价格，检查是否触发止损/止盈
+    for (const price_point of prices) {
+      // 多头持仓
+      if (position.side === PositionSide.LONG) {
+        // 止损
+        if (position.stop_loss_price && price_point.price <= position.stop_loss_price) {
+          return {
+            exit_price: position.stop_loss_price,
+            exit_time: price_point.timestamp,
+            reason: 'STOP_LOSS'
+          };
+        }
+
+        // 止盈
+        if (position.take_profit_price && price_point.price >= position.take_profit_price) {
+          return {
+            exit_price: position.take_profit_price,
+            exit_time: price_point.timestamp,
+            reason: 'TAKE_PROFIT'
+          };
+        }
+      }
+
+      // 空头持仓
+      if (position.side === PositionSide.SHORT) {
+        // 止损
+        if (position.stop_loss_price && price_point.price >= position.stop_loss_price) {
+          return {
+            exit_price: position.stop_loss_price,
+            exit_time: price_point.timestamp,
+            reason: 'STOP_LOSS'
+          };
+        }
+
+        // 止盈
+        if (position.take_profit_price && price_point.price <= position.take_profit_price) {
+          return {
+            exit_price: position.take_profit_price,
+            exit_time: price_point.timestamp,
+            reason: 'TAKE_PROFIT'
+          };
+        }
+      }
+    }
+
+    // 超时平仓
+    const last_price = prices[prices.length - 1];
+    return {
+      exit_price: last_price.price,
+      exit_time: last_price.timestamp,
+      reason: 'TIMEOUT'
+    };
+  }
+
+  /**
+   * 获取历史价格数据（从OI快照表）
+   */
+  private async get_historical_prices(
+    symbol: string,
+    start_time: Date,
+    end_time: Date
+  ): Promise<HistoricalPriceSnapshot[]> {
+    try {
+      // 从OI快照表获取价格数据
+      const snapshots = await this.oi_repository.get_snapshots_in_range(
+        symbol,
+        start_time,
+        end_time
+      );
+
+      return snapshots
+        .filter(s => s.mark_price && s.mark_price > 0)
+        .map(s => ({
+          timestamp: new Date(s.timestamp_ms),
+          timestamp_ms: s.timestamp_ms,
+          price: parseFloat(s.mark_price!.toString()),
+          open_interest: parseFloat(s.open_interest.toString())
+        }));
+    } catch (error) {
+      logger.error(`[BacktestEngine] Failed to get historical prices for ${symbol}:`, error);
+      return [];
+    }
+  }
+
+  /**
+   * 应用滑点
+   */
+  private apply_slippage(
+    price: number,
+    side: 'LONG' | 'SHORT' | PositionSide,
+    config: BacktestConfig,
+    is_exit: boolean = false
+  ): number {
+    if (!config.use_slippage) {
+      return price;
+    }
+
+    const slippage = config.slippage_percent || 0.1;
+    const slippage_multiplier = slippage / 100;
+
+    // 开仓：做多价格上滑，做空价格下滑
+    // 平仓：相反
+    const side_str = typeof side === 'string' ? side : (side === PositionSide.LONG ? 'LONG' : 'SHORT');
+    const is_long = side_str === 'LONG';
+    const should_increase = (is_long && !is_exit) || (!is_long && is_exit);
+
+    return should_increase
+      ? price * (1 + slippage_multiplier)
+      : price * (1 - slippage_multiplier);
+  }
+
+  /**
+   * 计算手续费
+   */
+  private calculate_commission(
+    position: PositionRecord,
+    exit_price: number,
+    config: BacktestConfig
+  ): number {
+    const commission_percent = config.commission_percent || 0.05;
+    const trade_value = exit_price * position.quantity;
+    return trade_value * (commission_percent / 100) * 2; // 开仓+平仓
+  }
+
+  /**
+   * 计算盈亏
+   */
+  private calculate_pnl(position: PositionRecord, exit_price: number): number {
+    const price_diff = exit_price - position.entry_price;
+
+    let pnl: number;
+    if (position.side === PositionSide.LONG) {
+      pnl = price_diff * position.quantity * position.leverage;
+    } else {
+      pnl = -price_diff * position.quantity * position.leverage;
+    }
+
+    return pnl;
+  }
+
+  /**
+   * 计算未实现盈亏
+   */
+  private calculate_unrealized_pnl(positions: PositionRecord[]): number {
+    return positions.reduce((sum, pos) => {
+      const pnl = this.calculate_pnl(pos, pos.current_price);
+      return sum + pnl;
+    }, 0);
+  }
+
+  /**
+   * 计算统计数据
+   */
+  private calculate_statistics(
+    trades: PositionRecord[],
+    config: BacktestConfig
+  ): TradingStatistics {
+    const total_trades = trades.length;
+    const winning_trades = trades.filter(t => (t.realized_pnl || 0) > 0);
+    const losing_trades = trades.filter(t => (t.realized_pnl || 0) < 0);
+
+    const win_rate = total_trades > 0 ? (winning_trades.length / total_trades) * 100 : 0;
+
+    const total_pnl = trades.reduce((sum, t) => sum + (t.realized_pnl || 0), 0);
+    const average_win = winning_trades.length > 0
+      ? winning_trades.reduce((sum, t) => sum + (t.realized_pnl || 0), 0) / winning_trades.length
+      : 0;
+    const average_loss = losing_trades.length > 0
+      ? losing_trades.reduce((sum, t) => sum + (t.realized_pnl || 0), 0) / losing_trades.length
+      : 0;
+
+    const profit_factor = average_loss !== 0 ? Math.abs(average_win / average_loss) : 0;
+
+    // 计算最大回撤
+    let max_drawdown = 0;
+    let peak = config.initial_balance;
+    let current_equity = config.initial_balance;
+
+    for (const trade of trades) {
+      current_equity += (trade.realized_pnl || 0);
+      if (current_equity > peak) {
+        peak = current_equity;
+      }
+      const drawdown = peak - current_equity;
+      if (drawdown > max_drawdown) {
+        max_drawdown = drawdown;
+      }
+    }
+
+    const max_drawdown_percent = peak > 0 ? (max_drawdown / peak) * 100 : 0;
+
+    // 平均持仓时间
+    const average_hold_time = total_trades > 0
+      ? trades.reduce((sum, t) => {
+        if (t.closed_at && t.opened_at) {
+          const hold_time = (t.closed_at.getTime() - t.opened_at.getTime()) / 1000 / 60;
+          return sum + hold_time;
+        }
+        return sum;
+      }, 0) / total_trades
+      : 0;
+
+    // 计算连胜连亏
+    let current_streak = 0;
+    let longest_winning_streak = 0;
+    let longest_losing_streak = 0;
+    let last_was_win = true;
+
+    for (const trade of trades) {
+      const is_win = (trade.realized_pnl || 0) > 0;
+
+      if (is_win === last_was_win) {
+        current_streak++;
+      } else {
+        if (last_was_win) {
+          longest_winning_streak = Math.max(longest_winning_streak, current_streak);
+        } else {
+          longest_losing_streak = Math.max(longest_losing_streak, current_streak);
+        }
+        current_streak = 1;
+        last_was_win = is_win;
+      }
+    }
+
+    // 检查最后一个streak
+    if (last_was_win) {
+      longest_winning_streak = Math.max(longest_winning_streak, current_streak);
+    } else {
+      longest_losing_streak = Math.max(longest_losing_streak, current_streak);
+    }
+
+    return {
+      total_trades,
+      winning_trades: winning_trades.length,
+      losing_trades: losing_trades.length,
+      win_rate,
+      total_pnl,
+      average_win,
+      average_loss,
+      profit_factor,
+      max_drawdown,
+      max_drawdown_percent,
+      average_hold_time,
+      longest_winning_streak,
+      longest_losing_streak,
+      period_start: config.start_date,
+      period_end: config.end_date
+    };
+  }
+
+  /**
+   * 创建空结果
+   */
+  private create_empty_result(config: BacktestConfig, start_time: number): BacktestResult {
+    return {
+      config,
+      strategy_type: config.strategy_config.strategy_type,
+      statistics: {
+        total_trades: 0,
+        winning_trades: 0,
+        losing_trades: 0,
+        win_rate: 0,
+        total_pnl: 0,
+        average_win: 0,
+        average_loss: 0,
+        profit_factor: 0,
+        max_drawdown: 0,
+        max_drawdown_percent: 0,
+        average_hold_time: 0,
+        longest_winning_streak: 0,
+        longest_losing_streak: 0,
+        period_start: config.start_date,
+        period_end: config.end_date
+      },
+      trades: [],
+      signals: [],
+      rejected_signals: [],
+      equity_curve: [],
+      execution_time_ms: Date.now() - start_time,
+      created_at: new Date()
+    };
+  }
+
+  /**
+   * 为历史异动记录计算当日价格极值
+   * 仅在回测时使用，实时数据已包含此信息
+   */
+  private async calculate_historical_price_extremes(
+    anomaly: OIAnomalyRecord
+  ): Promise<{
+    daily_price_low?: number;
+    daily_price_high?: number;
+    price_from_low_pct?: number;
+    price_from_high_pct?: number;
+  }> {
+    try {
+      // 获取当天的日期（UTC+8 北京时间）
+      const beijing_time = new Date(anomaly.anomaly_time.getTime() + 8 * 60 * 60 * 1000);
+      const date = beijing_time.toISOString().split('T')[0]; // YYYY-MM-DD
+
+      // 查询当天该币种的所有快照
+      const snapshots = await this.oi_repository.get_symbol_oi_curve(anomaly.symbol, date);
+
+      if (snapshots.length === 0) {
+        logger.debug(`[BacktestEngine] No snapshots found for ${anomaly.symbol} on ${date}`);
+        return {}; // 无历史数据，返回空
+      }
+
+      // 提取价格数据
+      const prices = snapshots
+        .map(s => s.mark_price)
+        .filter((price): price is number => price !== undefined && price !== null && price > 0)
+        .map(price => typeof price === 'string' ? parseFloat(price) : price);
+
+      if (prices.length === 0) {
+        logger.debug(`[BacktestEngine] No valid prices for ${anomaly.symbol} on ${date}`);
+        return {}; // 无价格数据
+      }
+
+      // 计算极值
+      const daily_price_low = Math.min(...prices);
+      const daily_price_high = Math.max(...prices);
+
+      // 获取当前价格（异动触发时的价格）
+      const current_price_raw = anomaly.price_after || anomaly.price_before || 0;
+      const current_price = typeof current_price_raw === 'string' ? parseFloat(current_price_raw) : current_price_raw;
+
+      if (current_price === 0 || isNaN(current_price)) {
+        return { daily_price_low, daily_price_high };
+      }
+
+      // 计算百分比
+      const price_from_low_pct = ((current_price - daily_price_low) / daily_price_low) * 100;
+      const price_from_high_pct = ((daily_price_high - current_price) / daily_price_high) * 100;
+
+      logger.debug(
+        `[BacktestEngine] ${anomaly.symbol} ${date} - Low: ${daily_price_low.toFixed(2)}, High: ${daily_price_high.toFixed(2)}, ` +
+        `Current: ${current_price.toFixed(2)}, From Low: ${price_from_low_pct.toFixed(2)}%, From High: ${price_from_high_pct.toFixed(2)}%`
+      );
+
+      return {
+        daily_price_low,
+        daily_price_high,
+        price_from_low_pct,
+        price_from_high_pct
+      };
+    } catch (error) {
+      logger.warn(`[BacktestEngine] Failed to calculate historical price extremes for ${anomaly.symbol}:`, error);
+      return {}; // 查询失败不影响回测
+    }
+  }
+}

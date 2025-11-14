@@ -347,6 +347,91 @@ export class OIRepository {
    * 获取指定时间范围内的快照数据（用于异动检测）
    * 支持日期分表查询，跨天时合并多个表的数据
    */
+  /**
+   * 获取指定时间范围内的快照（用于回测）
+   */
+  async get_snapshots_in_range(symbol: string, start_time: Date, end_time: Date): Promise<OpenInterestSnapshot[]> {
+    const start_timestamp = start_time.getTime();
+    const end_timestamp = end_time.getTime();
+
+    return this.execute_with_connection(async (conn) => {
+      // 将UTC时间转换为北京时间（UTC+8）后计算日期范围
+      const start_date_beijing = new Date(start_timestamp + 8 * 60 * 60 * 1000);
+      const end_date_beijing = new Date(end_timestamp + 8 * 60 * 60 * 1000);
+
+      // 获取需要查询的日期范围内的所有表（基于北京时间）
+      const tables: string[] = [];
+      const current_date = new Date(start_date_beijing);
+
+      while (current_date <= end_date_beijing) {
+        const date_key = current_date.toISOString().split('T')[0]; // YYYY-MM-DD (北京时间)
+        const table_name = daily_table_manager.get_table_name(date_key);
+        tables.push(table_name);
+        current_date.setDate(current_date.getDate() + 1);
+      }
+
+      // 如果只有一个表，直接查询
+      if (tables.length === 1) {
+        try {
+          const sql = `
+            SELECT * FROM ${tables[0]}
+            WHERE symbol = ? AND timestamp_ms >= ? AND timestamp_ms <= ?
+            ORDER BY timestamp_ms ASC
+          `;
+          const [rows] = await conn.execute<RowDataPacket[]>(sql, [symbol, start_timestamp, end_timestamp]);
+          return rows as OpenInterestSnapshot[];
+        } catch (error: any) {
+          // 如果表不存在，降级到原始表
+          if (error.code === 'ER_NO_SUCH_TABLE') {
+            const fallback_sql = `
+              SELECT * FROM open_interest_snapshots
+              WHERE symbol = ? AND timestamp_ms >= ? AND timestamp_ms <= ?
+              ORDER BY timestamp_ms ASC
+            `;
+            const [fallback_rows] = await conn.execute<RowDataPacket[]>(fallback_sql, [symbol, start_timestamp, end_timestamp]);
+            return fallback_rows as OpenInterestSnapshot[];
+          }
+          throw error;
+        }
+      }
+
+      // 跨天查询：使用 UNION ALL 合并多个表
+      const union_queries = tables.map(table => `
+        SELECT * FROM ${table}
+        WHERE symbol = ? AND timestamp_ms >= ? AND timestamp_ms <= ?
+      `).join(' UNION ALL ');
+
+      const final_sql = `
+        SELECT * FROM (${union_queries}) AS combined
+        ORDER BY timestamp_ms ASC
+      `;
+
+      // 为每个UNION部分准备参数
+      const params: any[] = [];
+      tables.forEach(() => {
+        params.push(symbol, start_timestamp, end_timestamp);
+      });
+
+      try {
+        const [rows] = await conn.execute<RowDataPacket[]>(final_sql, params);
+        return rows as OpenInterestSnapshot[];
+      } catch (error: any) {
+        // 如果任何表不存在，降级到原始表
+        if (error.code === 'ER_NO_SUCH_TABLE') {
+          logger.warn(`[OIRepository] Some daily tables not found, fallback to original table`);
+          const fallback_sql = `
+            SELECT * FROM open_interest_snapshots
+            WHERE symbol = ? AND timestamp_ms >= ? AND timestamp_ms <= ?
+            ORDER BY timestamp_ms ASC
+          `;
+          const [fallback_rows] = await conn.execute<RowDataPacket[]>(fallback_sql, [symbol, start_timestamp, end_timestamp]);
+          return fallback_rows as OpenInterestSnapshot[];
+        }
+        throw error;
+      }
+    });
+  }
+
   async get_snapshots_for_anomaly_detection(symbol: string, since_timestamp: number): Promise<OpenInterestSnapshot[]> {
     return this.execute_with_connection(async (conn) => {
       // 将UTC时间转换为北京时间（UTC+8）后计算日期范围
@@ -502,8 +587,10 @@ export class OIRepository {
          threshold_value, anomaly_time, severity, anomaly_type,
          price_before, price_after, price_change, price_change_percent,
          funding_rate_before, funding_rate_after, funding_rate_change, funding_rate_change_percent,
-         top_trader_long_short_ratio, top_account_long_short_ratio, global_long_short_ratio, taker_buy_sell_ratio)
-        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+         top_trader_long_short_ratio, top_account_long_short_ratio, global_long_short_ratio, taker_buy_sell_ratio,
+         signal_score, signal_confidence, signal_direction, avoid_chase_reason,
+         daily_price_low, daily_price_high, price_from_low_pct, price_from_high_pct)
+        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
       `;
 
       const [result] = await conn.execute<ResultSetHeader>(sql, [
@@ -528,7 +615,15 @@ export class OIRepository {
         anomaly.top_trader_long_short_ratio ?? null,
         anomaly.top_account_long_short_ratio ?? null,
         anomaly.global_long_short_ratio ?? null,
-        anomaly.taker_buy_sell_ratio ?? null
+        anomaly.taker_buy_sell_ratio ?? null,
+        anomaly.signal_score ?? null,
+        anomaly.signal_confidence ?? null,
+        anomaly.signal_direction ?? null,
+        anomaly.avoid_chase_reason ?? null,
+        anomaly.daily_price_low ?? null,
+        anomaly.daily_price_high ?? null,
+        anomaly.price_from_low_pct ?? null,
+        anomaly.price_from_high_pct ?? null
       ]);
 
       return result.insertId;

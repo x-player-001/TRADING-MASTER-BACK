@@ -108,6 +108,13 @@ export class OIDataManager {
   }
 
   /**
+   * 获取OI轮询服务
+   */
+  get_oi_polling_service(): OIPollingService {
+    return this.oi_polling_service;
+  }
+
+  /**
    * 获取缓存管理器
    */
   get_cache_manager(): OICacheManager {

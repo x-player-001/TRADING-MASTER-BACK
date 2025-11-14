@@ -228,7 +228,17 @@ export class OIRoutes {
         top_trader_long_short_ratio: anomaly.top_trader_long_short_ratio,
         top_account_long_short_ratio: anomaly.top_account_long_short_ratio,
         global_long_short_ratio: anomaly.global_long_short_ratio,
-        taker_buy_sell_ratio: anomaly.taker_buy_sell_ratio
+        taker_buy_sell_ratio: anomaly.taker_buy_sell_ratio,
+        // 交易信号评分字段
+        signal_score: anomaly.signal_score,
+        signal_confidence: anomaly.signal_confidence,
+        signal_direction: anomaly.signal_direction,
+        avoid_chase_reason: anomaly.avoid_chase_reason,
+        // 每日价格极值字段
+        daily_price_low: anomaly.daily_price_low,
+        daily_price_high: anomaly.daily_price_high,
+        price_from_low_pct: anomaly.price_from_low_pct,
+        price_from_high_pct: anomaly.price_from_high_pct
       }));
 
       res.json({

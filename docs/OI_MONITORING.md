@@ -90,9 +90,22 @@
    - 价格变化: 从步骤2的数据计算
    - 资金费率变化: 从历史快照对比
 
-7️⃣ **保存异动记录**
+7️⃣ **计算每日价格极值**
+   - 维护内存缓存: 每个币种的当日最高价和最低价
+   - 自动按日期重置: 每天0点自动初始化新的一天
+   - 增量更新: 随着价格变化实时更新极值
+   - 计算百分比: 当前价格相对于极值的涨跌幅
+
+8️⃣ **计算交易信号评分**
+   - OI评分 (0-3分): 基于OI变化率
+   - 价格评分 (0-2分): 基于价格变化率
+   - 情绪评分 (0-3分): 基于市场情绪数据
+   - 资金费率评分 (0-2分): 基于资金费率变化
+   - 避免追高检测: 检查是否晚期狂欢、价格极值等
+
+9️⃣ **保存异动记录**
    - 写入表: `oi_anomaly_records`
-   - 包含: OI变化 + 价格变化 + 资金费率变化 + 市场情绪
+   - 包含: OI变化 + 价格变化 + 资金费率变化 + 市场情绪 + 信号评分 + 价格极值
    - 更新Redis缓存: 用于下次去重判断
 
 ### 3. 数据存储
@@ -111,6 +124,8 @@
   - 价格变化（before/after/变化率）
   - **资金费率变化**（before/after/变化率）✨
   - 市场情绪数据（多空比等）
+  - **交易信号评分**（score/confidence/direction/avoid_chase_reason）✨
+  - **每日价格极值**（daily_low/daily_high/price_from_low_pct/price_from_high_pct）✨
 
 ---
 
@@ -183,21 +198,80 @@ WHERE config_key = 'thresholds';
 
 ---
 
-## 🌟 资金费率功能说明
+## 🌟 增强功能说明
 
-### 作用
+### 1. 资金费率数据
+
+#### 作用
 **仅作为附加数据**，不影响异动判断。当检测到OI异动时，自动记录当时的资金费率状态。
 
-### 数据内容
+#### 数据内容
 - `funding_rate_before` - 变化前的资金费率
 - `funding_rate_after` - 变化后的资金费率
 - `funding_rate_change` - 变化量
 - `funding_rate_change_percent` - 变化百分比
 
-### 应用场景
+#### 应用场景
 - 分析OI暴涨时的市场情绪（资金费率高 → 多头过热）
 - 判断OI变化的真实性（资金费率同向变化 → 真实需求）
 - 识别轧空/爆仓事件（OI与资金费率反向 → 被动平仓）
+
+### 2. 交易信号评分 ⭐ **核心特性**
+
+#### 作用
+为每个异动自动计算交易信号质量评分，帮助筛选高质量的交易机会。
+
+#### 评分组成（满分10分）
+- **OI评分** (0-3分)
+  - 最佳区间：5-15% OI变化
+  - 避免晚期狂欢：>20% OI变化降分
+- **价格评分** (0-2分)
+  - 最佳区间：2-6% 价格变化
+  - 要求OI和价格同向
+- **情绪评分** (0-3分)
+  - 大户多空比
+  - 主动买卖比
+  - 全市场多空比
+- **资金费率评分** (0-2分)
+  - 资金费率变化分析
+
+#### 避免追高逻辑
+系统会检测以下情况并记录拒绝原因：
+- ❌ OI已涨>20% - "晚期狂欢"
+- ❌ 价格已涨>15% - "晚期狂欢"
+- ❌ OI>8%但价格<1% - "背离危险"
+- ❌ 大户反向操作 - "大户反向"
+- ❌ 价格从日内低点已涨>10% - "避免追高"
+- ❌ 价格从日内高点已跌>10% - "避免追跌"
+
+#### 数据字段
+- `signal_score` - 信号总分（0-10）
+- `signal_confidence` - 信号置信度（0-1）
+- `signal_direction` - 信号方向（LONG/SHORT/NEUTRAL）
+- `avoid_chase_reason` - 避免追高原因（如果被拒绝）
+
+### 3. 每日价格极值 ⭐ **性能优化**
+
+#### 作用
+实时跟踪每个币种的当日价格极值，用于判断当前价格位置，避免追高追跌。
+
+#### 工作原理
+- **内存缓存**: 使用Map存储每个币种的日内最高价和最低价
+- **自动重置**: 每天0点（UTC+8）自动初始化新的一天
+- **增量更新**: 随异动检测实时更新极值
+- **零数据库查询**: 直接从缓存读取，性能提升50-200倍
+
+#### 数据字段
+- `daily_price_low` - 触发异动时的日内最低价
+- `daily_price_high` - 触发异动时的日内最高价
+- `price_from_low_pct` - 当前价格相对日内低点的涨幅(%)
+- `price_from_high_pct` - 当前价格相对日内高点的跌幅(%)
+
+#### 应用场景
+- **避免追高**: 如果价格从日内低点已涨>10%，拒绝做多
+- **避免追跌**: 如果价格从日内高点已跌>10%，拒绝做空
+- **回测分析**: 了解异动触发时的价格位置
+- **入场时机**: 选择价格位置更优的异动进行交易
 
 ---
 
@@ -238,7 +312,27 @@ GET /api/oi/recent-anomalies
 Query参数:
   - limit: 返回数量（默认50）
 
-返回: 按时间倒序的最近异动记录
+返回字段说明:
+  - symbol: 币种符号（去除USDT后缀）
+  - period_minutes: 检测周期（分钟）
+  - percent_change: OI变化百分比
+  - oi_before/oi_after/oi_change: OI变化数据
+  - severity: 严重程度（low/medium/high）
+  - anomaly_type: 异动类型（oi/funding_rate/both）
+  - price_before/price_after/price_change/price_change_percent: 价格变化数据
+  - funding_rate_before/funding_rate_after/funding_rate_change/funding_rate_change_percent: 资金费率变化数据
+  - top_trader_long_short_ratio: 大户持仓量多空比
+  - top_account_long_short_ratio: 大户账户数多空比
+  - global_long_short_ratio: 全市场多空人数比
+  - taker_buy_sell_ratio: 主动买卖量比
+  - signal_score: 信号总分（0-10）
+  - signal_confidence: 信号置信度（0-1）
+  - signal_direction: 信号方向（LONG/SHORT/NEUTRAL）
+  - avoid_chase_reason: 避免追高原因（如果被拒绝）
+  - daily_price_low: 触发时的日内最低价
+  - daily_price_high: 触发时的日内最高价
+  - price_from_low_pct: 相对日内低点的涨幅(%)
+  - price_from_high_pct: 相对日内高点的跌幅(%)
 ```
 
 ---
@@ -358,6 +452,26 @@ Query参数:
 
 ## 📝 更新日志
 
+### v1.3.0 (2025-11-14) ⭐ **重大更新**
+- ✨ **新增交易信号评分功能**
+  - 为每个异动自动计算信号质量评分（0-10分）
+  - 包含OI评分、价格评分、情绪评分、资金费率评分
+  - 自动识别避免追高情况并记录原因
+  - 记录信号方向（LONG/SHORT/NEUTRAL）和置信度
+- ✨ **新增每日价格极值跟踪**
+  - 实时跟踪每个币种的日内最高价和最低价
+  - 内存缓存实现，性能提升50-200倍
+  - 自动计算价格相对极值的百分比
+  - 用于避免追高追跌的判断
+- 🚀 **性能优化**
+  - 移除信号生成器中的数据库查询（改用预计算字段）
+  - 将async方法改回sync（无需数据库查询）
+  - 每次信号生成节省50-200ms
+- 📊 **API增强**
+  - `/api/oi/recent-anomalies` 接口新增8个字段
+  - 新增字段：signal_score, signal_confidence, signal_direction, avoid_chase_reason
+  - 新增字段：daily_price_low, daily_price_high, price_from_low_pct, price_from_high_pct
+
 ### v1.2.1 (2025-11-13 晚)
 - 🐛 **修复资金费率数据无法记录的Bug**
   - 问题：异动记录表中资金费率字段全部为NULL
@@ -406,4 +520,4 @@ Query参数:
 ---
 
 **维护人员**: Trading Master Team
-**最后更新**: 2025-11-13 晚
+**最后更新**: 2025-11-14

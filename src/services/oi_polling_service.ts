@@ -3,6 +3,8 @@ import { OIRepository } from '../database/oi_repository';
 // DatabaseConfig no longer needed - using connection_pool through repository
 import { OICacheManager } from '../core/cache/oi_cache_manager';
 import { MarketSentimentManager } from './market_sentiment_manager';
+import { TradingSystem } from '../trading/trading_system';
+import { SignalGenerator } from '../trading/signal_generator';
 import { logger } from '../utils/logger';
 import {
   ContractSymbolConfig,
@@ -24,12 +26,22 @@ export class OIPollingService {
   private oi_repository: OIRepository;
   private oi_cache_manager: OICacheManager | null = null;
   private sentiment_manager: MarketSentimentManager | null = null;
+  private trading_system: TradingSystem | null = null;
+  private signal_generator: SignalGenerator;
   private polling_timer: NodeJS.Timeout | null = null;
   private symbol_refresh_timer: NodeJS.Timeout | null = null;
 
   private current_symbols: ContractSymbolConfig[] = [];
   private is_running = false;
   private start_time = 0;
+
+  // 每日价格极值缓存（优化性能：避免重复查询数据库）
+  private daily_price_extremes: Map<string, {
+    date: string;           // 日期 YYYY-MM-DD
+    low: number;            // 日内最低价
+    high: number;           // 日内最高价
+    last_update: number;    // 最后更新时间戳
+  }> = new Map();
 
   // 默认配置
   private config: OIMonitoringSystemConfig = {
@@ -60,6 +72,7 @@ export class OIPollingService {
   constructor() {
     this.binance_api = new BinanceFuturesAPI(this.config.max_concurrent_requests);
     this.oi_repository = new OIRepository();
+    this.signal_generator = new SignalGenerator();
   }
 
   /**
@@ -77,6 +90,24 @@ export class OIPollingService {
   initialize_sentiment_manager(cache_manager?: OICacheManager): void {
     this.sentiment_manager = new MarketSentimentManager(this.binance_api, cache_manager);
     logger.info('[OIPolling] Market sentiment manager initialized');
+  }
+
+  /**
+   * 初始化交易系统
+   */
+  initialize_trading_system(enabled: boolean = false): void {
+    this.trading_system = new TradingSystem({
+      enabled,
+      mode: 'PAPER' // 默认纸面交易模式
+    });
+    logger.info(`[OIPolling] Trading system initialized (enabled=${enabled})`);
+  }
+
+  /**
+   * 获取交易系统实例
+   */
+  get_trading_system(): TradingSystem | null {
+    return this.trading_system;
   }
 
   /**
@@ -542,7 +573,19 @@ export class OIPollingService {
         // 获取该币种的情绪数据
         const sentiment = sentiment_map.get(anomaly.symbol);
 
-        const record: Omit<OIAnomalyRecord, 'id' | 'created_at'> = {
+        // 🎯 获取或更新每日价格极值
+        const current_price = anomaly.price_after || 0;
+        const price_extremes = current_price > 0
+          ? this.get_or_update_daily_price_extremes(anomaly.symbol, current_price)
+          : {
+              daily_low: undefined,
+              daily_high: undefined,
+              price_from_low_pct: undefined,
+              price_from_high_pct: undefined
+            };
+
+        // 构建临时的异动记录（用于信号评分计算）
+        const temp_record: OIAnomalyRecord = {
           symbol: anomaly.symbol,
           period_seconds,
           percent_change: anomaly.percent_change,
@@ -557,20 +600,38 @@ export class OIPollingService {
           price_after: anomaly.price_after,
           price_change: anomaly.price_change,
           price_change_percent: anomaly.price_change_percent,
-          // 添加资金费率数据
           funding_rate_before: anomaly.funding_rate_before,
           funding_rate_after: anomaly.funding_rate_after,
           funding_rate_change: anomaly.funding_rate_change,
           funding_rate_change_percent: anomaly.funding_rate_change_percent,
-          // 添加情绪数据
           top_trader_long_short_ratio: sentiment?.top_trader_long_short_ratio,
           top_account_long_short_ratio: sentiment?.top_account_long_short_ratio,
           global_long_short_ratio: sentiment?.global_long_short_ratio,
-          taker_buy_sell_ratio: sentiment?.taker_buy_sell_ratio
+          taker_buy_sell_ratio: sentiment?.taker_buy_sell_ratio,
+          // 添加每日价格极值数据
+          daily_price_low: price_extremes.daily_low,
+          daily_price_high: price_extremes.daily_high,
+          price_from_low_pct: price_extremes.price_from_low_pct,
+          price_from_high_pct: price_extremes.price_from_high_pct
         };
 
+        // 🎯 计算信号评分
+        const score_data = this.signal_generator.calculate_score_only(temp_record);
+
+        const record: Omit<OIAnomalyRecord, 'id' | 'created_at'> = {
+          ...temp_record,
+          // 添加信号评分数据
+          signal_score: score_data.signal_score,
+          signal_confidence: score_data.signal_confidence,
+          signal_direction: score_data.signal_direction,
+          avoid_chase_reason: score_data.avoid_chase_reason || undefined
+        };
+
+        // 记录日志，方便调试
+        logger.debug(`[OIPolling] ${anomaly.symbol} [${anomaly.period_minutes}m] - Score: ${score_data.signal_score.toFixed(2)}, Direction: ${score_data.signal_direction}, Confidence: ${(score_data.signal_confidence * 100).toFixed(1)}%${score_data.avoid_chase_reason ? `, Avoid: ${score_data.avoid_chase_reason}` : ''}`);
+
         // 插入数据库
-        await this.oi_repository.save_anomaly_record(record);
+        const saved_record = await this.oi_repository.save_anomaly_record(record);
 
         // 同时更新缓存（用于下次去重）
         if (this.oi_cache_manager) {
@@ -579,6 +640,24 @@ export class OIPollingService {
             period_seconds,
             anomaly.percent_change
           );
+        }
+
+        // 如果交易系统已启用，处理该异动
+        if (this.trading_system && saved_record) {
+          try {
+            const trade_result = await this.trading_system.process_anomaly({
+              ...record,
+              id: saved_record
+            } as OIAnomalyRecord);
+
+            if (trade_result.action === 'POSITION_OPENED' && trade_result.position) {
+              logger.info(`[OIPolling] 🚀 Trade executed: ${trade_result.position.symbol} ${trade_result.position.side} @ ${trade_result.position.entry_price}`);
+            } else if (trade_result.action === 'SIGNAL_REJECTED' || trade_result.action === 'RISK_REJECTED') {
+              logger.debug(`[OIPolling] Trade rejected for ${anomaly.symbol}: ${trade_result.reason}`);
+            }
+          } catch (trade_error) {
+            logger.error(`[OIPolling] Trading system error for ${anomaly.symbol}:`, trade_error);
+          }
         }
       }
 
@@ -663,6 +742,61 @@ export class OIPollingService {
 
     logger.info('[OIPolling] Manual poll triggered');
     await this.poll();
+  }
+
+  /**
+   * 获取或更新币种的每日价格极值
+   * 使用内存缓存避免重复查询数据库
+   */
+  private get_or_update_daily_price_extremes(symbol: string, current_price: number): {
+    daily_low: number;
+    daily_high: number;
+    price_from_low_pct: number;
+    price_from_high_pct: number;
+  } {
+    const today = new Date().toISOString().split('T')[0]; // YYYY-MM-DD
+    const now = Date.now();
+
+    // 获取缓存
+    let extremes = this.daily_price_extremes.get(symbol);
+
+    // 检查是否需要重置（新的一天或首次记录）
+    if (!extremes || extremes.date !== today) {
+      // 新的一天，初始化极值
+      extremes = {
+        date: today,
+        low: current_price,
+        high: current_price,
+        last_update: now
+      };
+      logger.debug(`[OIPolling] ${symbol} - 初始化日内价格极值: low=${current_price}, high=${current_price}`);
+    } else {
+      // 更新极值
+      const old_low = extremes.low;
+      const old_high = extremes.high;
+
+      extremes.low = Math.min(extremes.low, current_price);
+      extremes.high = Math.max(extremes.high, current_price);
+      extremes.last_update = now;
+
+      if (extremes.low !== old_low || extremes.high !== old_high) {
+        logger.debug(`[OIPolling] ${symbol} - 更新日内价格极值: low=${extremes.low}, high=${extremes.high}`);
+      }
+    }
+
+    // 更新缓存
+    this.daily_price_extremes.set(symbol, extremes);
+
+    // 计算当前价格相对于极值的百分比
+    const price_from_low_pct = ((current_price - extremes.low) / extremes.low) * 100;
+    const price_from_high_pct = ((extremes.high - current_price) / extremes.high) * 100;
+
+    return {
+      daily_low: extremes.low,
+      daily_high: extremes.high,
+      price_from_low_pct,
+      price_from_high_pct
+    };
   }
 
   /**
