@@ -84,6 +84,8 @@ export class SignalGenerator {
   /**
    * 【核心】检查是否避免追高
    * 根据用户逻辑：抓早期启动，避免晚期狂欢
+   *
+   * 优化策略：先检查其他条件，最后再检查价格极值（减少数据库查询）
    */
   private check_avoid_chase_high(anomaly: OIAnomalyRecord): { allowed: boolean; reason?: string } {
     const oi_change = Math.abs(parseFloat(anomaly.percent_change.toString()));
@@ -91,23 +93,7 @@ export class SignalGenerator {
       ? Math.abs(parseFloat(anomaly.price_change_percent.toString()))
       : 0;
 
-    // ❌ 新增：检查当天价格极值（如果价格已经变化超过10%就不入场）
-    // 优化：直接使用异动记录中已计算好的price_from_low_pct和price_from_high_pct字段
-    if (anomaly.price_from_low_pct !== undefined && anomaly.price_from_low_pct > 10) {
-      return {
-        allowed: false,
-        reason: `价格从日内低点${anomaly.daily_price_low?.toFixed(4)}已涨${anomaly.price_from_low_pct.toFixed(1)}% (>10%), 避免追高`
-      };
-    }
-
-    if (anomaly.price_from_high_pct !== undefined && anomaly.price_from_high_pct > 10) {
-      return {
-        allowed: false,
-        reason: `价格从日内高点${anomaly.daily_price_high?.toFixed(4)}已跌${anomaly.price_from_high_pct.toFixed(1)}% (>10%), 避免追跌`
-      };
-    }
-
-    // ❌ 绝对不能追：晚期狂欢信号
+    // ❌ 第一步：检查晚期狂欢信号（无需查询数据库）
     // OI已增长>20% 或 价格已上涨>15%
     if (oi_change > 20) {
       return {
@@ -123,7 +109,7 @@ export class SignalGenerator {
       };
     }
 
-    // ❌ 背离危险信号：OI增长但价格滞涨
+    // ❌ 第二步：检查背离危险信号（无需查询数据库）
     // OI > 8% 但价格 < 1%，说明资金流入但价格不涨，危险
     if (oi_change > 8 && price_change < 1) {
       return {
@@ -151,6 +137,26 @@ export class SignalGenerator {
         return {
           allowed: false,
           reason: `做空信号但大户多空比${trader_ratio.toFixed(2)}>1.0，大户反向`
+        };
+      }
+    }
+
+    // ❌ 第三步：检查价格极值（最后检查，因为可能需要查询数据库）
+    // 优先使用已有字段，避免查询
+    if (anomaly.price_from_low_pct !== null && anomaly.price_from_low_pct !== undefined) {
+      if (anomaly.price_from_low_pct > 10) {
+        return {
+          allowed: false,
+          reason: `价格从日内低点已涨${anomaly.price_from_low_pct.toFixed(1)}% (>10%), 避免追高`
+        };
+      }
+    }
+
+    if (anomaly.price_from_high_pct !== null && anomaly.price_from_high_pct !== undefined) {
+      if (anomaly.price_from_high_pct > 10) {
+        return {
+          allowed: false,
+          reason: `价格从日内高点已跌${anomaly.price_from_high_pct.toFixed(1)}% (>10%), 避免追跌`
         };
       }
     }

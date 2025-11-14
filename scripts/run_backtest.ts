@@ -86,8 +86,8 @@ async function run_backtest_test() {
         }
       },
 
-      // 持仓时间限制 - 快进快出
-      max_holding_time_minutes: 30,                   // 60 → 30 (抓启动阶段)
+      // 持仓时间限制 - 30分钟
+      max_holding_time_minutes: 30,                   // 30分钟
 
       // 滑点和手续费
       use_slippage: true,

@@ -65,16 +65,6 @@ export class BacktestEngine {
 
     // 3. 按时间顺序处理每个异动
     for (const anomaly of anomalies) {
-      // ⚡ 补充价格极值数据（如果缺失）
-      // 必须在信号生成之前补充，因为信号生成器的避免追高检查需要这些数据
-      if (anomaly.daily_price_low === undefined || anomaly.daily_price_low === null) {
-        const price_extremes = await this.calculate_historical_price_extremes(anomaly);
-        anomaly.daily_price_low = price_extremes.daily_price_low;
-        anomaly.daily_price_high = price_extremes.daily_price_high;
-        anomaly.price_from_low_pct = price_extremes.price_from_low_pct;
-        anomaly.price_from_high_pct = price_extremes.price_from_high_pct;
-      }
-
       // 生成交易信号
       const signal = this.signal_generator.generate_signal(anomaly);
       if (!signal) {
@@ -102,7 +92,16 @@ export class BacktestEngine {
         continue;
       }
 
-      // 4. 模拟开仓
+      // 4. 补充价格极值数据（仅对即将开仓的交易）
+      if (anomaly.daily_price_low === null || anomaly.daily_price_low === undefined) {
+        const price_extremes = await this.calculate_historical_price_extremes(anomaly);
+        anomaly.daily_price_low = price_extremes.daily_price_low;
+        anomaly.daily_price_high = price_extremes.daily_price_high;
+        anomaly.price_from_low_pct = price_extremes.price_from_low_pct;
+        anomaly.price_from_high_pct = price_extremes.price_from_high_pct;
+      }
+
+      // 5. 模拟开仓
       const entry_price = this.apply_slippage(
         signal.entry_price || 0,
         signal.direction as 'LONG' | 'SHORT',
@@ -551,6 +550,86 @@ export class BacktestEngine {
       execution_time_ms: Date.now() - start_time,
       created_at: new Date()
     };
+  }
+
+  /**
+   * 批量补充缺失的价格极值数据
+   */
+  private async batch_fill_missing_price_extremes(anomalies: OIAnomalyRecord[]): Promise<void> {
+    // 统计缺失数据的异动
+    const missing_anomalies = anomalies.filter(a =>
+      a.daily_price_low === null || a.daily_price_low === undefined
+    );
+
+    if (missing_anomalies.length === 0) {
+      logger.info('[BacktestEngine] All anomalies have price extremes data');
+      return;
+    }
+
+    logger.info(`[BacktestEngine] Found ${missing_anomalies.length}/${anomalies.length} anomalies missing price extremes, filling...`);
+
+    // 按日期分组，减少数据库查询次数
+    const by_date_symbol = new Map<string, OIAnomalyRecord[]>();
+    for (const anomaly of missing_anomalies) {
+      const beijing_time = new Date(anomaly.anomaly_time.getTime() + 8 * 60 * 60 * 1000);
+      const date = beijing_time.toISOString().split('T')[0]; // YYYY-MM-DD
+      const key = `${anomaly.symbol}_${date}`;
+
+      if (!by_date_symbol.has(key)) {
+        by_date_symbol.set(key, []);
+      }
+      by_date_symbol.get(key)!.push(anomaly);
+    }
+
+    logger.info(`[BacktestEngine] Grouped into ${by_date_symbol.size} unique symbol-date combinations`);
+
+    // 批量查询每个symbol-date组合
+    let filled_count = 0;
+    for (const [key, group_anomalies] of by_date_symbol.entries()) {
+      const [symbol, date] = key.split('_');
+
+      try {
+        // 一次查询获取当天所有快照
+        const snapshots = await this.oi_repository.get_symbol_oi_curve(symbol, date);
+
+        if (snapshots.length === 0) {
+          continue;
+        }
+
+        // 计算当天价格极值
+        const prices = snapshots
+          .map(s => s.mark_price)
+          .filter((price): price is number => price !== undefined && price !== null && price > 0)
+          .map(price => typeof price === 'string' ? parseFloat(price) : price);
+
+        if (prices.length === 0) {
+          continue;
+        }
+
+        const daily_price_low = Math.min(...prices);
+        const daily_price_high = Math.max(...prices);
+
+        // 填充该组所有异动的价格极值
+        for (const anomaly of group_anomalies) {
+          const current_price_raw = anomaly.price_after || anomaly.price_before || 0;
+          const current_price = typeof current_price_raw === 'string' ? parseFloat(current_price_raw) : current_price_raw;
+
+          anomaly.daily_price_low = daily_price_low;
+          anomaly.daily_price_high = daily_price_high;
+
+          if (current_price > 0 && !isNaN(current_price)) {
+            anomaly.price_from_low_pct = ((current_price - daily_price_low) / daily_price_low) * 100;
+            anomaly.price_from_high_pct = ((daily_price_high - current_price) / daily_price_high) * 100;
+          }
+
+          filled_count++;
+        }
+      } catch (error) {
+        logger.warn(`[BacktestEngine] Failed to fetch extremes for ${key}:`, error);
+      }
+    }
+
+    logger.info(`[BacktestEngine] Successfully filled ${filled_count}/${missing_anomalies.length} anomalies`);
   }
 
   /**
