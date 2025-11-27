@@ -75,11 +75,12 @@ async function test_binance_api() {
 
     console.log(`  交易规则: 精度=${quantity_precision}位, 最小名义价值=$${min_notional}`);
 
-    // 计算满足最小名义价值的数量
+    // 计算满足最小名义价值的数量,向上取整确保满足要求
     const min_quantity_for_notional = min_notional / current_price;
+    const step_size = Math.pow(10, -quantity_precision);  // 0.001
 
-    // 使用稍大于最小要求的数量(+1%安全边际),并按精度规则格式化
-    const quantity = parseFloat((min_quantity_for_notional * 1.01).toFixed(quantity_precision));
+    // 向上取整到最小精度的倍数
+    const quantity = Math.ceil(min_quantity_for_notional / step_size) * step_size;
     const notional_value = quantity * current_price;
 
     console.log(`  计算数量: ${quantity} BTC (名义价值: $${notional_value.toFixed(2)})\n`);
