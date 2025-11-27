@@ -5,6 +5,7 @@ import { OICacheManager } from '../core/cache/oi_cache_manager';
 import { MarketSentimentManager } from './market_sentiment_manager';
 import { TradingSystem } from '../trading/trading_system';
 import { SignalGenerator } from '../trading/signal_generator';
+import { TradingMode } from '../types/trading_types';
 import { logger } from '../utils/logger';
 import {
   ContractSymbolConfig,
@@ -98,10 +99,10 @@ export class OIPollingService {
   initialize_trading_system(enabled: boolean = false, config?: Partial<import('../types/trading_types').TradingSystemConfig>): void {
     this.trading_system = new TradingSystem({
       enabled,
-      mode: 'PAPER', // 默认纸面交易模式
+      mode: TradingMode.PAPER, // 默认纸面交易模式（会被config覆盖）
       ...config
     });
-    logger.info(`[OIPolling] Trading system initialized (enabled=${enabled}, mode=${config?.mode || 'PAPER'})`);
+    logger.info(`[OIPolling] Trading system initialized (enabled=${enabled}, mode=${config?.mode || TradingMode.PAPER})`);
   }
 
   /**
