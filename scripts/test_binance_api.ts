@@ -15,7 +15,8 @@
 import dotenv from 'dotenv';
 dotenv.config({ override: true });
 
-import { BinanceFuturesTradingAPI, OrderSide, PositionSide } from '../src/api/binance_futures_trading_api';
+import { BinanceFuturesTradingAPI, OrderSide, PositionSide, PositionInfo } from '../src/api/binance_futures_trading_api';
+import { BinanceFuturesAPI } from '../src/api/binance_futures_api';
 import { logger } from '../src/utils/logger';
 
 async function test_binance_api() {
@@ -35,6 +36,7 @@ async function test_binance_api() {
 
     // 创建API客户端（实盘模式）
     const trading_api = new BinanceFuturesTradingAPI(api_key, secret_key, false);
+    const binance_api = new BinanceFuturesAPI(50, api_key, secret_key);
 
     const symbol = 'BTCUSDT';
     const leverage = 10;  // 10倍杠杆
@@ -63,8 +65,8 @@ async function test_binance_api() {
     // 第2步：获取BTC当前价格
     // ========================================
     console.log('💰 [2/6] 获取BTC当前价格...');
-    const ticker = await trading_api.get_ticker_price(symbol);
-    const current_price = parseFloat(ticker.price);
+    const ticker = await binance_api.get_24hr_ticker(symbol);
+    const current_price = parseFloat(ticker.lastPrice);
     console.log(`  当前价格: $${current_price.toFixed(2)}`);
 
     // 计算购买数量（保留3位小数，BTC最小精度通常是0.001）
@@ -120,8 +122,8 @@ async function test_binance_api() {
     // 等待1秒确保持仓更新
     await new Promise(resolve => setTimeout(resolve, 1000));
 
-    const positions = await trading_api.get_position_risk();
-    const btc_position = positions.find(p => p.symbol === symbol && parseFloat(p.positionAmt) !== 0);
+    const positions: PositionInfo[] = await trading_api.get_position_info();
+    const btc_position = positions.find((p: PositionInfo) => p.symbol === symbol && parseFloat(p.positionAmt) !== 0);
 
     if (!btc_position) {
       console.log('  ⚠️  未找到持仓，可能已被强平或订单未成交');
@@ -191,8 +193,8 @@ async function test_binance_api() {
 
     await new Promise(resolve => setTimeout(resolve, 1000));
 
-    const final_positions = await trading_api.get_position_risk();
-    const final_btc_position = final_positions.find(p => p.symbol === symbol && parseFloat(p.positionAmt) !== 0);
+    const final_positions: PositionInfo[] = await trading_api.get_position_info();
+    const final_btc_position = final_positions.find((p: PositionInfo) => p.symbol === symbol && parseFloat(p.positionAmt) !== 0);
 
     if (final_btc_position) {
       console.log(`  ⚠️  警告: 仍有持仓 ${parseFloat(final_btc_position.positionAmt)} BTC，可能未完全平仓`);
