@@ -176,13 +176,15 @@ export class APIError extends BaseError {
 /**
  * 限流错误
  */
-export class RateLimitError extends APIError {
+export class RateLimitError extends BaseError {
   public readonly retryAfter?: number;
+  public readonly statusCode: number = 429;
 
   constructor(message: string, retryAfter?: number, context?: any) {
-    super(message, 429, context);
-    this.code = ErrorCode.API_RATE_LIMIT;
-    this.severity = ErrorSeverity.LOW;
+    super(message, ErrorCode.API_RATE_LIMIT, ErrorSeverity.LOW, {
+      context: { retryAfter, ...context },
+      isRetryable: true
+    });
     this.retryAfter = retryAfter;
   }
 }
