@@ -60,15 +60,29 @@ export class OIRepository {
         // 第一步：禁用所有币种（准备更新）
         await conn.execute('UPDATE contract_symbols_config SET enabled = 0');
 
-        // 第二步：插入或更新币安返回的最新币种（enabled=1）
+        // 第二步：插入或更新币安返回的最新币种（enabled=1，含精度信息）
         const values = symbols.map(s => [
-          s.symbol, s.base_asset, s.quote_asset, s.contract_type, s.status, s.enabled, s.priority
+          s.symbol,
+          s.base_asset,
+          s.quote_asset,
+          s.contract_type,
+          s.status,
+          s.enabled,
+          s.priority,
+          s.price_precision ?? null,
+          s.quantity_precision ?? null,
+          s.base_asset_precision ?? null,
+          s.quote_precision ?? null,
+          s.min_notional ?? null,
+          s.step_size ?? null
         ]);
 
-        const placeholders = symbols.map(() => '(?, ?, ?, ?, ?, ?, ?)').join(',');
+        const placeholders = symbols.map(() => '(?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)').join(',');
         const insert_sql = `
           INSERT INTO contract_symbols_config
-          (symbol, base_asset, quote_asset, contract_type, status, enabled, priority)
+          (symbol, base_asset, quote_asset, contract_type, status, enabled, priority,
+           price_precision, quantity_precision, base_asset_precision, quote_precision,
+           min_notional, step_size)
           VALUES ${placeholders}
           ON DUPLICATE KEY UPDATE
             base_asset = VALUES(base_asset),
@@ -77,6 +91,12 @@ export class OIRepository {
             status = VALUES(status),
             enabled = VALUES(enabled),
             priority = VALUES(priority),
+            price_precision = VALUES(price_precision),
+            quantity_precision = VALUES(quantity_precision),
+            base_asset_precision = VALUES(base_asset_precision),
+            quote_precision = VALUES(quote_precision),
+            min_notional = VALUES(min_notional),
+            step_size = VALUES(step_size),
             updated_at = CURRENT_TIMESTAMP
         `;
 
@@ -139,6 +159,38 @@ export class OIRepository {
       }
 
       return symbols;
+    });
+  }
+
+  /**
+   * 获取单个币种的精度信息
+   */
+  async get_symbol_precision(symbol: string): Promise<{
+    quantity_precision: number;
+    price_precision: number;
+    min_notional: number;
+    step_size: number;
+  } | null> {
+    return this.execute_with_connection(async (conn) => {
+      const sql = `
+        SELECT quantity_precision, price_precision, min_notional, step_size
+        FROM contract_symbols_config
+        WHERE symbol = ? AND enabled = 1
+      `;
+
+      const [rows] = await conn.execute<RowDataPacket[]>(sql, [symbol]);
+      if (rows.length === 0) {
+        logger.warn(`[OIRepository] Symbol ${symbol} not found or disabled`);
+        return null;
+      }
+
+      const row = rows[0];
+      return {
+        quantity_precision: row.quantity_precision,
+        price_precision: row.price_precision,
+        min_notional: row.min_notional,
+        step_size: row.step_size
+      };
     });
   }
 

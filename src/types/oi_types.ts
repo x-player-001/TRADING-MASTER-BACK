@@ -12,6 +12,17 @@ export interface ContractSymbolConfig {
   status: 'TRADING' | 'BREAK';
   enabled: boolean;
   priority: number;
+
+  // 精度信息
+  price_precision?: number;           // 价格小数位数
+  quantity_precision?: number;        // 数量小数位数
+  base_asset_precision?: number;      // 标的资产精度
+  quote_precision?: number;           // 报价资产精度
+
+  // 交易规则
+  min_notional?: number;              // 最小名义价值
+  step_size?: number;                 // 数量步进
+
   created_at?: Date;
   updated_at?: Date;
 }
@@ -102,8 +113,21 @@ export interface BinanceExchangeInfoSymbol {
   symbol: string;
   baseAsset: string;
   quoteAsset: string;
+  marginAsset: string;
   contractType: string;
   status: string;
+
+  // 精度信息
+  pricePrecision: number;           // 价格小数位数
+  quantityPrecision: number;        // 数量小数位数
+  baseAssetPrecision: number;       // 标的资产精度
+  quotePrecision: number;           // 报价资产精度
+
+  // 交易规则filters数组
+  filters: Array<{
+    filterType: string;
+    [key: string]: any;
+  }>;
 }
 
 export interface BinanceExchangeInfoResponse {

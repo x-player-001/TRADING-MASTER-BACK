@@ -99,15 +99,31 @@ export class BinanceFuturesAPI {
         filtered_symbols = filtered_symbols.slice(0, max_symbols);
       }
 
-      const usdt_symbols = filtered_symbols.map(symbol => ({
-        symbol: symbol.symbol,
-        base_asset: symbol.baseAsset,
-        quote_asset: symbol.quoteAsset,
-        contract_type: 'PERPETUAL' as const,
-        status: 'TRADING' as const,
-        enabled: true,
-        priority: this.calculate_symbol_priority(symbol)
-      }));
+      const usdt_symbols = filtered_symbols.map(symbol => {
+        // 从filters中提取MIN_NOTIONAL和LOT_SIZE
+        const min_notional_filter = symbol.filters.find(f => f.filterType === 'MIN_NOTIONAL');
+        const lot_size_filter = symbol.filters.find(f => f.filterType === 'LOT_SIZE');
+
+        return {
+          symbol: symbol.symbol,
+          base_asset: symbol.baseAsset,
+          quote_asset: symbol.quoteAsset,
+          contract_type: 'PERPETUAL' as const,
+          status: 'TRADING' as const,
+          enabled: true,
+          priority: this.calculate_symbol_priority(symbol),
+
+          // 精度信息
+          price_precision: symbol.pricePrecision,
+          quantity_precision: symbol.quantityPrecision,
+          base_asset_precision: symbol.baseAssetPrecision,
+          quote_precision: symbol.quotePrecision,
+
+          // 交易规则
+          min_notional: min_notional_filter ? parseFloat(min_notional_filter.notional) : undefined,
+          step_size: lot_size_filter ? parseFloat(lot_size_filter.stepSize) : undefined
+        };
+      });
 
       console.log(`[BinanceAPI] Fetched ${usdt_symbols.length} USDT perpetual symbols (limit: ${max_symbols})`);
       return usdt_symbols;
