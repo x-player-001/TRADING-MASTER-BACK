@@ -5,11 +5,13 @@
   "main": "dist/index.js",
   "scripts": {
     "dev": "ts-node-dev -r tsconfig-paths/register --respawn --transpile-only src/index.ts",
+    "dev:api": "ts-node-dev -r tsconfig-paths/register --respawn --transpile-only src/index_api_only.ts",
     "build": "tsc",
     "start": "node -r tsconfig-paths/register dist/index.js",
     "test": "jest",
     "test:watch": "jest --watch",
     "test:coverage": "jest --coverage",
+    "test:api": "ts-node -r tsconfig-paths/register scripts/test_binance_api.ts",
     "lint": "eslint src/**/*.ts",
     "typecheck": "tsc --noEmit",
     "db:setup": "node -e \"console.log('请先安装并启动 MySQL 和 Redis 服务')\"",

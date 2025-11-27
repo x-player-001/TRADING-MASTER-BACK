@@ -17,6 +17,7 @@ import { OIRepository } from '../database/oi_repository';
 import { SignalGenerator } from './signal_generator';
 import { StrategyEngine } from './strategy_engine';
 import { RiskManager } from './risk_manager';
+import { TrailingStopManager, TakeProfitAction } from './trailing_stop_manager';
 import { logger } from '../utils/logger';
 
 export class BacktestEngine {
@@ -24,12 +25,14 @@ export class BacktestEngine {
   private signal_generator: SignalGenerator;
   private strategy_engine: StrategyEngine;
   private risk_manager: RiskManager;
+  private trailing_stop_manager: TrailingStopManager;
 
   constructor(oi_repository?: OIRepository) {
     this.oi_repository = oi_repository || new OIRepository();
     this.signal_generator = new SignalGenerator();
     this.strategy_engine = new StrategyEngine();
     this.risk_manager = new RiskManager();
+    this.trailing_stop_manager = new TrailingStopManager();
   }
 
   /**
@@ -42,6 +45,12 @@ export class BacktestEngine {
     // 应用配置
     this.strategy_engine.update_config(config.strategy_config);
     this.risk_manager.update_config(config.risk_config);
+
+    // ⚠️ 设置初始资金（用于固定比例保证金计算）
+    this.risk_manager.set_initial_balance(config.initial_balance);
+
+    // ⚠️ 初始化回测模式（设置起始时间，用于每日PnL重置）
+    this.risk_manager.initialize_backtest_mode(config.start_date);
 
     // 1. 获取历史异动记录
     const anomalies = await this.get_historical_anomalies(config);
@@ -80,11 +89,23 @@ export class BacktestEngine {
         continue;
       }
 
-      // 风险检查
+      // 方向过滤（只做多或只做空）
+      if (config.allowed_directions && config.allowed_directions.length > 0) {
+        if (!config.allowed_directions.includes(signal.direction as any)) {
+          rejected_signals.push({
+            signal,
+            reason: `Direction filter: ${signal.direction} not in allowed directions [${config.allowed_directions.join(', ')}]`
+          });
+          continue;
+        }
+      }
+
+      // 风险检查（传入回测当前时间 + 所有仓位包括已平仓）✨
       const risk_check = this.risk_manager.can_open_position(
         signal,
-        open_positions,
-        balance
+        [...open_positions, ...closed_positions],  // 传入所有仓位以检查时间重叠
+        balance,
+        anomaly.anomaly_time  // 回测模式：使用异动发生的时间
       );
 
       if (!risk_check.allowed) {
@@ -92,16 +113,25 @@ export class BacktestEngine {
         continue;
       }
 
-      // 4. 补充价格极值数据（仅对即将开仓的交易）
-      if (anomaly.daily_price_low === null || anomaly.daily_price_low === undefined) {
-        const price_extremes = await this.calculate_historical_price_extremes(anomaly);
-        anomaly.daily_price_low = price_extremes.daily_price_low;
-        anomaly.daily_price_high = price_extremes.daily_price_high;
-        anomaly.price_from_low_pct = price_extremes.price_from_low_pct;
-        anomaly.price_from_high_pct = price_extremes.price_from_high_pct;
+      // ⚠️ 防止同一时间重复开仓（多周期异动触发）
+      // 检查是否在极短时间内（10秒内）已有同一币种的开仓或平仓
+      const recent_time_window = 10 * 1000; // 10秒
+      const has_recent_position = [...open_positions, ...closed_positions].some(pos => {
+        if (pos.symbol !== signal.symbol) return false;
+        const time_diff = Math.abs(anomaly.anomaly_time.getTime() - pos.opened_at.getTime());
+        return time_diff < recent_time_window;
+      });
+
+      if (has_recent_position) {
+        rejected_signals.push({
+          signal,
+          reason: `Duplicate signal: already have position for ${signal.symbol} within ${recent_time_window / 1000}s`
+        });
+        logger.debug(`[BacktestEngine] Skipped duplicate signal for ${signal.symbol} at ${anomaly.anomaly_time.toISOString()}`);
+        continue;
       }
 
-      // 5. 模拟开仓
+      // 4. 模拟开仓
       const entry_price = this.apply_slippage(
         signal.entry_price || 0,
         signal.direction as 'LONG' | 'SHORT',
@@ -130,13 +160,44 @@ export class BacktestEngine {
         signal_id: signal.source_anomaly_id,
         is_open: true,
         opened_at: anomaly.anomaly_time,
-        updated_at: anomaly.anomaly_time
+        updated_at: anomaly.anomaly_time,
+        realized_pnl: 0  // 初始化已实现盈亏
       };
 
       open_positions.push(position);
       balance -= position_size / leverage; // 扣除保证金
 
       logger.debug(`[BacktestEngine] Position opened: ${position.symbol} ${position.side} @ ${entry_price}`);
+
+      // 如果配置了动态止盈，启动跟踪
+      if (config.dynamic_take_profit) {
+        // 计算实际的止盈价格
+        const tp_config = {
+          ...config.dynamic_take_profit,
+          targets: config.dynamic_take_profit.targets.map(target => {
+            if (target.is_trailing) {
+              // 跟踪止盈不需要固定价格
+              return { ...target };
+            } else {
+              // 计算固定批次的目标价格
+              const target_price = position.side === PositionSide.LONG
+                ? entry_price * (1 + target.target_profit_pct / 100)
+                : entry_price * (1 - target.target_profit_pct / 100);
+              return { ...target, price: target_price };
+            }
+          })
+        };
+
+        this.trailing_stop_manager.start_tracking(
+          position.id!,
+          position.symbol,
+          position.side,
+          entry_price,
+          quantity,
+          tp_config
+        );
+        logger.debug(`[BacktestEngine] Started dynamic take profit tracking for position ${position.id}`);
+      }
 
       // 5. 获取后续价格并检查止损/止盈
       const exit_result = await this.simulate_position_holding(
@@ -146,24 +207,42 @@ export class BacktestEngine {
       );
 
       if (exit_result) {
-        // 平仓
-        const exit_price = this.apply_slippage(exit_result.exit_price, position.side, config, true);
-        const commission = this.calculate_commission(position, exit_price, config);
-
+        // 平仓（可能是全部平仓或剩余仓位平仓）
         position.is_open = false;
-        position.current_price = exit_price;
+        position.current_price = exit_result.exit_price;
         position.closed_at = exit_result.exit_time;
         position.close_reason = exit_result.reason;
 
-        // 计算盈亏
-        const pnl = this.calculate_pnl(position, exit_price) - commission;
-        position.realized_pnl = pnl;
+        // 计算最终盈亏
+        let final_pnl: number;
 
-        balance += (position_size / leverage) + pnl; // 返还保证金 + 盈亏
+        if (config.dynamic_take_profit && position.realized_pnl !== undefined && position.realized_pnl !== 0) {
+          // 分批止盈模式：已经有部分已实现盈亏，只需要计算剩余仓位的盈亏
+          const exit_price = this.apply_slippage(exit_result.exit_price, position.side, config, true);
+
+          if (position.quantity > 0.0001) {  // 还有剩余仓位
+            const remaining_commission = this.calculate_partial_commission(position, exit_price, position.quantity, config);
+            const remaining_pnl = this.calculate_partial_pnl(position, exit_price, position.quantity) - remaining_commission;
+            final_pnl = position.realized_pnl + remaining_pnl;
+
+            logger.debug(`[BacktestEngine] Remaining position closed: ${position.symbol} ${position.quantity.toFixed(4)} @ ${exit_price.toFixed(6)}, remaining PnL=${remaining_pnl.toFixed(2)}`);
+          } else {
+            // 已经全部通过分批止盈平仓
+            final_pnl = position.realized_pnl;
+          }
+        } else {
+          // 标准模式：一次性平仓
+          const exit_price = this.apply_slippage(exit_result.exit_price, position.side, config, true);
+          const commission = this.calculate_commission(position, exit_price, config);
+          final_pnl = this.calculate_pnl(position, exit_price) - commission;
+        }
+
+        position.realized_pnl = final_pnl;
+        balance += (position_size / leverage) + final_pnl; // 返还保证金 + 盈亏
 
         // 更新风险管理器
-        const is_win = pnl > 0;
-        this.risk_manager.record_trade_result(pnl, is_win);
+        const is_win = final_pnl > 0;
+        this.risk_manager.record_trade_result(final_pnl, is_win);
 
         // 移到已平仓列表
         const index = open_positions.indexOf(position);
@@ -172,7 +251,7 @@ export class BacktestEngine {
         }
         closed_positions.push(position);
 
-        logger.debug(`[BacktestEngine] Position closed: ${position.symbol} @ ${exit_price}, PnL=${pnl.toFixed(2)} (${exit_result.reason})`);
+        logger.debug(`[BacktestEngine] Position fully closed: ${position.symbol} @ ${exit_result.exit_price.toFixed(6)}, Total PnL=${final_pnl.toFixed(2)} (${exit_result.reason})`);
       }
 
       // 记录资金曲线
@@ -226,30 +305,88 @@ export class BacktestEngine {
    * 获取历史异动记录
    */
   private async get_historical_anomalies(config: BacktestConfig): Promise<OIAnomalyRecord[]> {
+    // ⚠️ 优化：只加载有价格极值字段的数据（从2025-11-15开始）
+    // 这样可以避免在回测时查询数据库计算价格极值
+    const price_extreme_start_date = new Date('2025-11-15T00:00:00Z');
+    const actual_start_date = config.start_date > price_extreme_start_date
+      ? config.start_date
+      : price_extreme_start_date;
+
+    logger.info(`[BacktestEngine] Loading anomalies with price extremes from ${actual_start_date.toISOString()}`);
+
     const anomalies = await this.oi_repository.get_anomaly_records({
-      start_time: config.start_date,
+      start_time: actual_start_date, // 使用调整后的开始时间
       end_time: config.end_date,
       symbol: config.symbols?.[0], // TODO: 支持多币种
       severity: config.min_anomaly_severity,
       order: 'ASC' // 按时间升序
     });
 
-    // 过滤币种
-    if (config.symbols && config.symbols.length > 0) {
-      return anomalies.filter(a => config.symbols!.includes(a.symbol));
+    // 过滤掉没有价格极值字段的数据（双重保险）
+    let filtered_anomalies = anomalies.filter(a =>
+      a.daily_price_low !== null &&
+      a.daily_price_high !== null &&
+      a.price_from_low_pct !== null &&
+      a.price_from_high_pct !== null
+    );
+
+    logger.info(`[BacktestEngine] Filtered ${anomalies.length} -> ${filtered_anomalies.length} anomalies with complete price extremes`);
+
+    // 应用黑名单过滤
+    const blacklist = await this.get_symbol_blacklist();
+    if (blacklist.length > 0) {
+      const before_blacklist = filtered_anomalies.length;
+      filtered_anomalies = filtered_anomalies.filter(a => {
+        // 检查symbol是否包含黑名单中的任何关键词
+        return !blacklist.some(blocked => a.symbol.includes(blocked));
+      });
+      const filtered_count = before_blacklist - filtered_anomalies.length;
+      if (filtered_count > 0) {
+        logger.info(`[BacktestEngine] Filtered ${filtered_count} anomalies by blacklist: ${blacklist.join(', ')}`);
+      }
     }
 
-    return anomalies;
+    // 过滤币种
+    if (config.symbols && config.symbols.length > 0) {
+      return filtered_anomalies.filter(a => config.symbols!.includes(a.symbol));
+    }
+
+    return filtered_anomalies;
   }
 
   /**
-   * 模拟持仓期间的价格变化，检查止损/止盈
+   * 获取币种黑名单（从OI监控配置表读取）
+   */
+  private async get_symbol_blacklist(): Promise<string[]> {
+    try {
+      const configs = await this.oi_repository.get_monitoring_config('symbol_blacklist');
+      if (configs.length === 0) {
+        return [];
+      }
+
+      const config_value = configs[0].config_value;
+      const blacklist = JSON.parse(config_value) as string[];
+
+      if (Array.isArray(blacklist) && blacklist.length > 0) {
+        logger.info(`[BacktestEngine] Loaded blacklist: ${blacklist.join(', ')}`);
+        return blacklist;
+      }
+
+      return [];
+    } catch (error) {
+      logger.error('[BacktestEngine] Failed to get blacklist config:', error);
+      return [];
+    }
+  }
+
+  /**
+   * 模拟持仓期间的价格变化，检查止损/止盈/爆仓/分批止盈
    */
   private async simulate_position_holding(
     position: PositionRecord,
     entry_time: Date,
     config: BacktestConfig
-  ): Promise<{ exit_price: number; exit_time: Date; reason: 'STOP_LOSS' | 'TAKE_PROFIT' | 'TIMEOUT' } | null> {
+  ): Promise<{ exit_price: number; exit_time: Date; reason: 'STOP_LOSS' | 'TAKE_PROFIT' | 'LIQUIDATION' | 'TIMEOUT' } | null> {
     const max_holding_ms = (config.max_holding_time_minutes || 60) * 60 * 1000;
     const end_time = new Date(entry_time.getTime() + max_holding_ms);
 
@@ -262,6 +399,9 @@ export class BacktestEngine {
 
     if (prices.length === 0) {
       // 没有价格数据，按超时处理
+      if (config.dynamic_take_profit) {
+        this.trailing_stop_manager.stop_tracking(position.id!);
+      }
       return {
         exit_price: position.entry_price,
         exit_time: end_time,
@@ -269,12 +409,84 @@ export class BacktestEngine {
       };
     }
 
-    // 遍历价格，检查是否触发止损/止盈
+    // 计算逐仓爆仓价格
+    const liquidation_price = this.calculate_liquidation_price(position);
+
+    // 检查是否使用动态止盈
+    const use_dynamic_tp = config.dynamic_take_profit !== undefined;
+    let remaining_quantity = position.quantity;
+
+    // 遍历价格，检查是否触发止损/止盈/爆仓/分批止盈
     for (const price_point of prices) {
-      // 多头持仓
+      // 1. 检查分批止盈（如果启用）
+      if (use_dynamic_tp && remaining_quantity > 0) {
+        const tp_actions = this.trailing_stop_manager.update_price(position.id!, price_point.price);
+
+        for (const action of tp_actions) {
+          // 执行分批平仓
+          const exit_price = this.apply_slippage(action.price, position.side, config, true);
+          const commission = this.calculate_partial_commission(position, exit_price, action.quantity, config);
+
+          // 计算该批次盈亏
+          const partial_pnl = this.calculate_partial_pnl(position, exit_price, action.quantity) - commission;
+          position.realized_pnl = (position.realized_pnl || 0) + partial_pnl;
+
+          // 计算盈利百分比
+          const profit_percent = ((exit_price - position.entry_price) / position.entry_price) * 100 * (position.side === PositionSide.SHORT ? -1 : 1);
+
+          // 记录分批止盈执行 ✨
+          if (!position.take_profit_executions) {
+            position.take_profit_executions = [];
+          }
+          position.take_profit_executions.push({
+            batch_number: position.take_profit_executions.length + 1,
+            type: action.type,
+            quantity: action.quantity,
+            exit_price,
+            pnl: partial_pnl,
+            profit_percent,
+            executed_at: price_point.timestamp,
+            reason: action.reason
+          });
+
+          // 更新剩余仓位
+          remaining_quantity -= action.quantity;
+          position.quantity = remaining_quantity;
+
+          logger.info(`[BacktestEngine] ${action.type}: ${position.symbol} closed ${action.quantity.toFixed(4)} @ ${exit_price.toFixed(6)}, PnL=${partial_pnl.toFixed(2)} (${action.reason})`);
+
+          // 如果全部平仓，返回
+          if (remaining_quantity <= 0.0001) {  // 处理浮点数精度
+            this.trailing_stop_manager.stop_tracking(position.id!);
+            return {
+              exit_price,
+              exit_time: price_point.timestamp,
+              reason: 'TAKE_PROFIT'
+            };
+          }
+        }
+      }
+
+      // 2. 检查爆仓（针对剩余仓位）
       if (position.side === PositionSide.LONG) {
-        // 止损
+        // ⚠️ 优先检查爆仓（逐仓模式）
+        if (liquidation_price && price_point.price <= liquidation_price) {
+          if (use_dynamic_tp) {
+            this.trailing_stop_manager.stop_tracking(position.id!);
+          }
+          logger.warn(`[BacktestEngine] LIQUIDATION! ${position.symbol} @ ${price_point.price.toFixed(6)} (entry: ${position.entry_price.toFixed(6)}, liq: ${liquidation_price.toFixed(6)})`);
+          return {
+            exit_price: liquidation_price,
+            exit_time: price_point.timestamp,
+            reason: 'LIQUIDATION'
+          };
+        }
+
+        // 3. 检查止损（针对剩余仓位）
         if (position.stop_loss_price && price_point.price <= position.stop_loss_price) {
+          if (use_dynamic_tp) {
+            this.trailing_stop_manager.stop_tracking(position.id!);
+          }
           return {
             exit_price: position.stop_loss_price,
             exit_time: price_point.timestamp,
@@ -282,8 +494,8 @@ export class BacktestEngine {
           };
         }
 
-        // 止盈
-        if (position.take_profit_price && price_point.price >= position.take_profit_price) {
+        // 4. 检查固定止盈（仅在未启用动态止盈时）
+        if (!use_dynamic_tp && position.take_profit_price && price_point.price >= position.take_profit_price) {
           return {
             exit_price: position.take_profit_price,
             exit_time: price_point.timestamp,
@@ -294,8 +506,24 @@ export class BacktestEngine {
 
       // 空头持仓
       if (position.side === PositionSide.SHORT) {
+        // ⚠️ 优先检查爆仓（逐仓模式）
+        if (liquidation_price && price_point.price >= liquidation_price) {
+          if (use_dynamic_tp) {
+            this.trailing_stop_manager.stop_tracking(position.id!);
+          }
+          logger.warn(`[BacktestEngine] LIQUIDATION! ${position.symbol} @ ${price_point.price.toFixed(6)} (entry: ${position.entry_price.toFixed(6)}, liq: ${liquidation_price.toFixed(6)})`);
+          return {
+            exit_price: liquidation_price,
+            exit_time: price_point.timestamp,
+            reason: 'LIQUIDATION'
+          };
+        }
+
         // 止损
         if (position.stop_loss_price && price_point.price >= position.stop_loss_price) {
+          if (use_dynamic_tp) {
+            this.trailing_stop_manager.stop_tracking(position.id!);
+          }
           return {
             exit_price: position.stop_loss_price,
             exit_time: price_point.timestamp,
@@ -303,8 +531,8 @@ export class BacktestEngine {
           };
         }
 
-        // 止盈
-        if (position.take_profit_price && price_point.price <= position.take_profit_price) {
+        // 固定止盈（仅在未启用动态止盈时）
+        if (!use_dynamic_tp && position.take_profit_price && price_point.price <= position.take_profit_price) {
           return {
             exit_price: position.take_profit_price,
             exit_time: price_point.timestamp,
@@ -315,12 +543,34 @@ export class BacktestEngine {
     }
 
     // 超时平仓
+    if (use_dynamic_tp) {
+      this.trailing_stop_manager.stop_tracking(position.id!);
+    }
     const last_price = prices[prices.length - 1];
     return {
       exit_price: last_price.price,
       exit_time: last_price.timestamp,
       reason: 'TIMEOUT'
     };
+  }
+
+  /**
+   * 计算逐仓爆仓价格
+   *
+   * 逐仓模式下，当浮亏达到保证金时触发爆仓
+   * 多头爆仓价 = 入场价 × (1 - 1/杠杆)
+   * 空头爆仓价 = 入场价 × (1 + 1/杠杆)
+   */
+  private calculate_liquidation_price(position: PositionRecord): number {
+    const leverage = position.leverage;
+
+    if (position.side === PositionSide.LONG) {
+      // 多头：价格下跌到爆仓价
+      return position.entry_price * (1 - 1 / leverage);
+    } else {
+      // 空头：价格上涨到爆仓价
+      return position.entry_price * (1 + 1 / leverage);
+    }
   }
 
   /**
@@ -395,18 +645,53 @@ export class BacktestEngine {
 
   /**
    * 计算盈亏
+   *
+   * ⚠️ 重要：合约交易盈亏计算
+   * PnL = (出场价 - 入场价) × 数量
+   * 杠杆不参与盈亏计算！杠杆只影响保证金
    */
   private calculate_pnl(position: PositionRecord, exit_price: number): number {
     const price_diff = exit_price - position.entry_price;
 
     let pnl: number;
     if (position.side === PositionSide.LONG) {
-      pnl = price_diff * position.quantity * position.leverage;
+      pnl = price_diff * position.quantity;  // 多头：价格上涨盈利
     } else {
-      pnl = -price_diff * position.quantity * position.leverage;
+      pnl = -price_diff * position.quantity;  // 空头：价格下跌盈利
     }
 
     return pnl;
+  }
+
+  /**
+   * 计算部分仓位盈亏（用于分批止盈）
+   */
+  private calculate_partial_pnl(position: PositionRecord, exit_price: number, quantity: number): number {
+    const price_diff = exit_price - position.entry_price;
+
+    let pnl: number;
+    if (position.side === PositionSide.LONG) {
+      pnl = price_diff * quantity;  // 多头：价格上涨盈利
+    } else {
+      pnl = -price_diff * quantity;  // 空头：价格下跌盈利
+    }
+
+    return pnl;
+  }
+
+  /**
+   * 计算部分仓位手续费（用于分批止盈）
+   */
+  private calculate_partial_commission(
+    position: PositionRecord,
+    exit_price: number,
+    quantity: number,
+    config: BacktestConfig
+  ): number {
+    const commission_percent = config.commission_percent || 0.05;
+    const trade_value = exit_price * quantity;
+    // 注意：分批平仓只计算平仓手续费，开仓手续费已经在开仓时计算
+    return trade_value * (commission_percent / 100);
   }
 
   /**

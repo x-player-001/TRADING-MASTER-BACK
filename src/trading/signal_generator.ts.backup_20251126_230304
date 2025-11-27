@@ -144,21 +144,19 @@ export class SignalGenerator {
     // ❌ 第三步：检查价格极值（最后检查，因为可能需要查询数据库）
     // 优先使用已有字段，避免查询
     if (anomaly.price_from_low_pct !== null && anomaly.price_from_low_pct !== undefined) {
-      const pct = parseFloat(anomaly.price_from_low_pct.toString());
-      if (pct > 10) {
+      if (anomaly.price_from_low_pct > 10) {
         return {
           allowed: false,
-          reason: `价格从日内低点已涨${pct.toFixed(1)}% (>10%), 避免追高`
+          reason: `价格从日内低点已涨${anomaly.price_from_low_pct.toFixed(1)}% (>10%), 避免追高`
         };
       }
     }
 
     if (anomaly.price_from_high_pct !== null && anomaly.price_from_high_pct !== undefined) {
-      const pct = parseFloat(anomaly.price_from_high_pct.toString());
-      if (pct > 10) {
+      if (anomaly.price_from_high_pct > 10) {
         return {
           allowed: false,
-          reason: `价格从日内高点已跌${pct.toFixed(1)}% (>10%), 避免追跌`
+          reason: `价格从日内高点已跌${anomaly.price_from_high_pct.toFixed(1)}% (>10%), 避免追跌`
         };
       }
     }
@@ -195,7 +193,7 @@ export class SignalGenerator {
 
   /**
    * OI变化评分（0-3分）
-   * 优化：早期启动(3-5%)给最高分，中期加速次之
+   * 优化：早期启动给高分，晚期狂欢降分
    */
   private calculate_oi_score(anomaly: OIAnomalyRecord): number {
     const oi_change = parseFloat(anomaly.percent_change.toString());
@@ -203,26 +201,26 @@ export class SignalGenerator {
 
     let score = 0;
 
-    // 基础分：根据变化幅度（优化：3-5%为最佳早期启动区间）
-    if (abs_change >= 3 && abs_change <= 5) {
-      score = 3;      // 最佳：早期启动阶段 ✨
-    } else if (abs_change > 5 && abs_change <= 10) {
-      score = 2.5;    // 良好：中期加速阶段
+    // 基础分：根据变化幅度（优化：5-15%为最佳区间）
+    if (abs_change >= 5 && abs_change <= 10) {
+      score = 3;      // 最佳：早期启动阶段
     } else if (abs_change > 10 && abs_change <= 15) {
-      score = 2;      // 一般：快速拉升期
+      score = 2.5;    // 良好：加速阶段
+    } else if (abs_change >= 3 && abs_change < 5) {
+      score = 2;      // 一般：刚开始异动
     } else if (abs_change > 15 && abs_change <= 20) {
       score = 1.5;    // 警惕：可能过热
     } else if (abs_change > 20) {
       score = 1;      // 危险：晚期狂欢（已被避免追高过滤）
     } else {
-      score = 1;      // 变化太小(<3%)
+      score = 1;      // 变化太小
     }
 
     // 严重程度加成
     if (anomaly.severity === 'high') {
-      score += 0.3;   // 高严重性加成
+      score += 0.3;   // 0.5 → 0.3 (降低加成，避免过度追高)
     } else if (anomaly.severity === 'medium') {
-      score += 0.2;   // 中等严重性加成
+      score += 0.2;   // 0.25 → 0.2
     }
 
     return Math.min(score, 3); // 最高3分
@@ -230,7 +228,7 @@ export class SignalGenerator {
 
   /**
    * 价格变化评分（0-2分）
-   * 优化：结合OI变化判断是强突破还是追高
+   * 优化：2-6%为最佳区间，过高或过低都降分
    */
   private calculate_price_score(anomaly: OIAnomalyRecord): number {
     if (!anomaly.price_change_percent) {
@@ -239,7 +237,6 @@ export class SignalGenerator {
 
     const price_change = parseFloat(anomaly.price_change_percent.toString());
     const oi_change = parseFloat(anomaly.percent_change.toString());
-    const abs_oi_change = Math.abs(oi_change);
 
     // 1. OI和价格同向性检查
     const same_direction = (price_change > 0 && oi_change > 0) || (price_change < 0 && oi_change < 0);
@@ -247,30 +244,22 @@ export class SignalGenerator {
       return 0; // 背离情况，不给分
     }
 
-    // 2. 价格变化幅度评分（结合OI判断）
+    // 2. 价格变化幅度评分（优化：2-6%最佳，避免追高）
     const abs_price_change = Math.abs(price_change);
     let score = 0;
 
-    // 核心逻辑：如果OI刚启动(3-5%)，价格大涨是好事（强突破确认）
-    const is_oi_early_stage = abs_oi_change >= 3 && abs_oi_change <= 5;
-
-    if (abs_price_change >= 1.5 && abs_price_change <= 3) {
-      score = 2;      // 最佳：温和突破
-    } else if (abs_price_change > 3 && abs_price_change <= 6) {
-      score = 1.8;    // 良好：加速突破
+    if (abs_price_change >= 2 && abs_price_change <= 4) {
+      score = 2;      // 最佳：刚突破关键位
+    } else if (abs_price_change > 4 && abs_price_change <= 6) {
+      score = 1.5;    // 良好：加速阶段
+    } else if (abs_price_change >= 1 && abs_price_change < 2) {
+      score = 1;      // 一般：刚开始动
     } else if (abs_price_change > 6 && abs_price_change <= 10) {
-      // 关键判断：6-10%的价格变化
-      if (is_oi_early_stage) {
-        score = 2;    // OI早期+价格大涨 = 强突破确认 ✨
-      } else {
-        score = 1.2;  // OI已加速+价格大涨 = 可能追高
-      }
-    } else if (abs_price_change >= 1 && abs_price_change < 1.5) {
-      score = 1.5;    // 一般：刚开始动
+      score = 0.8;    // 警惕：可能偏高
     } else if (abs_price_change > 10) {
-      score = 0.5;    // 危险：涨太多（已被避免追高过滤）
+      score = 0.3;    // 危险：涨太多了（已被避免追高过滤）
     } else if (abs_price_change >= 0.5) {
-      score = 0.8;    // 太小，可能假突破
+      score = 0.5;    // 太小，可能假突破
     }
 
     return Math.min(score, 2); // 最高2分
@@ -331,37 +320,7 @@ export class SignalGenerator {
       }
     }
 
-    // 3. 大户账户数多空比（超级指标 - 反映大户共识度）✨
-    if (anomaly.top_account_long_short_ratio) {
-      const ratio = parseFloat(anomaly.top_account_long_short_ratio.toString());
-      indicators_count++;
-
-      if (is_long_signal) {
-        // 做多信号：大户账户数多空比越高越好
-        if (ratio > 3.0) {
-          score += 2.0;   // 超强：绝大多数大户做多
-        } else if (ratio > 2.0) {
-          score += 1.5;   // 强：大户高度一致做多
-        } else if (ratio > 1.5) {
-          score += 1.0;   // 中等：大户偏多
-        } else {
-          score += 0.3;   // 弱：大户分歧大
-        }
-      } else {
-        // 做空信号：大户账户数多空比越低越好
-        if (ratio < 0.5) {
-          score += 2.0;   // 超强：绝大多数大户做空
-        } else if (ratio < 0.7) {
-          score += 1.5;   // 强：大户高度一致做空
-        } else if (ratio < 0.8) {
-          score += 1.0;   // 中等：大户偏空
-        } else {
-          score += 0.3;   // 弱：大户分歧大
-        }
-      }
-    }
-
-    // 4. 全市场多空人数比（反向指标，避免过热）
+    // 3. 全市场多空人数比（反向指标，避免过热）
     if (anomaly.global_long_short_ratio) {
       const ratio = parseFloat(anomaly.global_long_short_ratio.toString());
       indicators_count++;
@@ -369,11 +328,11 @@ export class SignalGenerator {
       if (is_long_signal) {
         // 做多时：全市场<1.5为佳（避免过热）
         if (ratio < 1.2) {
-          score += 1.2;   // 散户还没疯，最佳
+          score += 1.2;   // 1 → 1.2 (散户还没疯，最佳)
         } else if (ratio < 1.5) {
-          score += 0.8;   // 轻微过热
+          score += 0.8;   // 0.5 → 0.8 (轻微过热)
         } else {
-          score += 0.3;   // 过热，危险
+          score += 0.3;   // 0.5 → 0.3 (过热，危险)
         }
       } else {
         // 做空时：全市场>1.5为佳
@@ -397,45 +356,12 @@ export class SignalGenerator {
 
   /**
    * 资金费率评分（0-2分）
-   * 优化：利用负费率信号
    */
   private calculate_funding_rate_score(anomaly: OIAnomalyRecord): number {
-    // 使用 funding_rate_after 字段
-    if (!anomaly.funding_rate_after) {
-      return 1; // 无数据，给中性分
-    }
-
-    const funding_rate = parseFloat(anomaly.funding_rate_after.toString());
-    const oi_change = parseFloat(anomaly.percent_change.toString());
-    const is_long_signal = oi_change > 0;
-
-    let score = 1; // 基础中性分
-
-    if (is_long_signal) {
-      // 做多信号：负费率是超级信号（做空的人补贴做多的人）
-      if (funding_rate < -0.01) {
-        score = 2;      // 超强：深度负费率
-      } else if (funding_rate < 0) {
-        score = 1.7;    // 强：轻微负费率
-      } else if (funding_rate < 0.01) {
-        score = 1.3;    // 良好：接近零
-      } else if (funding_rate > 0.03) {
-        score = 0.5;    // 警惕：正费率过高（做多成本高）
-      }
-    } else {
-      // 做空信号：正费率是好信号（做多的人补贴做空的人）
-      if (funding_rate > 0.03) {
-        score = 2;      // 超强：高正费率
-      } else if (funding_rate > 0.01) {
-        score = 1.7;    // 强：中等正费率
-      } else if (funding_rate > 0) {
-        score = 1.3;    // 良好：轻微正费率
-      } else if (funding_rate < -0.01) {
-        score = 0.5;    // 警惕：负费率（做空成本高）
-      }
-    }
-
-    return Math.min(score, 2);
+    // 注意：资金费率在OI快照中，这里从anomaly_data中可能没有
+    // 实际使用时需要从币安API实时获取
+    // 这里先返回中性分1分
+    return 1;
   }
 
   /**

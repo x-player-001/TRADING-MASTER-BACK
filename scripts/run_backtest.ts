@@ -49,7 +49,7 @@ async function run_backtest_test() {
       end_date: new Date(),
 
       // 初始资金
-      initial_balance: 10000,
+      initial_balance: 100,
 
       // 策略配置 - 早期启动信号捕捉
       strategy_config: {
@@ -66,28 +66,28 @@ async function run_backtest_test() {
         min_funding_rate: -0.01
       },
 
-      // 风险配置 - 高盈亏比策略（5:1）
+      // 风险配置 - 高杠杆策略（10倍杠杆，止盈15%）
       risk_config: {
         max_position_size_percent: 5,                 // 单笔5%
         max_total_positions: 3,                       // 最多3个仓位
         max_positions_per_symbol: 1,
-        default_stop_loss_percent: 4,                 // 止损4%
-        default_take_profit_percent: 20,              // 8% → 20% (5:1盈亏比)
+        default_stop_loss_percent: 5,                 // 止损5%
+        default_take_profit_percent: 15,              // 止盈15%
         use_trailing_stop: true,                      // 启用移动止损
         trailing_stop_callback_rate: 3,               // 2.5 → 3 (更激进保护利润)
         daily_loss_limit_percent: 100,                // 不限制
         consecutive_loss_limit: 999,                  // 不限制
         pause_after_loss_limit: false,
-        max_leverage: 3,
+        max_leverage: 10,                             // 3倍 → 10倍杠杆
         leverage_by_signal_strength: {
-          weak: 1,
-          medium: 2,
-          strong: 3
+          weak: 5,                                    // 弱信号5倍
+          medium: 8,                                  // 中信号8倍
+          strong: 10                                  // 强信号10倍
         }
       },
 
-      // 持仓时间限制 - 30分钟
-      max_holding_time_minutes: 30,                   // 30分钟
+      // 持仓时间限制 - 60分钟
+      max_holding_time_minutes: 60,                   // 60分钟最大持仓
 
       // 滑点和手续费
       use_slippage: true,
@@ -284,7 +284,6 @@ async function run_backtest_test() {
       // 生成文件名（带时间戳）
       const timestamp = new Date().toISOString().replace(/[:.]/g, '-').slice(0, -5);
       const json_file = path.join(results_dir, `backtest_${timestamp}.json`);
-      const txt_file = path.join(results_dir, `backtest_${timestamp}.txt`);
 
       // 创建signal_id到anomaly的映射
       const signal_to_anomaly_map = new Map<number, any>();
@@ -323,7 +322,7 @@ async function run_backtest_test() {
           max_drawdown_percent: stats.max_drawdown_percent,
           average_hold_time: stats.average_hold_time
         },
-        trades: result.trades.map((trade, index) => {
+        all_trades: result.trades.map((trade, index) => {
           // 获取该交易对应的异动数据
           const anomaly = trade.signal_id ? signal_to_anomaly_map.get(trade.signal_id) : null;
 
@@ -361,49 +360,33 @@ async function run_backtest_test() {
         close_reasons: close_reasons || {}
       };
 
+      // 分离盈利和亏损交易，并按金额排序
+      const profitable_trades = export_data.all_trades
+        .filter(t => (t.realized_pnl || 0) > 0)
+        .sort((a, b) => (b.realized_pnl || 0) - (a.realized_pnl || 0)); // 盈利从大到小
+
+      const losing_trades = export_data.all_trades
+        .filter(t => (t.realized_pnl || 0) <= 0)
+        .sort((a, b) => (a.realized_pnl || 0) - (b.realized_pnl || 0)); // 亏损从大到小（负数）
+
+      // 添加分类数据到导出对象
+      (export_data as any).profitable_trades = {
+        count: profitable_trades.length,
+        total_pnl: profitable_trades.reduce((sum, t) => sum + (t.realized_pnl || 0), 0),
+        trades: profitable_trades
+      };
+      (export_data as any).losing_trades = {
+        count: losing_trades.length,
+        total_pnl: losing_trades.reduce((sum, t) => sum + (t.realized_pnl || 0), 0),
+        trades: losing_trades
+      };
+
       // 保存JSON文件
       fs.writeFileSync(json_file, JSON.stringify(export_data, null, 2), 'utf-8');
-      console.log(`💾 JSON数据已保存: ${json_file}`);
-
-      // 生成文本报告
-      let txt_content = '';
-      txt_content += '='.repeat(100) + '\n';
-      txt_content += '回测报告\n';
-      txt_content += '='.repeat(100) + '\n\n';
-      txt_content += `生成时间: ${new Date().toLocaleString('zh-CN', { timeZone: 'Asia/Shanghai' })}\n`;
-      txt_content += `回测周期: ${config.start_date.toLocaleDateString()} - ${config.end_date.toLocaleDateString()}\n`;
-      txt_content += `初始资金: $${config.initial_balance}\n`;
-      txt_content += `策略类型: ${config.strategy_config.strategy_type}\n`;
-      txt_content += `止损/止盈: ${config.risk_config.default_stop_loss_percent}% / ${config.risk_config.default_take_profit_percent}%\n\n`;
-
-      txt_content += '总结统计\n';
-      txt_content += '-'.repeat(100) + '\n';
-      txt_content += `总交易次数: ${stats.total_trades}\n`;
-      txt_content += `盈利交易: ${stats.winning_trades} (${stats.win_rate.toFixed(2)}%)\n`;
-      txt_content += `亏损交易: ${stats.losing_trades}\n`;
-      txt_content += `总盈亏: $${stats.total_pnl.toFixed(2)}\n`;
-      txt_content += `收益率: ${((stats.total_pnl / config.initial_balance) * 100).toFixed(2)}%\n`;
-      txt_content += `平均盈利: $${stats.average_win.toFixed(2)}\n`;
-      txt_content += `平均亏损: $${stats.average_loss.toFixed(2)}\n`;
-      txt_content += `盈亏比: ${stats.profit_factor.toFixed(2)}\n`;
-      txt_content += `最大回撤: $${stats.max_drawdown.toFixed(2)} (${stats.max_drawdown_percent.toFixed(2)}%)\n`;
-      txt_content += `平均持仓: ${stats.average_hold_time.toFixed(2)}分钟\n\n`;
-
-      txt_content += '详细交易记录\n';
-      txt_content += '-'.repeat(100) + '\n';
-      result.trades.forEach((trade, index) => {
-        const pnl = trade.realized_pnl || 0;
-        const is_win = pnl > 0;
-        txt_content += `\n#${index + 1} ${is_win ? '[盈利]' : '[亏损]'} ${trade.symbol} ${trade.side}\n`;
-        txt_content += `  开仓: ${trade.opened_at?.toLocaleString('zh-CN')} @ $${trade.entry_price.toFixed(6)}\n`;
-        txt_content += `  平仓: ${trade.closed_at?.toLocaleString('zh-CN')} @ $${trade.current_price.toFixed(6)}\n`;
-        txt_content += `  盈亏: ${is_win ? '+' : ''}$${pnl.toFixed(2)}\n`;
-        txt_content += `  原因: ${trade.close_reason}\n`;
-      });
-
-      // 保存文本文件
-      fs.writeFileSync(txt_file, txt_content, 'utf-8');
-      console.log(`📄 文本报告已保存: ${txt_file}\n`);
+      console.log(`\n💾 JSON数据已保存: ${json_file}`);
+      console.log(`   ✅ 盈利交易: ${profitable_trades.length}笔, 总盈利: $${profitable_trades.reduce((s, t) => s + (t.realized_pnl || 0), 0).toFixed(2)}`);
+      console.log(`   ❌ 亏损交易: ${losing_trades.length}笔, 总亏损: $${losing_trades.reduce((s, t) => s + (t.realized_pnl || 0), 0).toFixed(2)}`);
+      console.log('');
 
     } catch (save_error) {
       console.error('⚠️  保存文件失败:', save_error);

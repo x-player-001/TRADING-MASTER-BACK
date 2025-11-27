@@ -8,6 +8,7 @@ import { SignalGenerator } from './signal_generator';
 import { StrategyEngine } from './strategy_engine';
 import { RiskManager } from './risk_manager';
 import { OrderExecutor } from './order_executor';
+import { TrailingStopManager } from './trailing_stop_manager';
 import { OIAnomalyRecord } from '../types/oi_types';
 import {
   TradingSignal,
@@ -25,6 +26,8 @@ export interface LiveTradingConfig {
   risk_config: RiskConfig;              // 风险配置
   initial_balance: number;              // 初始资金
   max_holding_time_minutes?: number;    // 最大持仓时间
+  allowed_directions?: ('LONG' | 'SHORT')[];  // 允许的交易方向
+  dynamic_take_profit?: any;            // 动态止盈配置
 }
 
 export class LiveTradingEngine {
@@ -32,6 +35,7 @@ export class LiveTradingEngine {
   private strategy_engine: StrategyEngine;
   private risk_manager: RiskManager;
   private order_executor: OrderExecutor;
+  private trailing_stop_manager: TrailingStopManager;
 
   private config: LiveTradingConfig;
   private current_positions: Map<string, PositionRecord> = new Map();
@@ -50,6 +54,10 @@ export class LiveTradingEngine {
     this.strategy_engine = new StrategyEngine(config.strategy_config);
     this.risk_manager = new RiskManager(config.risk_config);
     this.order_executor = new OrderExecutor(config.mode);
+    this.trailing_stop_manager = new TrailingStopManager();
+
+    // 设置初始资金
+    this.risk_manager.set_initial_balance(config.initial_balance);
 
     logger.info('[LiveTradingEngine] Initialized in', config.mode, 'mode');
     logger.info('[LiveTradingEngine] Strategy:', config.strategy_config.strategy_type);
@@ -105,7 +113,15 @@ export class LiveTradingEngine {
         return;
       }
 
-      // 3. 风险检查
+      // 3. 方向过滤（只做多或只做空）
+      if (this.config.allowed_directions && this.config.allowed_directions.length > 0) {
+        if (!this.config.allowed_directions.includes(signal.direction as any)) {
+          logger.info(`[LiveTradingEngine] Signal rejected by direction filter: ${signal.direction} not in [${this.config.allowed_directions.join(', ')}]`);
+          return;
+        }
+      }
+
+      // 4. 风险检查
       const risk_check = await this.risk_manager.check_trading_allowed(
         signal,
         this.current_positions,
@@ -147,26 +163,61 @@ export class LiveTradingEngine {
         return;
       }
 
+      const entry_price = order.average_price || signal.entry_price || 0;
+
       // 计算止损止盈
       const { stop_loss, take_profit } = this.risk_manager.calculate_stop_loss_take_profit(signal);
 
       // 创建持仓记录
       const position: PositionRecord = {
+        id: `${signal.symbol}_${Date.now()}`,
         symbol: signal.symbol,
         side: signal.direction === 'LONG' ? PositionSide.LONG : PositionSide.SHORT,
-        entry_price: order.average_price || signal.entry_price || 0,
+        entry_price,
         quantity: order.filled_quantity || quantity,
         stop_loss_price: stop_loss,
         take_profit_price: take_profit,
         leverage,
         signal_score: signal.score,
         entry_time: new Date(),
-        status: 'OPEN'
+        opened_at: new Date(),
+        is_open: true,
+        status: 'OPEN',
+        current_price: entry_price
       };
+
+      // 如果配置了动态止盈，启动跟踪
+      if (this.config.dynamic_take_profit) {
+        const tp_config = {
+          ...this.config.dynamic_take_profit,
+          targets: this.config.dynamic_take_profit.targets.map((target: any) => {
+            if (target.is_trailing) {
+              return { ...target };
+            } else {
+              // 计算固定批次的目标价格
+              const target_price = position.side === PositionSide.LONG
+                ? entry_price * (1 + target.target_profit_pct / 100)
+                : entry_price * (1 - target.target_profit_pct / 100);
+              return { ...target, price: target_price };
+            }
+          })
+        };
+
+        this.trailing_stop_manager.start_tracking(
+          position.id!,
+          position.symbol,
+          position.side,
+          entry_price,
+          quantity,
+          tp_config
+        );
+
+        logger.info(`[LiveTradingEngine] ✅ Dynamic take profit enabled with ${tp_config.targets.length} targets`);
+      }
 
       this.current_positions.set(signal.symbol, position);
 
-      logger.info(`[LiveTradingEngine] ✅ Position opened: ${signal.symbol} @ $${position.entry_price.toFixed(4)}`);
+      logger.info(`[LiveTradingEngine] ✅ Position opened: ${signal.symbol} @ $${entry_price.toFixed(4)}`);
       logger.info(`[LiveTradingEngine] Stop Loss: $${stop_loss.toFixed(4)}, Take Profit: $${take_profit.toFixed(4)}`);
 
     } catch (error) {

@@ -4,7 +4,7 @@
 import * as fs from 'fs';
 import * as path from 'path';
 
-const json_file = '/Users/mac/Documents/code/TRADING-MASTER-BACK/backtest_results/backtest_2025-11-14T23-23-55.json';
+const json_file = '/Users/mac/Documents/code/TRADING-MASTER-BACK/backtest_results/backtest_2025-11-19T10-36-39.json';
 
 interface Trade {
   trade_number: number;

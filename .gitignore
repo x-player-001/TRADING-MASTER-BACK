@@ -41,6 +41,8 @@ Thumbs.db
 coverage/
 .nyc_output/
 *.lcov
+data_exports/
+backtest_results/
 
 # Cache
 .cache/

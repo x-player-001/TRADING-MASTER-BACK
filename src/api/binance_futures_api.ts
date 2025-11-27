@@ -1,5 +1,6 @@
 import axios, { AxiosInstance, AxiosRequestConfig } from 'axios';
 import pLimit, { Limit } from 'p-limit';
+import * as crypto from 'crypto';
 import {
   BinanceOpenInterestResponse,
   BinanceExchangeInfoResponse,
@@ -21,10 +22,14 @@ export class BinanceFuturesAPI {
   private readonly api_client: AxiosInstance;
   private readonly rate_limiter: Limit;
   private readonly max_concurrent: number;
+  private readonly api_key: string;
+  private readonly api_secret: string;
 
-  constructor(max_concurrent_requests: number = 50) {
+  constructor(max_concurrent_requests: number = 50, api_key?: string, api_secret?: string) {
     this.max_concurrent = max_concurrent_requests;
     this.rate_limiter = pLimit(max_concurrent_requests);
+    this.api_key = api_key || process.env.BINANCE_API_KEY || '';
+    this.api_secret = api_secret || process.env.BINANCE_API_SECRET || '';
 
     // 配置axios实例 - 简化配置，强制禁用代理
     this.api_client = axios.create({

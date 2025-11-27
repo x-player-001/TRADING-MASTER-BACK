@@ -84,38 +84,21 @@ export class RiskManager {
       return consecutive_check;
     }
 
-    // 4. 检查总持仓数量（考虑时间重叠）✨
-    let active_positions: PositionRecord[];
-    if (current_time) {
-      // 回测模式：检查在current_time时刻，哪些仓位在时间上存在
-      active_positions = current_positions.filter(p => {
-        if (p.is_open) return true;  // 未平仓的肯定存在
-
-        // 已平仓的，检查是否在时间上重叠
-        if (p.closed_at) {
-          return p.opened_at <= current_time && p.closed_at > current_time;
-        }
-
-        return false;
-      });
-    } else {
-      // 实盘模式：只检查未平仓的
-      active_positions = current_positions.filter(p => p.is_open);
-    }
-
-    if (active_positions.length >= this.config.max_total_positions) {
+    // 4. 检查总持仓数量
+    const open_positions = current_positions.filter(p => p.is_open);
+    if (open_positions.length >= this.config.max_total_positions) {
       return {
         allowed: false,
-        reason: `Maximum total positions (${this.config.max_total_positions}) reached${current_time ? ` at ${current_time.toISOString()}` : ''}`
+        reason: `Maximum total positions (${this.config.max_total_positions}) reached`
       };
     }
 
-    // 5. 检查单币种持仓数量（考虑时间重叠）✨
-    const symbol_positions = active_positions.filter(p => p.symbol === signal.symbol);
+    // 5. 检查单币种持仓数量
+    const symbol_positions = open_positions.filter(p => p.symbol === signal.symbol);
     if (symbol_positions.length >= this.config.max_positions_per_symbol) {
       return {
         allowed: false,
-        reason: `Maximum positions for ${signal.symbol} (${this.config.max_positions_per_symbol}) reached${current_time ? ` at ${current_time.toISOString()}` : ''}`
+        reason: `Maximum positions for ${signal.symbol} (${this.config.max_positions_per_symbol}) reached`
       };
     }
 
@@ -216,24 +199,24 @@ export class RiskManager {
   }
 
   /**
-   * 计算仓位大小（使用配置的比例）
+   * 计算仓位大小（固定比例保证金模式）
    *
-   * 使用配置的max_position_size_percent计算保证金
-   * margin = initial_balance * max_position_size_percent
+   * 固定比例模式：每笔交易使用初始资金的10%作为保证金
+   * margin = initial_balance * 10%
    * position_value = margin * leverage
    */
   private calculate_position_size(signal: TradingSignal, account_balance: number): number {
-    // 使用初始资金和配置的仓位百分比
+    // 使用初始资金的10%作为保证金
     const initial_balance = this.initial_balance || account_balance;
-    const margin_percent = this.config.max_position_size_percent / 100; // 使用配置值
+    const margin_percent = 0.1; // 10%
     const margin = initial_balance * margin_percent;
     const leverage = this.determine_leverage(signal);
     const position_value = margin * leverage;
 
     logger.debug(
-      `[RiskManager] Position size calculation: ` +
+      `[RiskManager] Fixed ratio mode: ` +
       `initial_balance=$${initial_balance.toFixed(2)}, ` +
-      `margin=$${margin.toFixed(2)} (${this.config.max_position_size_percent}%), ` +
+      `margin=$${margin.toFixed(2)} (${(margin_percent * 100).toFixed(0)}%), ` +
       `leverage=${leverage}x, ` +
       `position_value=$${position_value.toFixed(2)}`
     );

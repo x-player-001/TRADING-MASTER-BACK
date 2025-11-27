@@ -13,10 +13,16 @@ import {
 } from '../types/trading_types';
 import { logger } from '../utils/logger';
 import { BinanceFuturesAPI } from '../api/binance_futures_api';
+import {
+  BinanceFuturesTradingAPI,
+  OrderSide,
+  PositionSide as BinancePositionSide
+} from '../api/binance_futures_trading_api';
 
 export class OrderExecutor {
   private mode: TradingMode;
   private binance_api?: BinanceFuturesAPI;
+  private trading_api?: BinanceFuturesTradingAPI;
 
   // 纸面交易的模拟订单ID计数器
   private paper_order_id_counter = 1;
@@ -27,9 +33,113 @@ export class OrderExecutor {
     // 如果是测试网或实盘模式，初始化币安API
     if (mode === TradingMode.TESTNET || mode === TradingMode.LIVE) {
       this.binance_api = new BinanceFuturesAPI();
+
+      // 根据模式选择正确的API密钥
+      let api_key: string | undefined;
+      let secret_key: string | undefined;
+
+      if (mode === TradingMode.TESTNET) {
+        // 测试网模式：使用测试网专用密钥
+        api_key = process.env.BINANCE_TESTNET_API_KEY;
+        secret_key = process.env.BINANCE_TESTNET_SECRET_KEY;
+      } else {
+        // 实盘模式：优先使用交易专用密钥，回退到通用密钥
+        api_key = process.env.BINANCE_TRADE_API_KEY || process.env.BINANCE_API_KEY;
+        secret_key = process.env.BINANCE_TRADE_SECRET || process.env.BINANCE_API_SECRET;
+      }
+
+      this.trading_api = new BinanceFuturesTradingAPI(
+        api_key,
+        secret_key,
+        mode === TradingMode.TESTNET  // testnet标志
+      );
     }
 
     logger.info(`[OrderExecutor] Initialized in ${mode} mode`);
+  }
+
+  /**
+   * 执行开仓订单（带止盈配置）
+   * @param signal 交易信号
+   * @param quantity 数量（币的数量，如0.01 BTC）
+   * @param leverage 杠杆倍数
+   * @param take_profit_config 止盈配置（可选）
+   * @returns 订单记录和止盈订单ID列表
+   */
+  async execute_market_order_with_tp(
+    signal: TradingSignal,
+    quantity: number,
+    leverage: number = 1,
+    take_profit_config?: {
+      targets: Array<{
+        percentage: number;
+        target_profit_pct: number;
+        is_trailing?: boolean;
+        trailing_callback_pct?: number;
+      }>;
+    }
+  ): Promise<{
+    entry_order: OrderRecord;
+    tp_order_ids: number[];
+  }> {
+    // 先执行开仓
+    const entry_order = await this.execute_market_order(signal, quantity, leverage);
+
+    const tp_order_ids: number[] = [];
+
+    // 如果配置了止盈且是TESTNET或LIVE模式，下止盈订单
+    if (take_profit_config && this.trading_api && (this.mode === TradingMode.TESTNET || this.mode === TradingMode.LIVE)) {
+      const entry_price = entry_order.average_price || signal.entry_price || 0;
+      const binance_position_side = signal.direction === 'LONG'
+        ? BinancePositionSide.LONG
+        : BinancePositionSide.SHORT;
+
+      // 平仓方向相反
+      const close_side = signal.direction === 'LONG' ? OrderSide.SELL : OrderSide.BUY;
+
+      for (const target of take_profit_config.targets) {
+        const target_quantity = quantity * (target.percentage / 100);
+
+        if (target.is_trailing) {
+          // 使用TRAILING_STOP_MARKET订单
+          try {
+            const tp_order = await this.trading_api.place_trailing_stop_order(
+              signal.symbol,
+              close_side,
+              target_quantity,
+              target.trailing_callback_pct || 10,  // 默认10%回调
+              binance_position_side
+            );
+            tp_order_ids.push(tp_order.orderId);
+            logger.info(`[OrderExecutor] Trailing TP order placed: ${tp_order.orderId} (${target.percentage}% @ ${target.trailing_callback_pct}% callback)`);
+          } catch (error) {
+            logger.error(`[OrderExecutor] Failed to place trailing TP order:`, error);
+          }
+        } else {
+          // 使用TAKE_PROFIT_MARKET订单
+          const tp_price = signal.direction === 'LONG'
+            ? entry_price * (1 + target.target_profit_pct / 100)
+            : entry_price * (1 - target.target_profit_pct / 100);
+
+          try {
+            const tp_order = await this.trading_api.place_take_profit_market_order(
+              signal.symbol,
+              close_side,
+              target_quantity,
+              tp_price,
+              binance_position_side,
+              true  // reduceOnly
+            );
+            tp_order_ids.push(tp_order.orderId);
+            logger.info(`[OrderExecutor] TP order placed: ${tp_order.orderId} (${target.percentage}% @ +${target.target_profit_pct}%)`);
+          } catch (error) {
+            logger.error(`[OrderExecutor] Failed to place TP order:`, error);
+          }
+        }
+      }
+    }
+
+    return { entry_order, tp_order_ids };
   }
 
   /**
@@ -114,35 +224,130 @@ export class OrderExecutor {
     order: OrderRecord,
     leverage: number
   ): Promise<OrderRecord> {
-    if (!this.binance_api) {
-      throw new Error('Binance API not initialized for testnet');
+    if (!this.trading_api) {
+      throw new Error('Binance Trading API not initialized for testnet');
     }
 
-    // TODO: 调用币安测试网API
-    // 1. 设置杠杆：POST /fapi/v1/leverage
-    // 2. 下单：POST /fapi/v1/order
+    try {
+      // 1. 设置保证金模式为逐仓
+      try {
+        await this.trading_api.set_margin_type(order.symbol, 'ISOLATED');
+        logger.info(`[OrderExecutor] Set ${order.symbol} to ISOLATED margin mode`);
+      } catch (error: any) {
+        // 如果已经是逐仓模式，忽略错误
+        if (error.message?.includes('-4046') || error.message?.includes('No need to change margin type')) {
+          logger.debug(`[OrderExecutor] ${order.symbol} already in ISOLATED mode`);
+        } else {
+          throw error;
+        }
+      }
 
-    logger.warn('[OrderExecutor] Testnet mode not fully implemented yet');
+      // 2. 设置杠杆倍数
+      await this.trading_api.set_leverage(order.symbol, leverage);
+      logger.info(`[OrderExecutor] Set ${order.symbol} leverage to ${leverage}x`);
 
-    // 暂时使用纸面交易模拟
-    return this.execute_paper_order(order, { entry_price: 0 } as TradingSignal);
+      // 3. 下市价单
+      const binance_side = order.side === PositionSide.LONG ? OrderSide.BUY : OrderSide.SELL;
+      const binance_position_side = order.side === PositionSide.LONG
+        ? BinancePositionSide.LONG
+        : BinancePositionSide.SHORT;
+
+      const result = await this.trading_api.place_market_order(
+        order.symbol,
+        binance_side,
+        order.quantity,
+        binance_position_side,
+        false  // not reduceOnly
+      );
+
+      // 4. 更新订单记录
+      order.order_id = result.orderId.toString();
+      order.status = result.status === 'FILLED' ? OrderStatus.FILLED : OrderStatus.SUBMITTED;
+      order.filled_quantity = parseFloat(result.executedQty);
+      order.average_price = parseFloat(result.avgPrice) || parseFloat(result.price);
+      order.price = order.average_price;
+      order.filled_at = new Date(result.updateTime);
+      order.updated_at = new Date(result.updateTime);
+
+      logger.info(
+        `[OrderExecutor] TESTNET order executed: ${order.order_id} ` +
+        `${order.symbol} ${order.side} ${order.filled_quantity} @ ${order.average_price}`
+      );
+
+      return order;
+
+    } catch (error) {
+      logger.error('[OrderExecutor] Testnet order execution failed:', error);
+      throw error;
+    }
   }
 
   /**
-   * 实盘订单执行
+   * 实盘订单执行 (与TESTNET相同的逻辑，但使用实盘API)
    */
   private async execute_live_order(
     order: OrderRecord,
     leverage: number
   ): Promise<OrderRecord> {
-    if (!this.binance_api) {
-      throw new Error('Binance API not initialized for live trading');
+    if (!this.trading_api) {
+      throw new Error('Binance Trading API not initialized for live trading');
     }
 
-    // 实盘模式需要额外的安全确认
-    logger.error('[OrderExecutor] LIVE mode is not enabled. Please implement safety checks first.');
+    // ⚠️ 实盘交易警告
+    logger.warn('🔴 [OrderExecutor] LIVE MODE - REAL MONEY TRADING! 🔴');
 
-    throw new Error('Live trading is disabled for safety');
+    try {
+      // 1. 设置保证金模式为逐仓
+      try {
+        await this.trading_api.set_margin_type(order.symbol, 'ISOLATED');
+        logger.info(`[OrderExecutor] Set ${order.symbol} to ISOLATED margin mode`);
+      } catch (error: any) {
+        // 如果已经是逐仓模式，忽略错误
+        if (error.message?.includes('-4046') || error.message?.includes('No need to change margin type')) {
+          logger.debug(`[OrderExecutor] ${order.symbol} already in ISOLATED mode`);
+        } else {
+          throw error;
+        }
+      }
+
+      // 2. 设置杠杆倍数
+      await this.trading_api.set_leverage(order.symbol, leverage);
+      logger.info(`[OrderExecutor] Set ${order.symbol} leverage to ${leverage}x`);
+
+      // 3. 下市价单
+      const binance_side = order.side === PositionSide.LONG ? OrderSide.BUY : OrderSide.SELL;
+      const binance_position_side = order.side === PositionSide.LONG
+        ? BinancePositionSide.LONG
+        : BinancePositionSide.SHORT;
+
+      const result = await this.trading_api.place_market_order(
+        order.symbol,
+        binance_side,
+        order.quantity,
+        binance_position_side,
+        false  // not reduceOnly
+      );
+
+      // 4. 更新订单记录
+      order.order_id = result.orderId.toString();
+      order.status = result.status === 'FILLED' ? OrderStatus.FILLED : OrderStatus.SUBMITTED;
+      order.filled_quantity = parseFloat(result.executedQty);
+      order.average_price = parseFloat(result.avgPrice) || parseFloat(result.price);
+      order.price = order.average_price;
+      order.filled_at = new Date(result.updateTime);
+      order.updated_at = new Date(result.updateTime);
+
+      logger.info(
+        `[OrderExecutor] 💰 LIVE order executed: ${order.order_id} ` +
+        `${order.symbol} ${order.side} ${order.filled_quantity} @ ${order.average_price}`
+      );
+
+      return order;
+
+    } catch (error) {
+      logger.error('[OrderExecutor] Live order execution failed:', error);
+      throw error;
+    }
   }
 
   /**
@@ -197,19 +402,60 @@ export class OrderExecutor {
       created_at: new Date()
     };
 
-    if (this.mode === TradingMode.PAPER) {
-      order.order_id = `PAPER_CLOSE_${this.paper_order_id_counter++}`;
-      order.status = OrderStatus.FILLED;
-      order.filled_quantity = quantity;
-      order.average_price = current_price || 0;
-      order.price = current_price || 0;
-      order.filled_at = new Date();
+    try {
+      if (this.mode === TradingMode.PAPER) {
+        // 纸面交易模拟
+        order.order_id = `PAPER_CLOSE_${this.paper_order_id_counter++}`;
+        order.status = OrderStatus.FILLED;
+        order.filled_quantity = quantity;
+        order.average_price = current_price || 0;
+        order.price = current_price || 0;
+        order.filled_at = new Date();
+        order.updated_at = new Date();
+
+        logger.info(`[OrderExecutor] Paper close order filled: ${order.order_id} at ${current_price}`);
+      } else if (this.mode === TradingMode.TESTNET || this.mode === TradingMode.LIVE) {
+        // 实际平仓订单
+        if (!this.trading_api) {
+          throw new Error('Trading API not initialized');
+        }
+
+        const binance_side = side === PositionSide.LONG ? OrderSide.SELL : OrderSide.BUY;  // 平仓相反方向
+        const binance_position_side = side === PositionSide.LONG
+          ? BinancePositionSide.LONG
+          : BinancePositionSide.SHORT;
+
+        const result = await this.trading_api.place_market_order(
+          symbol,
+          binance_side,
+          quantity,
+          binance_position_side,
+          true  // reduceOnly = true (平仓单)
+        );
+
+        order.order_id = result.orderId.toString();
+        order.status = result.status === 'FILLED' ? OrderStatus.FILLED : OrderStatus.SUBMITTED;
+        order.filled_quantity = parseFloat(result.executedQty);
+        order.average_price = parseFloat(result.avgPrice) || parseFloat(result.price);
+        order.price = order.average_price;
+        order.filled_at = new Date(result.updateTime);
+        order.updated_at = new Date(result.updateTime);
+
+        logger.info(
+          `[OrderExecutor] ${this.mode} close order executed: ${order.order_id} ` +
+          `${symbol} ${side} ${order.filled_quantity} @ ${order.average_price}`
+        );
+      }
+
+      return order;
+
+    } catch (error) {
+      logger.error('[OrderExecutor] Close position failed:', error);
+      order.status = OrderStatus.REJECTED;
+      order.error_message = error instanceof Error ? error.message : 'Unknown error';
       order.updated_at = new Date();
-
-      logger.info(`[OrderExecutor] Paper close order filled: ${order.order_id} at ${current_price}`);
+      throw error;
     }
-
-    return order;
   }
 
   /**
@@ -236,6 +482,26 @@ export class OrderExecutor {
 
     if ((mode === TradingMode.TESTNET || mode === TradingMode.LIVE) && !this.binance_api) {
       this.binance_api = new BinanceFuturesAPI();
+
+      // 根据模式选择正确的API密钥
+      let api_key: string | undefined;
+      let secret_key: string | undefined;
+
+      if (mode === TradingMode.TESTNET) {
+        // 测试网模式：使用测试网专用密钥
+        api_key = process.env.BINANCE_TESTNET_API_KEY;
+        secret_key = process.env.BINANCE_TESTNET_SECRET_KEY;
+      } else {
+        // 实盘模式：优先使用交易专用密钥，回退到通用密钥
+        api_key = process.env.BINANCE_TRADE_API_KEY || process.env.BINANCE_API_KEY;
+        secret_key = process.env.BINANCE_TRADE_SECRET || process.env.BINANCE_API_SECRET;
+      }
+
+      this.trading_api = new BinanceFuturesTradingAPI(
+        api_key,
+        secret_key,
+        mode === TradingMode.TESTNET
+      );
     }
   }
 

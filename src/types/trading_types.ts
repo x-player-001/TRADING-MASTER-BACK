@@ -25,6 +25,26 @@ export enum SignalStrength {
 }
 
 /**
+ * 分批止盈目标
+ */
+export interface TakeProfitTarget {
+  percentage: number;       // 仓位百分比（如40表示40%仓位）
+  price: number;            // 止盈价格
+  target_profit_pct: number;// 目标收益率（如6表示+6%）
+  is_trailing: boolean;     // 是否使用跟踪止盈
+  trailing_callback_pct?: number; // 跟踪回调百分比（如30表示保留30%利润空间）
+}
+
+/**
+ * 动态止盈配置
+ */
+export interface DynamicTakeProfitConfig {
+  targets: TakeProfitTarget[];     // 分批止盈目标
+  enable_trailing: boolean;         // 是否启用跟踪止盈
+  trailing_start_profit_pct: number;// 启动跟踪的最低盈利（如首次止盈达到后）
+}
+
+/**
  * 交易信号
  */
 export interface TradingSignal {
@@ -41,7 +61,10 @@ export interface TradingSignal {
   // 价格信息
   entry_price?: number;              // 建议入场价格
   stop_loss?: number;                // 建议止损价格
-  take_profit?: number;              // 建议止盈价格
+  take_profit?: number;              // 建议止盈价格（主要目标）
+
+  // 动态止盈配置（新增）
+  dynamic_take_profit?: DynamicTakeProfitConfig;
 
   // 评分细节
   score_breakdown?: SignalScoreBreakdown;
@@ -230,7 +253,24 @@ export interface PositionRecord {
   updated_at?: Date;
 
   // 平仓原因
-  close_reason?: 'STOP_LOSS' | 'TAKE_PROFIT' | 'MANUAL' | 'RISK_LIMIT' | 'TIMEOUT';
+  close_reason?: 'STOP_LOSS' | 'TAKE_PROFIT' | 'LIQUIDATION' | 'MANUAL' | 'RISK_LIMIT' | 'TIMEOUT';
+
+  // 分批止盈记录（新增）
+  take_profit_executions?: TakeProfitExecution[];
+}
+
+/**
+ * 分批止盈执行记录
+ */
+export interface TakeProfitExecution {
+  batch_number: number;           // 批次编号（1, 2, 3...）
+  type: 'BATCH_TAKE_PROFIT' | 'TRAILING_STOP';  // 止盈类型
+  quantity: number;               // 平仓数量
+  exit_price: number;             // 平仓价格
+  pnl: number;                    // 该批次盈亏
+  profit_percent: number;         // 盈利百分比
+  executed_at: Date;              // 执行时间
+  reason: string;                 // 触发原因
 }
 
 // ==================== 交易模式 ====================
@@ -321,6 +361,9 @@ export interface BacktestConfig {
   strategy_config: StrategyConfig;
   risk_config: RiskConfig;
 
+  // 分批止盈配置（新增）
+  dynamic_take_profit?: DynamicTakeProfitConfig;
+
   // 回测参数
   max_holding_time_minutes?: number;  // 最大持仓时间（分钟，默认60）
   use_slippage?: boolean;             // 是否模拟滑点（默认true）
@@ -330,6 +373,7 @@ export interface BacktestConfig {
   // 过滤条件
   symbols?: string[];                 // 限制回测的币种
   min_anomaly_severity?: 'low' | 'medium' | 'high';  // 最低异动严重程度
+  allowed_directions?: ('LONG' | 'SHORT')[];  // 允许的交易方向（默认['LONG', 'SHORT']）
 }
 
 /**
