@@ -95,12 +95,13 @@ export class OIPollingService {
   /**
    * 初始化交易系统
    */
-  initialize_trading_system(enabled: boolean = false): void {
+  initialize_trading_system(enabled: boolean = false, config?: Partial<import('../types/trading_types').TradingSystemConfig>): void {
     this.trading_system = new TradingSystem({
       enabled,
-      mode: 'PAPER' // 默认纸面交易模式
+      mode: 'PAPER', // 默认纸面交易模式
+      ...config
     });
-    logger.info(`[OIPolling] Trading system initialized (enabled=${enabled})`);
+    logger.info(`[OIPolling] Trading system initialized (enabled=${enabled}, mode=${config?.mode || 'PAPER'})`);
   }
 
   /**
