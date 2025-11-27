@@ -483,4 +483,32 @@ export class OICacheManager {
       console.error(`[OICache] Failed to set key ${key}:`, error);
     }
   }
+
+  /**
+   * 通用del方法（删除单个键）
+   */
+  async del(key: string): Promise<void> {
+    try {
+      const redis = await this.get_redis();
+      await redis.del(key);
+    } catch (error) {
+      console.error(`[OICache] Failed to delete key ${key}:`, error);
+    }
+  }
+
+  /**
+   * 通用deletePattern方法（删除匹配模式的所有键）
+   */
+  async deletePattern(pattern: string): Promise<void> {
+    try {
+      const redis = await this.get_redis();
+      const keys = await redis.keys(pattern);
+      if (keys.length > 0) {
+        await redis.del(keys);
+        logger.debug(`[OICacheManager] Deleted ${keys.length} keys matching pattern: ${pattern}`);
+      }
+    } catch (error) {
+      console.error(`[OICache] Failed to delete pattern ${pattern}:`, error);
+    }
+  }
 }
