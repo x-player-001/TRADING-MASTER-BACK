@@ -113,7 +113,7 @@ async function test_binance_api() {
       symbol,
       OrderSide.BUY,
       quantity,
-      PositionSide.LONG,
+      undefined,  // 单向持仓模式不需要PositionSide
       false  // 不是reduceOnly
     );
 
@@ -161,7 +161,7 @@ async function test_binance_api() {
       symbol,
       OrderSide.SELL,
       quantity,
-      PositionSide.LONG,
+      undefined,  // 单向持仓模式不需要PositionSide
       true  // reduceOnly = true，只平仓不开新仓
     );
 
