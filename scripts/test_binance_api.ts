@@ -69,9 +69,11 @@ async function test_binance_api() {
     const current_price = parseFloat(ticker.lastPrice);
     console.log(`  当前价格: $${current_price.toFixed(2)}`);
 
-    // 计算购买数量（保留3位小数，BTC最小精度通常是0.001）
-    const quantity = parseFloat((margin_amount * leverage / current_price).toFixed(3));
-    console.log(`  计算数量: ${quantity} BTC (价值约$${(quantity * current_price).toFixed(2)})\n`);
+    // 计算购买数量 - 向上取整到0.001确保满足$100最小名义价值
+    const raw_quantity = margin_amount * leverage / current_price;
+    const quantity = Math.ceil(raw_quantity * 1000) / 1000;  // 向上取整到0.001
+    const notional_value = quantity * current_price;
+    console.log(`  计算数量: ${quantity} BTC (名义价值: $${notional_value.toFixed(2)})\n`);
 
     // ========================================
     // 第3步：设置逐仓模式和杠杆
