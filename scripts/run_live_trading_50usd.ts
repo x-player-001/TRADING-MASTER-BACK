@@ -120,6 +120,9 @@ async function main() {
     const cache_manager = new OICacheManager();
     oi_service.set_cache_manager(cache_manager);
 
+    // 初始化情绪管理器（用于获取大户多空比等数据）
+    oi_service.initialize_sentiment_manager(cache_manager);
+
     // 初始化交易系统（传递$50配置）
     oi_service.initialize_trading_system(true, {
       mode: trading_mode,
