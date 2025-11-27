@@ -44,7 +44,7 @@ async function main() {
   console.log('═'.repeat(80));
 
   // ⚠️ 用户确认
-  const trading_mode = TradingMode.TESTNET;  // 🔒 默认测试网模式
+  const trading_mode = TradingMode.LIVE;  // 🔴 实盘模式
 
   if (trading_mode === TradingMode.LIVE) {
     console.log('\n🔴 警告: 即将使用真实资金交易!');
@@ -70,7 +70,7 @@ async function main() {
       strategy_config: {
         strategy_type: StrategyType.BREAKOUT,
         enabled: true,
-        min_signal_score: 8,                    // 提高到8分（质量优先）
+        min_signal_score: 7,                    // 修改为7分
         min_confidence: 0.6,                    // 提高到60%
         min_oi_change_percent: 5,               // 提高到5%（更强信号）
         require_price_oi_alignment: true,       // 必须价格OI同向
@@ -91,7 +91,7 @@ async function main() {
         use_trailing_stop: true,                // 启用跟踪止盈
         trailing_stop_callback_rate: 15,        // 回调15%触发（比回测保守）
         daily_loss_limit_percent: 20,           // 每日亏损20%暂停
-        consecutive_loss_limit: 3,              // 连续3次亏损暂停
+        consecutive_loss_limit: 6,              // 连续6次亏损暂停 (修改)
         pause_after_loss_limit: true,           // 触发熔断后暂停
         max_leverage: 6,                        // 6倍杠杆
         leverage_by_signal_strength: {
@@ -145,11 +145,11 @@ async function main() {
     console.log(`  杠杆: ${trading_config.risk_config.max_leverage}x (逐仓)`);
     console.log(`  最多持仓: ${trading_config.risk_config.max_total_positions}个`);
     console.log(`  单笔最大亏损: $${trading_config.initial_balance * (trading_config.risk_config.max_position_size_percent / 100)} (逐仓保证金)`);
-    console.log(`  策略: 只做多突破策略 (评分≥8分)`);
+    console.log(`  策略: 只做多突破策略 (评分≥7分)`);
     console.log(`  止盈: 30%@+8%, 30%@+12%, 40%跟踪@15%回调`);
     console.log(`  止损: 无 (逐仓模式自动限损)`);
     console.log(`  超时平仓: ${trading_config.max_holding_time_minutes}分钟`);
-    console.log(`  熔断机制: 每日亏损20%或连续3次亏损暂停`);
+    console.log(`  熔断机制: 每日亏损20%或连续6次亏损暂停`);
     console.log('═'.repeat(80));
 
     // 风险提示

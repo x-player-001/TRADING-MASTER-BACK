@@ -60,7 +60,7 @@ export class TradingSystem {
       use_trailing_stop: true,
       trailing_stop_callback_rate: 1,
       daily_loss_limit_percent: 5,
-      consecutive_loss_limit: 3,
+      consecutive_loss_limit: 6,  // 修改为6次
       pause_after_loss_limit: true,
       max_leverage: 3,
       leverage_by_signal_strength: {
@@ -71,7 +71,7 @@ export class TradingSystem {
     };
 
     this.config = {
-      mode: TradingMode.PAPER,
+      mode: TradingMode.LIVE,  // 修改为实盘模式
       enabled: false,
       strategies: [default_strategy],
       active_strategy_type: StrategyType.TREND_FOLLOWING,
