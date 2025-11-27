@@ -39,8 +39,8 @@ async function test_binance_api() {
     const binance_api = new BinanceFuturesAPI(50, api_key, secret_key);
 
     const symbol = 'BTCUSDT';
-    const leverage = 10;  // 10倍杠杆
-    const margin_amount = 1;  // $1 保证金
+    const leverage = 50;  // 50倍杠杆
+    const margin_amount = 2;  // $2 保证金
 
     console.log('📋 测试参数:');
     console.log(`  交易对: ${symbol}`);
