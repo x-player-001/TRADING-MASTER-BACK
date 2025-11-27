@@ -69,10 +69,14 @@ async function test_binance_api() {
     const current_price = parseFloat(ticker.lastPrice);
     console.log(`  当前价格: $${current_price.toFixed(2)}`);
 
-    // 计算购买数量 - 向上取整到0.001确保满足$100最小名义价值
-    const raw_quantity = margin_amount * leverage / current_price;
-    const quantity = Math.ceil(raw_quantity * 1000) / 1000;  // 向上取整到0.001
+    // 计算购买数量 - 确保满足$100最小名义价值,同时保留合理精度
+    const min_notional = 100;  // 币安最小名义价值要求
+    const min_quantity_for_notional = min_notional / current_price;
+
+    // 使用稍大于最小要求的数量,保留4位小数精度
+    const quantity = parseFloat((min_quantity_for_notional * 1.01).toFixed(4));
     const notional_value = quantity * current_price;
+
     console.log(`  计算数量: ${quantity} BTC (名义价值: $${notional_value.toFixed(2)})\n`);
 
     // ========================================
