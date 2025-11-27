@@ -69,24 +69,11 @@ async function test_binance_api() {
     const current_price = parseFloat(ticker.lastPrice);
     console.log(`  当前价格: $${current_price.toFixed(2)}`);
 
-    // 获取交易对精度规则
-    console.log('  获取交易对精度规则...');
-    const exchange_info = await binance_api.get_exchange_info();
-    const symbol_info = exchange_info.symbols.find(s => s.symbol === symbol);
+    // BTC交易规则(硬编码,避免重复调用exchangeInfo)
+    const quantity_precision = 3;  // BTC支持3位小数
+    const min_notional = 100;      // 最小名义价值$100
 
-    if (!symbol_info) {
-      throw new Error(`未找到${symbol}的交易规则`);
-    }
-
-    // 从filters中提取精度和最小值规则
-    const lot_size_filter = symbol_info.filters.find((f: any) => f.filterType === 'LOT_SIZE');
-    const min_notional_filter = symbol_info.filters.find((f: any) => f.filterType === 'MIN_NOTIONAL');
-
-    const quantity_precision = symbol_info.quantityPrecision;
-    const min_qty = lot_size_filter ? parseFloat(lot_size_filter.minQty) : 0.001;
-    const min_notional = min_notional_filter ? parseFloat(min_notional_filter.notional) : 100;
-
-    console.log(`  交易规则: 精度=${quantity_precision}位, 最小数量=${min_qty}, 最小名义价值=$${min_notional}`);
+    console.log(`  交易规则: 精度=${quantity_precision}位, 最小名义价值=$${min_notional}`);
 
     // 计算满足最小名义价值的数量
     const min_quantity_for_notional = min_notional / current_price;
