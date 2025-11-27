@@ -120,7 +120,7 @@ export class BinanceFuturesAPI {
           quote_precision: symbol.quotePrecision,
 
           // 交易规则
-          min_notional: min_notional_filter ? parseFloat(min_notional_filter.notional) : undefined,
+          min_notional: min_notional_filter ? parseFloat(min_notional_filter.notional || min_notional_filter.minNotional) : undefined,
           step_size: lot_size_filter ? parseFloat(lot_size_filter.stepSize) : undefined
         };
       });
