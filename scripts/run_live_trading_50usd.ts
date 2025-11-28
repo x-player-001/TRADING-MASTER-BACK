@@ -193,8 +193,6 @@ async function main() {
       console.log('⚠️ 历史交易回填失败:', err instanceof Error ? err.message : err);
     }
 
-    console.log('⏳ 等待高质量交易信号...\n');
-
     // ⭐ 定时同步币安持仓（每30秒）
     setInterval(async () => {
       try {
@@ -284,6 +282,8 @@ async function main() {
 
     // 启动时立即打印一次状态
     await print_status();
+
+    console.log('⏳ 等待高质量交易信号...\n');
 
     // 状态显示间隔（2分钟）
     setInterval(print_status, 120000);
