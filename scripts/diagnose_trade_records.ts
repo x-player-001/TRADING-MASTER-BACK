@@ -114,15 +114,17 @@ async function main() {
 
     for (const record of db_records) {
       const status_icon = record.status === 'CLOSED' ? '✅' : '🟡';
-      const pnl_sign = (record.realized_pnl || 0) >= 0 ? '+' : '';
+      const pnl_value = parseFloat(record.realized_pnl) || 0;
+      const commission_value = parseFloat(record.total_commission) || 0;
+      const pnl_sign = pnl_value >= 0 ? '+' : '';
       console.log(`  ${status_icon} ${record.symbol} ${record.side}`);
       console.log(`     ID: ${record.id}`);
       console.log(`     entry_order_id: ${record.entry_order_id || 'N/A'}`);
       console.log(`     exit_order_id: ${record.exit_order_id || 'N/A'}`);
       console.log(`     开仓: ${record.opened_at?.toLocaleString('zh-CN') || 'N/A'} @ ${record.entry_price}`);
       console.log(`     平仓: ${record.closed_at?.toLocaleString('zh-CN') || '未平仓'} @ ${record.exit_price || 'N/A'}`);
-      console.log(`     盈亏: ${pnl_sign}${(record.realized_pnl || 0).toFixed(4)} USDT`);
-      console.log(`     手续费: ${(record.total_commission || 0).toFixed(4)} USDT`);
+      console.log(`     盈亏: ${pnl_sign}${pnl_value.toFixed(4)} USDT`);
+      console.log(`     手续费: ${commission_value.toFixed(4)} USDT`);
       console.log(`     状态: ${record.status} (${record.close_reason || 'N/A'})`);
       console.log('');
     }
