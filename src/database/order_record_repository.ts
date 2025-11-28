@@ -382,15 +382,15 @@ export class OrderRecordRepository extends BaseRepository {
     const rows = await this.execute_query(base_sql, params);
     const row = rows[0];
 
-    // 按position_id分组统计完整交易（只统计有平仓的交易）
+    // 按position_id分组统计完整交易
+    // 有position_id的按position_id分组，没有的每笔平仓算一笔交易
     let trade_sql = `
       SELECT
-        position_id,
+        COALESCE(position_id, CONCAT('orphan_', id)) as group_id,
         SUM(COALESCE(realized_pnl, 0)) as trade_pnl
       FROM order_records
       WHERE trading_mode = ?
         AND order_type = 'CLOSE'
-        AND position_id IS NOT NULL
     `;
     const trade_params: any[] = [trading_mode];
 
@@ -404,7 +404,7 @@ export class OrderRecordRepository extends BaseRepository {
       trade_params.push(end_date);
     }
 
-    trade_sql += ` GROUP BY position_id`;
+    trade_sql += ` GROUP BY group_id`;
 
     const trade_rows = await this.execute_query(trade_sql, trade_params);
 
