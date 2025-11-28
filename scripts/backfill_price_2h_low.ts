@@ -1,6 +1,8 @@
 /**
  * 回填历史异动记录的 price_2h_low 和 price_from_2h_low_pct 字段
  *
+ * 优化策略：按天分组处理，预加载每天的 oi_snapshots 数据到内存
+ *
  * 运行: npx ts-node -r tsconfig-paths/register scripts/backfill_price_2h_low.ts
  */
 
@@ -9,8 +11,7 @@ dotenv.config();
 
 import { ConfigManager } from '../src/core/config/config_manager';
 import { DatabaseConfig } from '../src/core/config/database';
-import { DailyTableManager } from '../src/database/daily_table_manager';
-import { format, subHours } from 'date-fns';
+import { subHours, format, startOfDay, endOfDay, addDays, subDays } from 'date-fns';
 
 // 初始化配置
 ConfigManager.getInstance().initialize();
@@ -23,124 +24,243 @@ interface AnomalyRecord {
   price_2h_low: number | null;
 }
 
-async function get_price_2h_low(
-  conn: any,
-  symbol: string,
-  anomaly_time: Date,
-  daily_table_manager: DailyTableManager
-): Promise<number | null> {
-  // 计算2小时前的时间
-  const start_time = subHours(anomaly_time, 2);
+interface OISnapshot {
+  symbol: string;
+  snapshot_time: Date;
+  mark_price: number;
+}
 
-  // 获取需要查询的表（可能跨天）
-  const tables = await daily_table_manager.get_tables_in_range(start_time, anomaly_time);
+// 表名缓存
+const existing_tables_cache = new Set<string>();
 
-  if (tables.length === 0) {
-    return null;
+// 每日OI数据缓存: date_str -> symbol -> [{snapshot_time, mark_price}]
+const daily_oi_cache = new Map<string, Map<string, OISnapshot[]>>();
+
+/**
+ * 获取日期对应的表名
+ */
+function get_table_name(date: Date): string {
+  return `oi_snapshots_${format(date, 'yyyyMMdd')}`;
+}
+
+/**
+ * 加载某一天的OI快照数据到缓存
+ */
+async function load_daily_oi_data(conn: any, date: Date): Promise<void> {
+  const date_str = format(date, 'yyyy-MM-dd');
+
+  // 如果已经缓存，跳过
+  if (daily_oi_cache.has(date_str)) {
+    return;
   }
 
-  // 构建 UNION ALL 查询
-  const union_queries = tables.map(table => `
-    SELECT mark_price
-    FROM ${table}
-    WHERE symbol = ?
-      AND snapshot_time >= ?
-      AND snapshot_time <= ?
-      AND mark_price IS NOT NULL
-  `).join(' UNION ALL ');
+  const table_name = get_table_name(date);
 
-  const sql = `
-    SELECT MIN(mark_price) as price_2h_low
-    FROM (${union_queries}) as combined
-  `;
-
-  // 参数：每个子查询都需要 symbol, start_time, end_time
-  const params: any[] = [];
-  for (let i = 0; i < tables.length; i++) {
-    params.push(symbol, start_time, anomaly_time);
+  // 检查表是否存在
+  if (!existing_tables_cache.has(table_name)) {
+    try {
+      const [rows] = await conn.query(
+        `SELECT 1 FROM information_schema.tables WHERE table_schema = DATABASE() AND table_name = ? LIMIT 1`,
+        [table_name]
+      );
+      if ((rows as any[]).length === 0) {
+        // 表不存在，设置空Map
+        daily_oi_cache.set(date_str, new Map());
+        return;
+      }
+      existing_tables_cache.add(table_name);
+    } catch (err) {
+      daily_oi_cache.set(date_str, new Map());
+      return;
+    }
   }
+
+  // 加载当天所有数据
+  console.log(`  📥 加载 ${table_name} 数据...`);
+  const start = Date.now();
 
   try {
-    const [rows] = await conn.query(sql, params);
-    const result = (rows as any[])[0];
-    return result?.price_2h_low ? parseFloat(result.price_2h_low) : null;
-  } catch (error: any) {
-    console.error(`查询失败 ${symbol} @ ${anomaly_time}:`, error.message);
-    return null;
+    const [rows] = await conn.query(`
+      SELECT symbol, snapshot_time, mark_price
+      FROM ${table_name}
+      WHERE mark_price IS NOT NULL
+      ORDER BY symbol, snapshot_time
+    `);
+
+    const data = rows as OISnapshot[];
+    const symbol_map = new Map<string, OISnapshot[]>();
+
+    for (const row of data) {
+      if (!symbol_map.has(row.symbol)) {
+        symbol_map.set(row.symbol, []);
+      }
+      symbol_map.get(row.symbol)!.push({
+        symbol: row.symbol,
+        snapshot_time: new Date(row.snapshot_time),
+        mark_price: parseFloat(row.mark_price as any)
+      });
+    }
+
+    daily_oi_cache.set(date_str, symbol_map);
+    console.log(`  ✅ 加载完成: ${data.length} 条记录, ${symbol_map.size} 个币种, 耗时 ${Date.now() - start}ms`);
+
+  } catch (err: any) {
+    console.error(`  ❌ 加载失败: ${err.message}`);
+    daily_oi_cache.set(date_str, new Map());
   }
 }
 
+/**
+ * 从缓存中获取2小时最低价
+ */
+function get_price_2h_low_from_cache(
+  symbol: string,
+  anomaly_time: Date
+): number | null {
+  const start_time = subHours(anomaly_time, 2);
+
+  // 可能需要查询2天的数据（跨天情况）
+  const dates_to_check = [
+    format(start_time, 'yyyy-MM-dd'),
+    format(anomaly_time, 'yyyy-MM-dd')
+  ];
+
+  // 去重
+  const unique_dates = [...new Set(dates_to_check)];
+
+  let min_price: number | null = null;
+
+  for (const date_str of unique_dates) {
+    const day_data = daily_oi_cache.get(date_str);
+    if (!day_data) continue;
+
+    const symbol_data = day_data.get(symbol);
+    if (!symbol_data) continue;
+
+    for (const snapshot of symbol_data) {
+      if (snapshot.snapshot_time >= start_time && snapshot.snapshot_time <= anomaly_time) {
+        if (min_price === null || snapshot.mark_price < min_price) {
+          min_price = snapshot.mark_price;
+        }
+      }
+    }
+  }
+
+  return min_price;
+}
+
+/**
+ * 按天分组处理：先预加载当天和前一天的OI数据，再批量处理当天的异动记录
+ */
+async function process_day(conn: any, date: Date): Promise<{updated: number, skipped: number, already_filled: number}> {
+  const date_str = format(date, 'yyyy-MM-dd');
+  console.log(`\n📅 处理日期: ${date_str}`);
+
+  // 预加载当天和前一天的OI数据（用于计算2小时低点，可能跨天）
+  const prev_date = subDays(date, 1);
+  await load_daily_oi_data(conn, prev_date);
+  await load_daily_oi_data(conn, date);
+
+  // 查询当天的异动记录
+  const day_start = startOfDay(date);
+  const day_end = endOfDay(date);
+
+  const [records] = await conn.query(`
+    SELECT id, symbol, anomaly_time, mark_price, price_2h_low
+    FROM oi_anomaly_records
+    WHERE anomaly_time >= ? AND anomaly_time <= ?
+    ORDER BY id ASC
+  `, [day_start, day_end]);
+
+  const anomalies = records as AnomalyRecord[];
+  console.log(`  📊 当天异动记录: ${anomalies.length} 条`);
+
+  let updated = 0;
+  let skipped = 0;
+  let already_filled = 0;
+
+  for (const record of anomalies) {
+    const { id, symbol, mark_price, price_2h_low: existing } = record;
+    const anomaly_time = new Date(record.anomaly_time);
+
+    // 已有值，跳过
+    if (existing !== null) {
+      already_filled++;
+      continue;
+    }
+
+    // 从缓存获取2小时最低价
+    const price_2h_low = get_price_2h_low_from_cache(symbol, anomaly_time);
+
+    if (price_2h_low === null) {
+      skipped++;
+    } else {
+      // 计算涨幅
+      const price_from_2h_low_pct = ((mark_price - price_2h_low) / price_2h_low) * 100;
+
+      // 更新数据库
+      await conn.query(`
+        UPDATE oi_anomaly_records
+        SET price_2h_low = ?, price_from_2h_low_pct = ?
+        WHERE id = ?
+      `, [price_2h_low, price_from_2h_low_pct, id]);
+
+      updated++;
+    }
+  }
+
+  console.log(`  ✅ 完成: 更新 ${updated}, 跳过 ${skipped}, 已存在 ${already_filled}`);
+
+  // 清理前一天的缓存，节省内存
+  const prev_date_str = format(prev_date, 'yyyy-MM-dd');
+  daily_oi_cache.delete(prev_date_str);
+
+  return { updated, skipped, already_filled };
+}
+
 async function main() {
-  console.log('开始回填 price_2h_low 数据（最近8天）...\n');
+  // 从命令行参数获取天数，默认2天
+  const days = parseInt(process.argv[2]) || 2;
+
+  console.log(`开始回填 price_2h_low 数据（最近${days}天）...\n`);
+  console.log('策略: 按天分组处理，预加载OI数据到内存，避免重复查询\n');
 
   console.log('正在连接数据库...');
   const conn = await DatabaseConfig.get_mysql_connection();
   console.log('数据库连接成功');
 
-  const daily_table_manager = DailyTableManager.get_instance();
-
   try {
-    // 查询最近8天待填充的记录
-    console.log('查询最近8天待填充的记录...');
-    const [anomalies] = await conn.query(`
-      SELECT id, symbol, anomaly_time, mark_price, price_2h_low
-      FROM oi_anomaly_records
-      WHERE anomaly_time >= DATE_SUB(NOW(), INTERVAL 8 DAY)
-        AND price_2h_low IS NULL
-      ORDER BY id ASC
-    `);
-    console.log('查询完成');
-
-    const records = anomalies as AnomalyRecord[];
-    console.log(`找到 ${records.length} 条待更新记录\n`);
-
-    if (records.length === 0) {
-      console.log('没有需要更新的记录');
-      return;
-    }
-
-    console.log(`开始处理，预计耗时 ${Math.ceil(records.length / 60)} 分钟...\n`);
-
-    let updated = 0;
-    let skipped = 0;
-    const total = records.length;
     const start_time = Date.now();
 
-    for (let i = 0; i < records.length; i++) {
-      const record = records[i];
-      const { id, symbol, anomaly_time, mark_price } = record;
+    // 获取需要处理的日期范围
+    const today = new Date();
+    const dates_to_process: Date[] = [];
 
-      // 获取2小时内最低价
-      const price_2h_low = await get_price_2h_low(conn, symbol, anomaly_time, daily_table_manager);
-
-      if (price_2h_low === null) {
-        skipped++;
-        // 只在调试时打印跳过信息
-        // console.log(`[跳过] ID=${id} ${symbol} @ ${format(anomaly_time, 'MM-dd HH:mm')} - 无历史数据`);
-      } else {
-        // 计算涨幅
-        const price_from_2h_low_pct = ((mark_price - price_2h_low) / price_2h_low) * 100;
-
-        // 更新数据库
-        await conn.query(`
-          UPDATE oi_anomaly_records
-          SET price_2h_low = ?, price_from_2h_low_pct = ?
-          WHERE id = ?
-        `, [price_2h_low, price_from_2h_low_pct, id]);
-
-        updated++;
-      }
-
-      // 每100条打印进度
-      if ((i + 1) % 100 === 0 || i === records.length - 1) {
-        const elapsed = (Date.now() - start_time) / 1000;
-        const speed = (i + 1) / elapsed;
-        const eta = Math.ceil((total - i - 1) / speed);
-        console.log(`进度: ${i + 1}/${total} (${((i + 1) / total * 100).toFixed(1)}%) | 更新: ${updated} | 跳过: ${skipped} | 速度: ${speed.toFixed(1)}/s | 剩余: ${eta}s`);
-      }
+    for (let i = days - 1; i >= 0; i--) {
+      dates_to_process.push(subDays(today, i));
     }
 
-    console.log(`\n✅ 完成！更新: ${updated} 条, 跳过: ${skipped} 条`);
+    console.log(`\n📆 需要处理的日期: ${dates_to_process.map(d => format(d, 'MM-dd')).join(', ')}`);
+
+    let total_updated = 0;
+    let total_skipped = 0;
+    let total_already_filled = 0;
+
+    // 逐天处理
+    for (const date of dates_to_process) {
+      const result = await process_day(conn, date);
+      total_updated += result.updated;
+      total_skipped += result.skipped;
+      total_already_filled += result.already_filled;
+    }
+
+    const elapsed = ((Date.now() - start_time) / 1000).toFixed(1);
+    console.log(`\n${'='.repeat(60)}`);
+    console.log(`✅ 全部完成！耗时 ${elapsed} 秒`);
+    console.log(`   更新: ${total_updated} 条`);
+    console.log(`   跳过: ${total_skipped} 条（无OI数据）`);
+    console.log(`   已存在: ${total_already_filled} 条`);
+    console.log(`${'='.repeat(60)}`);
 
   } finally {
     conn.release();

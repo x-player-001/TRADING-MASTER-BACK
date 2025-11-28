@@ -78,11 +78,11 @@ async function main() {
       default_take_profit_percent: 8,         // 默认止盈8%（用于回退）
       use_trailing_stop: true,                // 启用跟踪止盈
       trailing_stop_callback_rate: 15,        // 回调15%触发
-      // ⭐ 分批止盈配置: 30%@+8%, 30%@+15%, 40%跟踪止盈(6%回调)
+      // ⭐ 分批止盈配置: 30%@+7%, 30%@+13.8%, 40%跟踪止盈(10%回调)
       take_profit_targets: [
-        { percentage: 30, target_profit_pct: 8 },              // 第1批: 30%仓位 @+8%
-        { percentage: 30, target_profit_pct: 15 },             // 第2批: 30%仓位 @+15%
-        { percentage: 40, target_profit_pct: 0, is_trailing: true, trailing_callback_pct: 6 }  // 第3批: 40%仓位 跟踪止盈(6%回调)
+        { percentage: 30, target_profit_pct: 7 },              // 第1批: 30%仓位 @+7% (PnL≈42%)
+        { percentage: 30, target_profit_pct: 13.8 },           // 第2批: 30%仓位 @+13.8% (PnL≈83%)
+        { percentage: 40, target_profit_pct: 0, is_trailing: true, trailing_callback_pct: 10 }  // 第3批: 40%仓位 跟踪止盈(10%回调)
       ],
       daily_loss_limit_percent: 20,           // 每日亏损20%暂停
       consecutive_loss_limit: 999,            // 不限制连续亏损（与回测一致）
@@ -108,7 +108,7 @@ async function main() {
     console.log(`  策略: 只做多突破策略 (评分≥8分 ⭐)`);
     console.log(`  追高阈值: 10% ⭐ (price_from_2h_low_pct限制)`);
     console.log(`  最大持仓时间: 120分钟`);
-    console.log(`  分批止盈: 30%@+8%, 30%@+15%, 40%跟踪止盈(6%回调) ⭐`);
+    console.log(`  分批止盈: 30%@+7%, 30%@+13.8%, 40%跟踪止盈(10%回调) ⭐`);
     console.log(`  止损: 无 (逐仓模式自动限损)`);
     console.log(`  熔断机制: 每日亏损20%暂停`);
     console.log(`  通知推送: ✅ 已启用`);

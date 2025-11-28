@@ -356,7 +356,9 @@ export class OrderExecutor {
       await this.trading_api.set_leverage(order.symbol, leverage);
       logger.info(`[OrderExecutor] Set ${order.symbol} leverage to ${leverage}x`);
 
-      // 3. 下市价单（使用单向持仓模式 BOTH）
+      // 3. 下市价单（单向持仓模式：positionSide=BOTH）
+      // 开多仓: side=BUY, positionSide=BOTH
+      // 开空仓: side=SELL, positionSide=BOTH
       const binance_side = order.side === PositionSide.LONG ? OrderSide.BUY : OrderSide.SELL;
 
       const result = await this.trading_api.place_market_order(
@@ -364,7 +366,7 @@ export class OrderExecutor {
         binance_side,
         order.quantity,
         BinancePositionSide.BOTH,  // 单向持仓模式
-        false  // not reduceOnly
+        false  // 开仓不需要 reduceOnly
       );
 
       // 4. 更新订单记录
@@ -421,7 +423,9 @@ export class OrderExecutor {
       await this.trading_api.set_leverage(order.symbol, leverage);
       logger.info(`[OrderExecutor] Set ${order.symbol} leverage to ${leverage}x`);
 
-      // 3. 下市价单（使用单向持仓模式 BOTH）
+      // 3. 下市价单（单向持仓模式：positionSide=BOTH）
+      // 开多仓: side=BUY, positionSide=BOTH
+      // 开空仓: side=SELL, positionSide=BOTH
       const binance_side = order.side === PositionSide.LONG ? OrderSide.BUY : OrderSide.SELL;
 
       const result = await this.trading_api.place_market_order(
@@ -429,7 +433,7 @@ export class OrderExecutor {
         binance_side,
         order.quantity,
         BinancePositionSide.BOTH,  // 单向持仓模式
-        false  // not reduceOnly
+        false  // 开仓不需要 reduceOnly
       );
 
       // 4. 更新订单记录
@@ -538,7 +542,10 @@ export class OrderExecutor {
           throw new Error('Trading API not initialized');
         }
 
-        // 单向持仓模式：平仓用相反方向，不指定 positionSide
+        // 单向持仓模式：平仓用相反方向 + reduceOnly=true
+        // 平多仓: side=SELL, positionSide=BOTH, reduceOnly=true
+        // 平空仓: side=BUY, positionSide=BOTH, reduceOnly=true
+        // ⚠️ 必须设置 reduceOnly=true，否则会变成开反向仓位！
         const binance_side = side === PositionSide.LONG ? OrderSide.SELL : OrderSide.BUY;
 
         const result = await this.trading_api.place_market_order(
@@ -546,7 +553,7 @@ export class OrderExecutor {
           binance_side,
           formatted_quantity,
           BinancePositionSide.BOTH,  // 单向持仓模式
-          true  // reduceOnly = true (平仓单)
+          true  // ⚠️ reduceOnly=true 非常重要！防止开反向仓位
         );
 
         order.order_id = result.orderId.toString();

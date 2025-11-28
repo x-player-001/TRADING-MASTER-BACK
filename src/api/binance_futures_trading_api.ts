@@ -329,9 +329,10 @@ export class BinanceFuturesTradingAPI {
 
       if (positionSide !== PositionSide.BOTH) {
         params.positionSide = positionSide;
-      }
-
-      if (reduceOnly) {
+        // 注意：使用 positionSide (LONG/SHORT) 时，不能同时发送 reduceOnly 参数
+        // 币安会返回错误: Parameter 'reduceonly' sent when not required.
+      } else if (reduceOnly) {
+        // 只有在单向持仓模式 (positionSide=BOTH) 时才能使用 reduceOnly
         params.reduceOnly = 'true';
       }
 

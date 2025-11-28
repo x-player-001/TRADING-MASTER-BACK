@@ -578,6 +578,22 @@ export class TradeRecordRepository extends BaseRepository {
   }
 
   /**
+   * 根据平仓订单ID查找记录（用于去重）
+   */
+  async find_by_exit_order_id(exit_order_id: string, trading_mode: string): Promise<TradeRecordEntity | null> {
+    await this.ensure_table();
+
+    const sql = `
+      SELECT * FROM trade_records
+      WHERE exit_order_id = ? AND trading_mode = ?
+      LIMIT 1
+    `;
+
+    const rows = await this.execute_query(sql, [exit_order_id, trading_mode]);
+    return rows.length > 0 ? this.map_row_to_entity(rows[0]) : null;
+  }
+
+  /**
    * 创建已平仓的交易记录（用于回填历史交易）
    */
   async create_closed_trade(record: Omit<TradeRecordEntity, 'id' | 'created_at' | 'updated_at'>): Promise<number> {
@@ -640,6 +656,83 @@ export class TradeRecordRepository extends BaseRepository {
 
     const sql = `UPDATE trade_records SET tp_order_ids = ? WHERE id = ?`;
     const affected = await this.update_and_get_affected_rows(sql, [JSON.stringify(tp_order_ids), id]);
+    return affected > 0;
+  }
+
+  /**
+   * 添加分批止盈执行记录
+   * 用于记录部分平仓的详细信息
+   */
+  async add_take_profit_execution(id: number, execution: {
+    batch_number: number;
+    type: 'BATCH_TAKE_PROFIT' | 'TRAILING_STOP';
+    quantity: number;
+    exit_price: number;
+    pnl: number;
+    profit_percent: number;
+    executed_at: Date;
+    reason: string;
+  }): Promise<boolean> {
+    await this.ensure_table();
+
+    // 先获取现有的执行记录
+    const [rows] = await this.execute_query(
+      `SELECT take_profit_executions FROM trade_records WHERE id = ?`,
+      [id]
+    );
+
+    if (!rows) {
+      return false;
+    }
+
+    // 解析现有记录
+    let executions: any[] = [];
+    const row = rows as any;
+    if (row.take_profit_executions) {
+      try {
+        executions = typeof row.take_profit_executions === 'string'
+          ? JSON.parse(row.take_profit_executions)
+          : row.take_profit_executions;
+      } catch {
+        executions = [];
+      }
+    }
+
+    // 添加新记录
+    executions.push({
+      ...execution,
+      executed_at: execution.executed_at.toISOString()
+    });
+
+    // 更新数据库
+    const sql = `UPDATE trade_records SET take_profit_executions = ? WHERE id = ?`;
+    const affected = await this.update_and_get_affected_rows(sql, [JSON.stringify(executions), id]);
+
+    if (affected > 0) {
+      logger.info(`[TradeRecordRepository] Added take profit execution to trade ${id}: batch=${execution.batch_number}, qty=${execution.quantity}, pnl=${execution.pnl}`);
+    }
+
+    return affected > 0;
+  }
+
+  /**
+   * 更新持仓数量（部分平仓后）
+   */
+  async update_quantity(id: number, new_quantity: number, new_margin?: number): Promise<boolean> {
+    await this.ensure_table();
+
+    let sql = `UPDATE trade_records SET quantity = ?`;
+    const params: any[] = [new_quantity];
+
+    if (new_margin !== undefined) {
+      sql += `, margin = ?`;
+      params.push(new_margin);
+    }
+
+    sql += ` WHERE id = ?`;
+    params.push(id);
+
+    const affected = await this.update_and_get_affected_rows(sql, params);
     return affected > 0;
   }
 
