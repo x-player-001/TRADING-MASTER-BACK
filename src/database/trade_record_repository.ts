@@ -453,12 +453,12 @@ export class TradeRecordRepository extends BaseRepository {
     const params: any[] = [trading_mode];
 
     if (start_date) {
-      sql += ` AND closed_at >= ?`;
+      sql += ` AND opened_at >= ?`;
       params.push(start_date);
     }
 
     if (end_date) {
-      sql += ` AND closed_at <= ?`;
+      sql += ` AND opened_at <= ?`;
       params.push(end_date);
     }
 

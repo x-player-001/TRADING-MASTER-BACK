@@ -38,6 +38,9 @@ export class TradingSystem {
   // 模拟账户余额（纸面交易）
   private paper_account_balance: number = 10000; // 默认$10000
 
+  // 系统启动时间（用于统计只计算启动后的交易）
+  private readonly started_at: Date = new Date();
+
   constructor(config?: Partial<TradingSystemConfig>) {
     // 默认配置
     const default_strategy: StrategyConfig = {
@@ -545,6 +548,7 @@ export class TradingSystem {
 
   /**
    * 从数据库获取统计信息（包含手续费）
+   * 只统计系统启动后的交易，不包含回填的历史记录
    */
   async get_statistics_from_db(): Promise<{
     total_trades: number;
@@ -558,7 +562,8 @@ export class TradingSystem {
     const trading_mode = this.config.mode === TradingMode.LIVE ? 'LIVE' :
                         this.config.mode === TradingMode.TESTNET ? 'TESTNET' : 'PAPER';
 
-    const db_stats = await this.trade_record_repository.get_statistics(trading_mode);
+    // 只统计系统启动后的交易（opened_at >= started_at）
+    const db_stats = await this.trade_record_repository.get_statistics(trading_mode, this.started_at);
 
     return {
       total_trades: db_stats.total_trades,
