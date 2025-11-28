@@ -150,11 +150,11 @@ async function main() {
       throw new Error('Failed to initialize trading system');
     }
 
-    // ⭐ 设置追高阈值为10%（避免追高）
-    trading_system.set_chase_high_threshold(10);
+    // ⭐ 设置追高阈值为8%（避免追高）
+    trading_system.set_chase_high_threshold(8);
 
     console.log('\n✅ 交易引擎已启动');
-    console.log('✅ 追高阈值已设置为 10%');
+    console.log('✅ 追高阈值已设置为 8%');
     console.log('✅ 通知推送已启用');
 
     // 启动OI监控
