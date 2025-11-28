@@ -40,7 +40,21 @@ async function main() {
   try {
     // 1. 获取币安 PnL 记录（过去 7 天）
     console.log('\n📈 步骤 1: 获取币安 PnL 记录...');
-    const pnl_records = await api.get_income_history('REALIZED_PNL', 7);
+    const endTime = Date.now();
+    const startTime = endTime - 7 * 24 * 60 * 60 * 1000;
+    const raw_pnl_records = await api.get_income({
+      incomeType: 'REALIZED_PNL',
+      startTime,
+      endTime,
+      limit: 1000
+    });
+    // 转换格式
+    const pnl_records = raw_pnl_records.map(r => ({
+      symbol: r.symbol,
+      income: parseFloat(r.income),
+      time: r.time,
+      tradeId: r.tradeId
+    }));
     console.log(`找到 ${pnl_records.length} 条 PnL 记录:\n`);
 
     // 按 symbol 分组显示
@@ -152,11 +166,12 @@ async function main() {
     for (const symbol of unique_symbols) {
       console.log(`\n  ${symbol} 的成交记录:`);
       try {
-        const trades = await api.get_account_trades(symbol, 20);
+        const trades = await api.get_user_trades(symbol, { limit: 20 });
         for (const trade of trades.slice(0, 10)) {  // 只显示最近 10 条
           const time = new Date(trade.time).toLocaleString('zh-CN');
           const side_icon = trade.side === 'BUY' ? '🟢' : '🔴';
-          const pnl_str = trade.realizedPnl !== 0 ? ` | PnL: ${trade.realizedPnl.toFixed(4)}` : '';
+          const pnl = parseFloat(trade.realizedPnl);
+          const pnl_str = pnl !== 0 ? ` | PnL: ${pnl.toFixed(4)}` : '';
           console.log(`    ${side_icon} ${time} | ${trade.side} ${trade.qty} @ ${trade.price} | orderId: ${trade.orderId}${pnl_str}`);
         }
       } catch (err) {
