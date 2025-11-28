@@ -602,6 +602,7 @@ export class TradingSystem {
   /**
    * 从数据库获取统计信息（包含手续费）
    * 只统计系统启动后的交易，不包含回填的历史记录
+   * 按 position_id 计算完整交易笔数（分批止盈算一笔）
    */
   async get_statistics_from_db(): Promise<{
     total_trades: number;
@@ -619,9 +620,9 @@ export class TradingSystem {
     const db_stats = await this.order_record_repository.get_statistics(trading_mode, this.started_at);
 
     return {
-      total_trades: db_stats.close_orders,  // 平仓订单数
-      winning_trades: db_stats.winning_orders,
-      losing_trades: db_stats.losing_orders,
+      total_trades: db_stats.total_trades,  // 按position_id计算的完整交易笔数
+      winning_trades: db_stats.winning_trades,
+      losing_trades: db_stats.losing_trades,
       win_rate: db_stats.win_rate * 100,
       total_pnl: db_stats.total_pnl,
       total_commission: db_stats.total_commission,
@@ -631,6 +632,7 @@ export class TradingSystem {
 
   /**
    * 获取今日交易统计（从数据库）
+   * 按 position_id 计算完整交易笔数（分批止盈算一笔）
    */
   async get_today_statistics_from_db(): Promise<{
     total_trades: number;
@@ -651,9 +653,9 @@ export class TradingSystem {
     const db_stats = await this.order_record_repository.get_statistics(trading_mode, today_start);
 
     return {
-      total_trades: db_stats.close_orders,
-      winning_trades: db_stats.winning_orders,
-      losing_trades: db_stats.losing_orders,
+      total_trades: db_stats.total_trades,  // 按position_id计算的完整交易笔数
+      winning_trades: db_stats.winning_trades,
+      losing_trades: db_stats.losing_trades,
       win_rate: db_stats.win_rate * 100,
       total_pnl: db_stats.total_pnl,
       total_commission: db_stats.total_commission,

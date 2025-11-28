@@ -329,14 +329,18 @@ export class OrderRecordRepository extends BaseRepository {
   }
 
   /**
-   * 获取交易统计（基于平仓订单）
+   * 获取交易统计（基于完整交易周期，按position_id分组）
+   * 一个position_id代表一笔完整交易（开仓+可能多次分批平仓）
    */
   async get_statistics(trading_mode: string, start_date?: Date, end_date?: Date): Promise<{
     total_orders: number;
     open_orders: number;
     close_orders: number;
-    winning_orders: number;
-    losing_orders: number;
+    total_trades: number;      // 完整交易笔数（按position_id）
+    winning_trades: number;    // 盈利交易笔数
+    losing_trades: number;     // 亏损交易笔数
+    winning_orders: number;    // 保留：盈利平仓订单数
+    losing_orders: number;     // 保留：亏损平仓订单数
     win_rate: number;
     total_pnl: number;
     total_commission: number;
@@ -347,7 +351,8 @@ export class OrderRecordRepository extends BaseRepository {
   }> {
     await this.ensure_table();
 
-    let sql = `
+    // 基础订单统计
+    let base_sql = `
       SELECT
         COUNT(*) as total_orders,
         SUM(CASE WHEN order_type = 'OPEN' THEN 1 ELSE 0 END) as open_orders,
@@ -365,30 +370,73 @@ export class OrderRecordRepository extends BaseRepository {
     const params: any[] = [trading_mode];
 
     if (start_date) {
-      sql += ` AND order_time >= ?`;
+      base_sql += ` AND order_time >= ?`;
       params.push(start_date);
     }
 
     if (end_date) {
-      sql += ` AND order_time <= ?`;
+      base_sql += ` AND order_time <= ?`;
       params.push(end_date);
     }
 
-    const rows = await this.execute_query(sql, params);
+    const rows = await this.execute_query(base_sql, params);
     const row = rows[0];
 
-    const close_orders = parseInt(row.close_orders) || 0;
-    const winning = parseInt(row.winning_orders) || 0;
+    // 按position_id分组统计完整交易（只统计有平仓的交易）
+    let trade_sql = `
+      SELECT
+        position_id,
+        SUM(COALESCE(realized_pnl, 0)) as trade_pnl
+      FROM order_records
+      WHERE trading_mode = ?
+        AND order_type = 'CLOSE'
+        AND position_id IS NOT NULL
+    `;
+    const trade_params: any[] = [trading_mode];
+
+    if (start_date) {
+      trade_sql += ` AND order_time >= ?`;
+      trade_params.push(start_date);
+    }
+
+    if (end_date) {
+      trade_sql += ` AND order_time <= ?`;
+      trade_params.push(end_date);
+    }
+
+    trade_sql += ` GROUP BY position_id`;
+
+    const trade_rows = await this.execute_query(trade_sql, trade_params);
+
+    // 统计完整交易的胜负
+    let total_trades = 0;
+    let winning_trades = 0;
+    let losing_trades = 0;
+
+    for (const tr of trade_rows) {
+      total_trades++;
+      const pnl = parseFloat(tr.trade_pnl) || 0;
+      if (pnl > 0) {
+        winning_trades++;
+      } else if (pnl < 0) {
+        losing_trades++;
+      }
+      // pnl = 0 不计入胜负
+    }
+
     const total_pnl = parseFloat(row.total_pnl) || 0;
     const total_commission = parseFloat(row.total_commission) || 0;
 
     return {
       total_orders: parseInt(row.total_orders) || 0,
       open_orders: parseInt(row.open_orders) || 0,
-      close_orders,
-      winning_orders: winning,
+      close_orders: parseInt(row.close_orders) || 0,
+      total_trades,
+      winning_trades,
+      losing_trades,
+      winning_orders: parseInt(row.winning_orders) || 0,
       losing_orders: parseInt(row.losing_orders) || 0,
-      win_rate: close_orders > 0 ? winning / close_orders : 0,
+      win_rate: total_trades > 0 ? winning_trades / total_trades : 0,
       total_pnl,
       total_commission,
       net_pnl: total_pnl - total_commission,
