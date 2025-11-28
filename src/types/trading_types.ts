@@ -309,6 +309,9 @@ export interface TradingSystemConfig {
   symbol_whitelist?: string[];
   symbol_blacklist?: string[];
 
+  // 方向过滤（只做多或只做空）
+  allowed_directions?: ('LONG' | 'SHORT')[];
+
   // 通知配置
   enable_notifications: boolean;
   notification_channels?: ('email' | 'webhook' | 'telegram')[];
@@ -374,6 +377,9 @@ export interface BacktestConfig {
   symbols?: string[];                 // 限制回测的币种
   min_anomaly_severity?: 'low' | 'medium' | 'high';  // 最低异动严重程度
   allowed_directions?: ('LONG' | 'SHORT')[];  // 允许的交易方向（默认['LONG', 'SHORT']）
+
+  // 追高阈值配置
+  chase_high_threshold?: number;      // 避免追高阈值百分比（默认10%）
 }
 
 /**

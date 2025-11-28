@@ -46,6 +46,12 @@ export class BacktestEngine {
     this.strategy_engine.update_config(config.strategy_config);
     this.risk_manager.update_config(config.risk_config);
 
+    // 设置追高阈值（如果有配置）
+    if (config.chase_high_threshold !== undefined) {
+      this.signal_generator.set_chase_high_threshold(config.chase_high_threshold);
+      logger.info(`[BacktestEngine] Chase high threshold set to ${config.chase_high_threshold}%`);
+    }
+
     // ⚠️ 设置初始资金（用于固定比例保证金计算）
     this.risk_manager.set_initial_balance(config.initial_balance);
 

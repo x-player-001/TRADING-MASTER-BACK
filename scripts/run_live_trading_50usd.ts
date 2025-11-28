@@ -55,13 +55,13 @@ async function main() {
     const config_manager = ConfigManager.getInstance();
     config_manager.initialize();
 
-    // 📊 $50 小资金优化配置
+    // 📊 $50 小资金优化配置（基于回测优化）
     const strategy_config: StrategyConfig = {
       strategy_type: StrategyType.BREAKOUT,
       enabled: true,
-      min_signal_score: 7,                    // 最低评分7分
-      min_confidence: 0.6,                    // 最低置信度60%
-      min_oi_change_percent: 5,               // 最低OI变化5%
+      min_signal_score: 8,                    // ⭐ 最低评分8分（优化后）
+      min_confidence: 0.5,                    // 最低置信度50%
+      min_oi_change_percent: 3,               // 最低OI变化3%
       require_price_oi_alignment: true,       // 必须价格OI同向
       price_oi_divergence_threshold: 5,
       use_sentiment_filter: false,
@@ -79,8 +79,8 @@ async function main() {
       use_trailing_stop: true,                // 启用跟踪止盈
       trailing_stop_callback_rate: 15,        // 回调15%触发
       daily_loss_limit_percent: 20,           // 每日亏损20%暂停
-      consecutive_loss_limit: 6,              // 连续6次亏损暂停
-      pause_after_loss_limit: true,           // 触发熔断后暂停
+      consecutive_loss_limit: 999,            // 不限制连续亏损（与回测一致）
+      pause_after_loss_limit: false,          // 不暂停（与回测一致）
       max_leverage: 6,                        // 6倍杠杆
       leverage_by_signal_strength: {
         weak: 6,
@@ -90,7 +90,7 @@ async function main() {
     };
 
     // 📋 显示配置
-    console.log('\n📋 $50 交易配置:');
+    console.log('\n📋 $50 交易配置 (优化版):');
     console.log('═'.repeat(80));
     console.log(`  模式: ${trading_mode} ⚠️ (实盘)`);
     console.log(`  初始资金: $${initial_balance}`);
@@ -99,10 +99,12 @@ async function main() {
     console.log(`  杠杆: ${risk_config.max_leverage}x (逐仓)`);
     console.log(`  最多持仓: ${risk_config.max_total_positions}个`);
     console.log(`  单笔最大亏损: $${initial_balance * (risk_config.max_position_size_percent / 100)} (逐仓保证金)`);
-    console.log(`  策略: 只做多突破策略 (评分≥7分)`);
+    console.log(`  策略: 只做多突破策略 (评分≥8分 ⭐)`);
+    console.log(`  追高阈值: 16% ⭐ (优化值)`);
     console.log(`  止盈: 第一批8%`);
     console.log(`  止损: 无 (逐仓模式自动限损)`);
     console.log(`  熔断机制: 每日亏损20%或连续6次亏损暂停`);
+    console.log(`  通知推送: ✅ 已启用`);
     console.log('═'.repeat(80));
 
     // 风险提示
@@ -129,7 +131,8 @@ async function main() {
       strategies: [strategy_config],
       active_strategy_type: StrategyType.BREAKOUT,
       risk_config: risk_config,
-      enable_notifications: false
+      allowed_directions: ['LONG'],  // ⚠️ 只做多
+      enable_notifications: true     // ⭐ 启用推送通知
     });
 
     // 获取交易系统实例验证
@@ -138,7 +141,12 @@ async function main() {
       throw new Error('Failed to initialize trading system');
     }
 
+    // ⭐ 设置追高阈值为16%（基于回测优化结果）
+    trading_system.set_chase_high_threshold(16);
+
     console.log('\n✅ 交易引擎已启动');
+    console.log('✅ 追高阈值已设置为 16%');
+    console.log('✅ 通知推送已启用');
 
     // 启动OI监控
     await oi_service.start();

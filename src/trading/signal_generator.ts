@@ -13,6 +13,18 @@ import {
 import { logger } from '../utils/logger';
 
 export class SignalGenerator {
+  // 可配置的追高阈值（默认10%）
+  private chase_high_threshold: number = 10;
+
+  /**
+   * 设置追高阈值
+   * @param threshold 追高阈值百分比（例如：10 表示10%）
+   */
+  set_chase_high_threshold(threshold: number): void {
+    this.chase_high_threshold = threshold;
+    logger.info(`[SignalGenerator] Chase high threshold set to ${threshold}%`);
+  }
+
   /**
    * 从异动记录生成交易信号
    * @param anomaly 异动记录
@@ -145,20 +157,20 @@ export class SignalGenerator {
     // 优先使用已有字段，避免查询
     if (anomaly.price_from_low_pct !== null && anomaly.price_from_low_pct !== undefined) {
       const pct = parseFloat(anomaly.price_from_low_pct.toString());
-      if (pct > 10) {
+      if (pct > this.chase_high_threshold) {
         return {
           allowed: false,
-          reason: `价格从日内低点已涨${pct.toFixed(1)}% (>10%), 避免追高`
+          reason: `价格从日内低点已涨${pct.toFixed(1)}% (>${this.chase_high_threshold}%), 避免追高`
         };
       }
     }
 
     if (anomaly.price_from_high_pct !== null && anomaly.price_from_high_pct !== undefined) {
       const pct = parseFloat(anomaly.price_from_high_pct.toString());
-      if (pct > 10) {
+      if (pct > this.chase_high_threshold) {
         return {
           allowed: false,
-          reason: `价格从日内高点已跌${pct.toFixed(1)}% (>10%), 避免追跌`
+          reason: `价格从日内高点已跌${pct.toFixed(1)}% (>${this.chase_high_threshold}%), 避免追跌`
         };
       }
     }

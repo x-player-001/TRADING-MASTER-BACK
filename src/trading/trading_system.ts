@@ -114,7 +114,18 @@ export class TradingSystem {
 
     logger.info(`[TradingSystem] Signal generated: ${signal.symbol} ${signal.direction} (score: ${signal.score.toFixed(2)})`);
 
-    // 2. 策略评估
+    // 2. 方向过滤（只做多）
+    const allowed_directions = this.config.allowed_directions || ['LONG']; // 默认只做多
+    if (!allowed_directions.includes(signal.direction as any)) {
+      logger.info(`[TradingSystem] Signal rejected: ${signal.direction} not in allowed directions [${allowed_directions.join(', ')}]`);
+      return {
+        signal,
+        action: 'SIGNAL_REJECTED',
+        reason: `Direction filter: ${signal.direction} not in allowed directions`
+      };
+    }
+
+    // 3. 策略评估
     const strategy_result = this.strategy_engine.evaluate_signal(signal);
     if (!strategy_result.passed) {
       logger.info(`[TradingSystem] Signal rejected by strategy: ${strategy_result.reason}`);
@@ -125,7 +136,7 @@ export class TradingSystem {
       };
     }
 
-    // 3. 风险检查
+    // 4. 风险检查
     const open_positions = this.position_tracker.get_open_positions();
     const risk_check = this.risk_manager.can_open_position(
       signal,
@@ -142,7 +153,7 @@ export class TradingSystem {
       };
     }
 
-    // 4. 执行开仓
+    // 5. 执行开仓
     try {
       const position = await this.execute_trade(
         signal,
@@ -393,5 +404,14 @@ export class TradingSystem {
    */
   get_config(): TradingSystemConfig {
     return { ...this.config };
+  }
+
+  /**
+   * 设置追高阈值
+   * @param threshold 追高阈值百分比（例如：16 表示16%）
+   */
+  set_chase_high_threshold(threshold: number): void {
+    this.signal_generator.set_chase_high_threshold(threshold);
+    logger.info(`[TradingSystem] Chase high threshold set to ${threshold}%`);
   }
 }
