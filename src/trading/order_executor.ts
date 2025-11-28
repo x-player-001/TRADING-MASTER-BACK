@@ -18,11 +18,21 @@ import {
   OrderSide,
   PositionSide as BinancePositionSide
 } from '../api/binance_futures_trading_api';
+import { OIRepository } from '../database/oi_repository';
 
 export class OrderExecutor {
   private mode: TradingMode;
   private binance_api?: BinanceFuturesAPI;
   private trading_api?: BinanceFuturesTradingAPI;
+  private oi_repository?: OIRepository;
+
+  // 币种精度缓存
+  private precision_cache: Map<string, {
+    quantity_precision: number;
+    price_precision: number;
+    step_size: number;
+    min_notional: number;
+  }> = new Map();
 
   // 纸面交易的模拟订单ID计数器
   private paper_order_id_counter = 1;
@@ -33,6 +43,7 @@ export class OrderExecutor {
     // 如果是测试网或实盘模式，初始化币安API
     if (mode === TradingMode.TESTNET || mode === TradingMode.LIVE) {
       this.binance_api = new BinanceFuturesAPI();
+      this.oi_repository = new OIRepository();
 
       // 根据模式选择正确的API密钥
       let api_key: string | undefined;
@@ -56,6 +67,54 @@ export class OrderExecutor {
     }
 
     logger.info(`[OrderExecutor] Initialized in ${mode} mode`);
+  }
+
+  /**
+   * 获取币种精度信息（带缓存）
+   */
+  private async get_symbol_precision(symbol: string): Promise<{
+    quantity_precision: number;
+    price_precision: number;
+    step_size: number;
+    min_notional: number;
+  } | null> {
+    // 检查缓存
+    if (this.precision_cache.has(symbol)) {
+      return this.precision_cache.get(symbol)!;
+    }
+
+    // 从数据库获取
+    if (!this.oi_repository) {
+      return null;
+    }
+
+    const precision = await this.oi_repository.get_symbol_precision(symbol);
+    if (precision) {
+      this.precision_cache.set(symbol, precision);
+      logger.debug(`[OrderExecutor] Loaded precision for ${symbol}: qty=${precision.quantity_precision}, step=${precision.step_size}`);
+    }
+
+    return precision;
+  }
+
+  /**
+   * 根据精度格式化数量
+   * @param quantity 原始数量
+   * @param precision 小数位数精度
+   * @param step_size 最小步长（如 0.001）
+   */
+  private format_quantity(quantity: number, precision: number, step_size: number): number {
+    // 使用 step_size 进行对齐（向下取整到最近的 step_size 倍数）
+    if (step_size > 0) {
+      const steps = Math.floor(quantity / step_size);
+      quantity = steps * step_size;
+    }
+
+    // 再按精度截断
+    const multiplier = Math.pow(10, precision);
+    quantity = Math.floor(quantity * multiplier) / multiplier;
+
+    return quantity;
   }
 
   /**
@@ -154,13 +213,36 @@ export class OrderExecutor {
     quantity: number,
     leverage: number = 1
   ): Promise<OrderRecord> {
-    logger.info(`[OrderExecutor] Executing ${signal.direction} order for ${signal.symbol}: qty=${quantity}, leverage=${leverage}x`);
+    // 获取精度并格式化数量（仅实盘/测试网）
+    let formatted_quantity = quantity;
+    if (this.mode === TradingMode.TESTNET || this.mode === TradingMode.LIVE) {
+      const precision = await this.get_symbol_precision(signal.symbol);
+      if (precision) {
+        formatted_quantity = this.format_quantity(
+          quantity,
+          precision.quantity_precision,
+          precision.step_size
+        );
+        logger.info(`[OrderExecutor] Quantity formatted: ${quantity} -> ${formatted_quantity} (precision=${precision.quantity_precision}, step=${precision.step_size})`);
+
+        // 检查最小名义价值
+        const entry_price = signal.entry_price || 0;
+        const notional = formatted_quantity * entry_price;
+        if (notional < precision.min_notional) {
+          throw new Error(`Order notional value (${notional.toFixed(2)} USDT) is below minimum (${precision.min_notional} USDT)`);
+        }
+      } else {
+        logger.warn(`[OrderExecutor] No precision info for ${signal.symbol}, using raw quantity`);
+      }
+    }
+
+    logger.info(`[OrderExecutor] Executing ${signal.direction} order for ${signal.symbol}: qty=${formatted_quantity}, leverage=${leverage}x`);
 
     const order: OrderRecord = {
       symbol: signal.symbol,
       order_type: OrderType.MARKET,
       side: signal.direction === 'LONG' ? PositionSide.LONG : PositionSide.SHORT,
-      quantity,
+      quantity: formatted_quantity,
       status: OrderStatus.PENDING,
       signal_id: signal.source_anomaly_id,
       created_at: new Date()
@@ -391,13 +473,27 @@ export class OrderExecutor {
     quantity: number,
     current_price?: number
   ): Promise<OrderRecord> {
-    logger.info(`[OrderExecutor] Closing position: ${symbol} ${side} qty=${quantity}`);
+    // 获取精度并格式化数量（仅实盘/测试网）
+    let formatted_quantity = quantity;
+    if (this.mode === TradingMode.TESTNET || this.mode === TradingMode.LIVE) {
+      const precision = await this.get_symbol_precision(symbol);
+      if (precision) {
+        formatted_quantity = this.format_quantity(
+          quantity,
+          precision.quantity_precision,
+          precision.step_size
+        );
+        logger.debug(`[OrderExecutor] Close quantity formatted: ${quantity} -> ${formatted_quantity}`);
+      }
+    }
+
+    logger.info(`[OrderExecutor] Closing position: ${symbol} ${side} qty=${formatted_quantity}`);
 
     const order: OrderRecord = {
       symbol,
       order_type: OrderType.MARKET,
       side: side === PositionSide.LONG ? PositionSide.SHORT : PositionSide.LONG, // 平仓方向相反
-      quantity,
+      quantity: formatted_quantity,
       status: OrderStatus.PENDING,
       created_at: new Date()
     };
@@ -407,7 +503,7 @@ export class OrderExecutor {
         // 纸面交易模拟
         order.order_id = `PAPER_CLOSE_${this.paper_order_id_counter++}`;
         order.status = OrderStatus.FILLED;
-        order.filled_quantity = quantity;
+        order.filled_quantity = formatted_quantity;
         order.average_price = current_price || 0;
         order.price = current_price || 0;
         order.filled_at = new Date();
@@ -428,7 +524,7 @@ export class OrderExecutor {
         const result = await this.trading_api.place_market_order(
           symbol,
           binance_side,
-          quantity,
+          formatted_quantity,
           binance_position_side,
           true  // reduceOnly = true (平仓单)
         );
