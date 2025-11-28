@@ -1198,6 +1198,9 @@ export class TradingSystem {
    * 回填历史交易记录
    * 从币安查询最近7天的已实现盈亏记录，检查数据库是否存在，不存在则创建
    *
+   * ⭐ 核心逻辑：按开仓订单分组，累加所有关联的平仓订单数据
+   * 支持分批止盈场景：一个开仓订单可能对应多个平仓订单
+   *
    * @param days 回填天数（默认7天，最大7天）
    * @returns 回填结果
    */
@@ -1272,104 +1275,128 @@ export class TradingSystem {
             trades_by_order.get(orderId)!.push(trade);
           }
 
-          // 找出开仓和平仓订单（通过realizedPnl判断：平仓有盈亏，开仓为0）
-          const entry_orders: number[] = [];
-          const exit_orders: number[] = [];
+          // 区分开仓和平仓订单
+          // 开仓订单: realizedPnl = 0
+          // 平仓订单: realizedPnl != 0
+          interface OrderInfo {
+            orderId: number;
+            trades: typeof trades;
+            side: string;        // BUY or SELL
+            qty: number;
+            quoteQty: number;
+            commission: number;
+            pnl: number;
+            minTime: number;     // 最早成交时间
+            maxTime: number;     // 最晚成交时间
+          }
+
+          const entry_orders: OrderInfo[] = [];
+          const exit_orders: OrderInfo[] = [];
 
           for (const [orderId, orderTrades] of trades_by_order) {
             const totalPnl = orderTrades.reduce((sum, t) => sum + parseFloat(t.realizedPnl), 0);
+            const qty = orderTrades.reduce((sum, t) => sum + parseFloat(t.qty), 0);
+            const quoteQty = orderTrades.reduce((sum, t) => sum + parseFloat(t.quoteQty), 0);
+            const commission = orderTrades.reduce((sum, t) => sum + parseFloat(t.commission), 0);
+            const minTime = Math.min(...orderTrades.map(t => t.time));
+            const maxTime = Math.max(...orderTrades.map(t => t.time));
+            const side = orderTrades[0].side;
+
+            const orderInfo: OrderInfo = {
+              orderId,
+              trades: orderTrades,
+              side,
+              qty,
+              quoteQty,
+              commission,
+              pnl: totalPnl,
+              minTime,
+              maxTime
+            };
+
             if (Math.abs(totalPnl) > 0.0001) {
-              exit_orders.push(orderId);
+              exit_orders.push(orderInfo);
             } else {
-              entry_orders.push(orderId);
+              entry_orders.push(orderInfo);
             }
           }
 
-          // 3. 尝试匹配开仓和平仓，创建完整交易记录
-          for (const exit_order_id of exit_orders) {
-            const exit_trades = trades_by_order.get(exit_order_id)!;
+          // ⭐ 核心改进：按开仓订单分组，找出所有关联的平仓订单
+          // 一个开仓订单可能对应多个平仓订单（分批止盈场景）
+          for (const entry_order of entry_orders) {
             result.total_found++;
 
-            // 计算平仓数据
-            const exit_qty = exit_trades.reduce((sum, t) => sum + parseFloat(t.qty), 0);
-            const exit_quote_qty = exit_trades.reduce((sum, t) => sum + parseFloat(t.quoteQty), 0);
-            const exit_price = exit_qty > 0 ? exit_quote_qty / exit_qty : 0;
-            const exit_commission = exit_trades.reduce((sum, t) => sum + parseFloat(t.commission), 0);
-            const realized_pnl = exit_trades.reduce((sum, t) => sum + parseFloat(t.realizedPnl), 0);
-            const exit_time = Math.max(...exit_trades.map(t => t.time));
-            const exit_side = exit_trades[0].side;  // SELL = 平多, BUY = 平空
-            const position_side: 'LONG' | 'SHORT' = exit_side === 'SELL' ? 'LONG' : 'SHORT';
-
-            // 寻找可能的开仓订单（时间早于平仓，方向相反）
-            let matched_entry: typeof trades | undefined;
-            let entry_order_id: number | undefined;
-
-            for (const entry_id of entry_orders) {
-              const entry_trades = trades_by_order.get(entry_id)!;
-              const entry_time = Math.min(...entry_trades.map(t => t.time));
-              const entry_side = entry_trades[0].side;
-
-              // 开仓方向与平仓方向相反，且时间更早
-              if (entry_time < exit_time &&
-                  ((position_side === 'LONG' && entry_side === 'BUY') ||
-                   (position_side === 'SHORT' && entry_side === 'SELL'))) {
-                matched_entry = entry_trades;
-                entry_order_id = entry_id;
-                break;
-              }
-            }
+            // 确定持仓方向
+            const position_side: 'LONG' | 'SHORT' = entry_order.side === 'BUY' ? 'LONG' : 'SHORT';
+            const close_side = position_side === 'LONG' ? 'SELL' : 'BUY';
 
             // 检查数据库是否已存在该记录
-            // ⭐ 同时检查 entry_order_id 和 exit_order_id 防止重复
-            const existing_by_exit = await this.trade_record_repository.find_by_exit_order_id(
-              exit_order_id.toString(),
+            const existing_by_entry = await this.trade_record_repository.find_by_entry_order_id(
+              entry_order.orderId.toString(),
               trading_mode
             );
-            const existing_by_entry = entry_order_id
-              ? await this.trade_record_repository.find_by_entry_order_id(
-                  entry_order_id.toString(),
-                  trading_mode
-                )
-              : null;
 
-            if (existing_by_exit || existing_by_entry) {
+            if (existing_by_entry) {
               result.already_exists++;
               continue;
             }
 
-            // 计算开仓数据
-            let entry_price = exit_price;  // 默认值
-            let entry_commission = 0;
-            let entry_time = exit_time - 60000;  // 默认早1分钟
-            let quantity = exit_qty;
+            // 找出所有关联的平仓订单
+            // 条件：方向相反 && 时间晚于开仓
+            const related_exits = exit_orders.filter(exit =>
+              exit.side === close_side &&
+              exit.minTime > entry_order.minTime
+            );
 
-            if (matched_entry) {
-              const entry_qty = matched_entry.reduce((sum, t) => sum + parseFloat(t.qty), 0);
-              const entry_quote_qty = matched_entry.reduce((sum, t) => sum + parseFloat(t.quoteQty), 0);
-              entry_price = entry_qty > 0 ? entry_quote_qty / entry_qty : exit_price;
-              entry_commission = matched_entry.reduce((sum, t) => sum + parseFloat(t.commission), 0);
-              entry_time = Math.min(...matched_entry.map(t => t.time));
-              quantity = entry_qty;
-            } else {
-              // 无法找到开仓订单，通过盈亏反推开仓价格
-              // 做多: pnl = (exit_price - entry_price) * qty
-              // 做空: pnl = (entry_price - exit_price) * qty
-              if (exit_qty > 0) {
-                if (position_side === 'LONG') {
-                  entry_price = exit_price - (realized_pnl / exit_qty);
-                } else {
-                  entry_price = exit_price + (realized_pnl / exit_qty);
-                }
+            if (related_exits.length === 0) {
+              // 没有找到平仓订单，可能还在持仓中，跳过
+              logger.debug(`[TradingSystem] No exit orders found for entry ${entry_order.orderId}, might be still open`);
+              result.total_found--;  // 不计入已处理
+              continue;
+            }
+
+            // ⭐ 累加所有平仓订单的数据
+            let total_exit_qty = 0;
+            let total_exit_quote_qty = 0;
+            let total_exit_commission = 0;
+            let total_realized_pnl = 0;
+            let last_exit_time = 0;
+            let last_exit_order_id = 0;
+            const exit_order_ids: number[] = [];
+
+            // 按时间排序平仓订单
+            related_exits.sort((a, b) => a.minTime - b.minTime);
+
+            // 累加平仓数据，直到平仓数量 >= 开仓数量
+            for (const exit of related_exits) {
+              total_exit_qty += exit.qty;
+              total_exit_quote_qty += exit.quoteQty;
+              total_exit_commission += exit.commission;
+              total_realized_pnl += exit.pnl;
+              exit_order_ids.push(exit.orderId);
+
+              if (exit.maxTime > last_exit_time) {
+                last_exit_time = exit.maxTime;
+                last_exit_order_id = exit.orderId;
+              }
+
+              // 如果平仓数量已经 >= 开仓数量，停止累加
+              if (total_exit_qty >= entry_order.qty - 0.0001) {
+                break;
               }
             }
 
-            // 假设6倍杠杆（与当前配置一致）
+            // 计算加权平均出场价格
+            const exit_price = total_exit_qty > 0 ? total_exit_quote_qty / total_exit_qty : 0;
+            const entry_price = entry_order.qty > 0 ? entry_order.quoteQty / entry_order.qty : 0;
+
+            // 计算杠杆和保证金
             const leverage = this.config.risk_config.max_leverage || 6;
-            const position_value = entry_price * quantity;
+            const position_value = entry_price * entry_order.qty;
             const margin = position_value / leverage;
-            const total_commission = entry_commission + exit_commission;
-            const net_pnl = realized_pnl - total_commission;
-            const realized_pnl_percent = margin > 0 ? (realized_pnl / margin) * 100 : 0;
+            const total_commission = entry_order.commission + total_exit_commission;
+            const net_pnl = total_realized_pnl - total_commission;
+            const realized_pnl_percent = margin > 0 ? (total_realized_pnl / margin) * 100 : 0;
 
             // 创建交易记录
             try {
@@ -1378,29 +1405,30 @@ export class TradingSystem {
                 side: position_side,
                 trading_mode: trading_mode as 'LIVE' | 'TESTNET' | 'PAPER',
                 entry_price,
-                quantity,
+                quantity: entry_order.qty,
                 leverage,
                 margin,
                 position_value,
                 exit_price,
-                realized_pnl,
+                realized_pnl: total_realized_pnl,
                 realized_pnl_percent,
                 close_reason: 'BACKFILLED',
-                entry_commission,
-                exit_commission,
+                entry_commission: entry_order.commission,
+                exit_commission: total_exit_commission,
                 total_commission,
                 commission_asset: 'USDT',
                 net_pnl,
-                entry_order_id: entry_order_id?.toString(),
-                exit_order_id: exit_order_id.toString(),
+                entry_order_id: entry_order.orderId.toString(),
+                exit_order_id: last_exit_order_id.toString(),  // 使用最后一个平仓订单ID
                 status: 'CLOSED',
-                opened_at: new Date(entry_time),
-                closed_at: new Date(exit_time)
+                opened_at: new Date(entry_order.minTime),
+                closed_at: new Date(last_exit_time)
               });
 
               result.newly_created++;
-              result.details.push(`${symbol} ${position_side}: entry=${entry_price.toFixed(6)} exit=${exit_price.toFixed(6)} pnl=${realized_pnl.toFixed(4)} USDT`);
-              logger.info(`[TradingSystem] Backfilled trade: ${symbol} ${position_side} pnl=${realized_pnl.toFixed(4)}`);
+              const pnl_sign = total_realized_pnl >= 0 ? '+' : '';
+              result.details.push(`${symbol} ${position_side}: entry=${entry_price.toFixed(6)} exit=${exit_price.toFixed(6)} pnl=${pnl_sign}${total_realized_pnl.toFixed(4)} USDT (${exit_order_ids.length}批平仓)`);
+              logger.info(`[TradingSystem] Backfilled trade: ${symbol} ${position_side} pnl=${pnl_sign}${total_realized_pnl.toFixed(4)} (${exit_order_ids.length} exit orders)`);
 
             } catch (error) {
               result.failed++;
