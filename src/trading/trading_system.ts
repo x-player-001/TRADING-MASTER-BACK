@@ -958,18 +958,32 @@ export class TradingSystem {
 
   /**
    * 尝试下保本止损单
-   * 当盈利达到6%时，在成本价处设置止损单，确保保本
+   * 当盈利达到6%时，设置止损单确保覆盖手续费后保本
+   * 止损价 = 成本价 × (1 + 手续费率×2 + 滑点余量)
    * 会先通过币安API检查是否已有止损挂单，避免重复下单
    */
   private async try_place_breakeven_stop_loss(position: PositionRecord): Promise<void> {
     try {
-      logger.info(`[TradingSystem] Position ${position.symbol} reached +${position.unrealized_pnl_percent.toFixed(2)}%, checking/placing breakeven stop loss at entry price ${position.entry_price}`);
+      // 计算覆盖手续费的止损价
+      // Taker费率0.05%，开仓+平仓共0.1%，再加0.05%滑点余量 = 0.15%
+      const fee_compensation_rate = 0.0015; // 0.15%
+      let breakeven_price: number;
+
+      if (position.side === PositionSide.LONG) {
+        // 多头：止损价要高于成本价才能覆盖手续费
+        breakeven_price = position.entry_price * (1 + fee_compensation_rate);
+      } else {
+        // 空头：止损价要低于成本价才能覆盖手续费
+        breakeven_price = position.entry_price * (1 - fee_compensation_rate);
+      }
+
+      logger.info(`[TradingSystem] Position ${position.symbol} reached +${position.unrealized_pnl_percent.toFixed(2)}%, checking/placing breakeven stop loss at ${breakeven_price.toFixed(6)} (entry: ${position.entry_price}, +0.15% fee compensation)`);
 
       const result = await this.order_executor.place_breakeven_stop_loss(
         position.symbol,
         position.side,
         position.quantity,
-        position.entry_price
+        breakeven_price
       );
 
       if (result.success) {
@@ -981,8 +995,8 @@ export class TradingSystem {
           logger.info(`[TradingSystem] ✅ Stop loss already exists for ${position.symbol}, marked as breakeven_sl_placed`);
         } else {
           // 新下单成功
-          logger.info(`[TradingSystem] ✅ Breakeven stop loss placed for ${position.symbol}: orderId=${result.orderId}, stopPrice=${position.entry_price}`);
-          console.log(`\n🛡️ 保本止损已设置: ${position.symbol} @ ${position.entry_price} (当前盈利: +${position.unrealized_pnl_percent.toFixed(2)}%)\n`);
+          logger.info(`[TradingSystem] ✅ Breakeven stop loss placed for ${position.symbol}: orderId=${result.orderId}, stopPrice=${breakeven_price.toFixed(6)}`);
+          console.log(`\n🛡️ 保本止损已设置: ${position.symbol} @ ${breakeven_price.toFixed(6)} (成本${position.entry_price}+0.15%手续费, 当前盈利: +${position.unrealized_pnl_percent.toFixed(2)}%)\n`);
         }
       } else {
         logger.error(`[TradingSystem] ❌ Failed to place breakeven stop loss for ${position.symbol}: ${result.error}`);
