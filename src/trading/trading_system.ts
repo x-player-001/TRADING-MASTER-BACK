@@ -741,7 +741,7 @@ export class TradingSystem {
             leverage: bp.leverage,
             margin: margin,
             is_open: true,
-            opened_at: new Date(bp.updateTime),  // 使用币安返回的updateTime
+            opened_at: new Date(bp.updateTime),  // 临时用updateTime，数据库有记录时会被覆盖
             unrealized_pnl: bp.unrealizedProfit,
             unrealized_pnl_percent: margin > 0
               ? (bp.unrealizedProfit / margin) * 100
@@ -751,7 +751,7 @@ export class TradingSystem {
           };
 
           this.position_tracker.add_synced_position(new_position);
-          logger.info(`[TradingSystem] Synced new position from Binance: ${bp.symbol} ${bp.side} qty=${bp.positionAmt} @ ${bp.entryPrice}, SL=${stop_loss_price?.toFixed(6) || 'N/A'}, TP=${take_profit_price.toFixed(6)}`);
+          logger.info(`[TradingSystem] Synced new position from Binance: ${bp.symbol} ${bp.side} qty=${bp.positionAmt} @ ${bp.entryPrice}, opened_at=${new_position.opened_at.toISOString()}, SL=${stop_loss_price?.toFixed(6) || 'N/A'}, TP=${take_profit_price.toFixed(6)}`);
           added++;
 
           // 检查数据库是否有对应记录，如果没有则创建
@@ -884,9 +884,13 @@ export class TradingSystem {
       );
 
       if (existing) {
-        // 已有记录，将数据库ID同步到内存持仓
+        // 已有记录，将数据库ID和开仓时间同步到内存持仓
         position.id = existing.id;
-        logger.debug(`[TradingSystem] Found existing trade record for ${binance_position.symbol}: id=${existing.id}`);
+        // ⭐ 重要：使用数据库中保存的真实开仓时间，而不是币安的updateTime
+        if (existing.opened_at) {
+          position.opened_at = existing.opened_at;
+        }
+        logger.debug(`[TradingSystem] Found existing trade record for ${binance_position.symbol}: id=${existing.id}, opened_at=${position.opened_at.toISOString()}`);
         return;
       }
 
