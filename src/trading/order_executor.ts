@@ -599,4 +599,77 @@ export class OrderExecutor {
   get_mode(): TradingMode {
     return this.mode;
   }
+
+  /**
+   * 获取币安实际持仓（实盘/测试网模式）
+   * @returns 币安账户中的所有持仓
+   */
+  async get_binance_positions(): Promise<{
+    symbol: string;
+    positionAmt: number;
+    entryPrice: number;
+    unrealizedProfit: number;
+    leverage: number;
+    marginType: string;
+    isolatedWallet: number;
+    side: 'LONG' | 'SHORT';
+  }[]> {
+    if (this.mode === TradingMode.PAPER) {
+      return [];
+    }
+
+    if (!this.trading_api) {
+      logger.warn('[OrderExecutor] Trading API not initialized');
+      return [];
+    }
+
+    try {
+      const account = await this.trading_api.get_account_info();
+      const positions = account.positions?.filter((p: any) => parseFloat(p.positionAmt) !== 0) || [];
+
+      return positions.map((p: any) => ({
+        symbol: p.symbol,
+        positionAmt: Math.abs(parseFloat(p.positionAmt)),
+        entryPrice: parseFloat(p.entryPrice),
+        unrealizedProfit: parseFloat(p.unrealizedProfit),
+        leverage: parseInt(p.leverage),
+        marginType: p.marginType,
+        isolatedWallet: parseFloat(p.isolatedWallet || '0'),
+        side: parseFloat(p.positionAmt) > 0 ? 'LONG' as const : 'SHORT' as const
+      }));
+    } catch (error) {
+      logger.error('[OrderExecutor] Failed to get Binance positions:', error);
+      return [];
+    }
+  }
+
+  /**
+   * 获取币安账户余额信息
+   */
+  async get_binance_balance(): Promise<{
+    totalWalletBalance: number;
+    availableBalance: number;
+    totalUnrealizedProfit: number;
+  } | null> {
+    if (this.mode === TradingMode.PAPER) {
+      return null;
+    }
+
+    if (!this.trading_api) {
+      logger.warn('[OrderExecutor] Trading API not initialized');
+      return null;
+    }
+
+    try {
+      const account = await this.trading_api.get_account_info();
+      return {
+        totalWalletBalance: parseFloat(account.totalWalletBalance),
+        availableBalance: parseFloat(account.availableBalance),
+        totalUnrealizedProfit: parseFloat(account.totalUnrealizedProfit)
+      };
+    } catch (error) {
+      logger.error('[OrderExecutor] Failed to get Binance balance:', error);
+      return null;
+    }
+  }
 }

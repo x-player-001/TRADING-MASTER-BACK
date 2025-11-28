@@ -224,6 +224,7 @@ export class BinanceFuturesTradingAPI {
         side,
         type: OrderType.MARKET,
         quantity: quantity.toString(),
+        newOrderRespType: 'RESULT',  // 返回成交结果（包含avgPrice和executedQty）
         timestamp
       };
 

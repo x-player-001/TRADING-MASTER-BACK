@@ -253,7 +253,10 @@ export interface PositionRecord {
   updated_at?: Date;
 
   // 平仓原因
-  close_reason?: 'STOP_LOSS' | 'TAKE_PROFIT' | 'LIQUIDATION' | 'MANUAL' | 'RISK_LIMIT' | 'TIMEOUT';
+  close_reason?: 'STOP_LOSS' | 'TAKE_PROFIT' | 'LIQUIDATION' | 'MANUAL' | 'RISK_LIMIT' | 'TIMEOUT' | 'SYNC_CLOSED';
+
+  // 保证金（同步用）
+  margin?: number;
 
   // 分批止盈记录（新增）
   take_profit_executions?: TakeProfitExecution[];

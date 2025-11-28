@@ -296,4 +296,51 @@ export class PositionTracker {
     closed_ids.forEach(id => this.positions.delete(id));
     logger.info(`[PositionTracker] Cleared ${closed_ids.length} closed positions`);
   }
+
+  /**
+   * 添加从币安同步的持仓（用于持仓同步）
+   */
+  add_synced_position(position: PositionRecord): void {
+    // 使用字符串ID生成数字ID
+    const numeric_id = this.position_id_counter++;
+    position.id = numeric_id;
+    position.is_open = true;
+
+    this.positions.set(numeric_id, position);
+    logger.info(`[PositionTracker] Synced position added: ${position.symbol} ${position.side} @ ${position.entry_price}`);
+  }
+
+  /**
+   * 标记持仓为已关闭（用于持仓同步）
+   */
+  mark_position_closed(position_id: number | string, realized_pnl: number): void {
+    // 查找持仓
+    let target_position: PositionRecord | undefined;
+    let target_id: number | undefined;
+
+    this.positions.forEach((position, id) => {
+      if (position.id === position_id || id === position_id) {
+        target_position = position;
+        target_id = id;
+      }
+    });
+
+    if (target_position && target_id !== undefined) {
+      target_position.is_open = false;
+      target_position.realized_pnl = realized_pnl;
+      target_position.closed_at = new Date();
+      target_position.close_reason = 'SYNC_CLOSED';
+
+      logger.info(`[PositionTracker] Position marked as closed: ${target_position.symbol} ${target_position.side}, PnL: ${realized_pnl.toFixed(2)}`);
+    }
+  }
+
+  /**
+   * 根据symbol和side查找开仓持仓
+   */
+  find_open_position(symbol: string, side: PositionSide): PositionRecord | undefined {
+    return Array.from(this.positions.values()).find(
+      p => p.is_open && p.symbol === symbol && p.side === side
+    );
+  }
 }

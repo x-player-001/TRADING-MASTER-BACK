@@ -12,6 +12,7 @@ import {
   StrategyConfig,
   RiskConfig,
   PositionRecord,
+  PositionSide,
   TradingStatistics
 } from '../types/trading_types';
 import { logger } from '../utils/logger';
@@ -457,5 +458,112 @@ export class TradingSystem {
   set_chase_high_threshold(threshold: number): void {
     this.signal_generator.set_chase_high_threshold(threshold);
     logger.info(`[TradingSystem] Chase high threshold set to ${threshold}%`);
+  }
+
+  /**
+   * 同步币安实际持仓到本地
+   * 实盘交易时定时调用，确保本地状态与币安一致
+   */
+  async sync_positions_from_binance(): Promise<{
+    synced: number;
+    added: number;
+    removed: number;
+    updated: number;
+  }> {
+    if (this.config.mode === TradingMode.PAPER) {
+      return { synced: 0, added: 0, removed: 0, updated: 0 };
+    }
+
+    try {
+      // 获取币安实际持仓
+      const binance_positions = await this.order_executor.get_binance_positions();
+      const local_positions = this.position_tracker.get_open_positions();
+
+      let added = 0;
+      let removed = 0;
+      let updated = 0;
+
+      // 检查币安有但本地没有的持仓（需要添加）
+      for (const bp of binance_positions) {
+        const local = local_positions.find(lp => lp.symbol === bp.symbol && lp.side === bp.side);
+
+        if (!local) {
+          // 本地没有这个持仓，需要添加
+          const margin = bp.isolatedWallet || bp.entryPrice * bp.positionAmt / bp.leverage;
+          const new_position: PositionRecord = {
+            symbol: bp.symbol,
+            side: bp.side === 'LONG' ? PositionSide.LONG : PositionSide.SHORT,
+            entry_price: bp.entryPrice,
+            current_price: bp.entryPrice,
+            quantity: bp.positionAmt,
+            leverage: bp.leverage,
+            margin: margin,
+            is_open: true,
+            opened_at: new Date(),
+            unrealized_pnl: bp.unrealizedProfit,
+            unrealized_pnl_percent: margin > 0
+              ? (bp.unrealizedProfit / margin) * 100
+              : 0
+          };
+
+          this.position_tracker.add_synced_position(new_position);
+          logger.info(`[TradingSystem] Synced new position from Binance: ${bp.symbol} ${bp.side} qty=${bp.positionAmt} @ ${bp.entryPrice}`);
+          added++;
+        } else {
+          // 更新未实现盈亏
+          local.unrealized_pnl = bp.unrealizedProfit;
+          const margin = local.margin || (local.entry_price * local.quantity / local.leverage);
+          local.unrealized_pnl_percent = margin > 0
+            ? (bp.unrealizedProfit / margin) * 100
+            : 0;
+          updated++;
+        }
+      }
+
+      // 检查本地有但币安没有的持仓（可能已被平仓）
+      for (const lp of local_positions) {
+        const binance = binance_positions.find(bp => bp.symbol === lp.symbol && bp.side === lp.side);
+
+        if (!binance && lp.id !== undefined) {
+          // 币安没有这个持仓，说明已平仓
+          logger.warn(`[TradingSystem] Position ${lp.symbol} ${lp.side} not found in Binance, marking as closed`);
+          // 标记为已关闭（实际盈亏未知，需要查询历史）
+          this.position_tracker.mark_position_closed(lp.id, lp.unrealized_pnl || 0);
+          removed++;
+        }
+      }
+
+      if (added > 0 || removed > 0 || updated > 0) {
+        logger.info(`[TradingSystem] Position sync completed: added=${added}, removed=${removed}, updated=${updated}`);
+      }
+
+      return {
+        synced: binance_positions.length,
+        added,
+        removed,
+        updated
+      };
+    } catch (error) {
+      logger.error('[TradingSystem] Failed to sync positions from Binance:', error);
+      return { synced: 0, added: 0, removed: 0, updated: 0 };
+    }
+  }
+
+  /**
+   * 获取币安账户余额
+   */
+  async get_binance_balance(): Promise<{
+    totalWalletBalance: number;
+    availableBalance: number;
+    totalUnrealizedProfit: number;
+  } | null> {
+    return this.order_executor.get_binance_balance();
+  }
+
+  /**
+   * 获取币安实际持仓
+   */
+  async get_binance_positions(): Promise<any[]> {
+    return this.order_executor.get_binance_positions();
   }
 }

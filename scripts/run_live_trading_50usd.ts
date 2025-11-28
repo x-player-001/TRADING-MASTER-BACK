@@ -155,10 +155,33 @@ async function main() {
     await oi_service.start();
 
     console.log('📡 OI监控已启动 (每分钟检测持仓量异动)');
+
+    // ⭐ 启动时立即同步币安持仓
+    console.log('🔄 正在同步币安持仓...');
+    try {
+      const sync_result = await trading_system.sync_positions_from_binance();
+      if (sync_result.synced > 0) {
+        console.log(`✅ 同步完成: 发现 ${sync_result.synced} 个持仓, 新增 ${sync_result.added} 个`);
+      } else {
+        console.log('✅ 同步完成: 无持仓');
+      }
+    } catch (err) {
+      console.log('⚠️ 初始同步失败，将在后续定时同步');
+    }
+
     console.log('⏳ 等待高质量交易信号...\n');
 
+    // ⭐ 定时同步币安持仓（每30秒）
+    setInterval(async () => {
+      try {
+        await trading_system.sync_positions_from_binance();
+      } catch (err) {
+        // 静默处理同步错误，避免刷屏
+      }
+    }, 30000); // 30秒同步一次
+
     // 状态显示间隔（2分钟）
-    setInterval(() => {
+    setInterval(async () => {
       const oi_status = oi_service.get_status();
       const trade_status = trading_system.get_status();
       const statistics = trading_system.get_statistics();
