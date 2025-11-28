@@ -205,19 +205,40 @@ export class TradingSystem {
 
     const quantity = position_size / entry_price;
 
-    // 执行市价开仓
-    const entry_order = await this.order_executor.execute_market_order(
+    // 计算止损止盈
+    const { stop_loss, take_profit } = this.risk_manager.calculate_stop_loss_take_profit(signal);
+
+    // 构建止盈配置（实盘/测试网会在币安下止盈挂单）
+    const take_profit_pct = this.config.risk_config.default_take_profit_percent;
+    const trailing_callback_pct = this.config.risk_config.trailing_stop_callback_rate || 15;
+    const use_trailing = this.config.risk_config.use_trailing_stop;
+
+    const tp_config = {
+      targets: [
+        {
+          percentage: 100,  // 全部仓位
+          target_profit_pct: take_profit_pct,
+          is_trailing: use_trailing,
+          trailing_callback_pct: trailing_callback_pct
+        }
+      ]
+    };
+
+    // 执行市价开仓（带止盈挂单）
+    const { entry_order, tp_order_ids } = await this.order_executor.execute_market_order_with_tp(
       signal,
       quantity,
-      leverage
+      leverage,
+      tp_config
     );
 
     if (entry_order.status !== 'FILLED') {
       throw new Error(`Order failed: ${entry_order.error_message}`);
     }
 
-    // 计算止损止盈
-    const { stop_loss, take_profit } = this.risk_manager.calculate_stop_loss_take_profit(signal);
+    if (tp_order_ids.length > 0) {
+      logger.info(`[TradingSystem] Take profit orders placed: ${tp_order_ids.join(', ')}`);
+    }
 
     // 创建持仓记录
     const position = this.position_tracker.open_position(
