@@ -1351,17 +1351,29 @@ export class TradingSystem {
         limit: 1000
       });
 
-      if (!pnl_records || pnl_records.length === 0) {
-        logger.info('[TradingSystem] No historical PnL records found');
+      // 按symbol分组（有平仓记录的币种）
+      const symbols_to_backfill = new Set(pnl_records?.map(r => r.symbol) || []);
+
+      // 2. 补充当前持仓的币种（可能有未平仓的开仓订单）
+      const binance_positions = await this.order_executor.get_binance_positions();
+      if (binance_positions) {
+        for (const pos of binance_positions) {
+          const amt = parseFloat(pos.positionAmt);
+          if (Math.abs(amt) > 0) {
+            symbols_to_backfill.add(pos.symbol);
+          }
+        }
+      }
+
+      if (symbols_to_backfill.size === 0) {
+        logger.info('[TradingSystem] No symbols to backfill');
         return result;
       }
 
-      // 按symbol分组
-      const symbols_with_pnl = new Set(pnl_records.map(r => r.symbol));
-      logger.info(`[TradingSystem] Found ${pnl_records.length} PnL records across ${symbols_with_pnl.size} symbols`);
+      logger.info(`[TradingSystem] Found ${symbols_to_backfill.size} symbols to backfill (${pnl_records?.length || 0} PnL records + current positions)`);
 
-      // 2. 对每个有盈亏的币种，获取详细成交记录
-      for (const symbol of symbols_with_pnl) {
+      // 3. 对每个币种，获取详细成交记录
+      for (const symbol of symbols_to_backfill) {
         try {
           // 获取该币种的成交记录
           const trades = await this.order_executor.get_historical_trades(symbol, {
