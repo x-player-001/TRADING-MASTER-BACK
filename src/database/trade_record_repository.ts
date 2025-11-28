@@ -484,6 +484,73 @@ export class TradeRecordRepository extends BaseRepository {
   }
 
   /**
+   * 获取交易统计（按平仓时间过滤）
+   * 用于统计系统启动后平仓的交易
+   */
+  async get_statistics_by_close_time(trading_mode: string, start_date?: Date, end_date?: Date): Promise<{
+    total_trades: number;
+    winning_trades: number;
+    losing_trades: number;
+    win_rate: number;
+    total_pnl: number;
+    avg_pnl: number;
+    max_win: number;
+    max_loss: number;
+    avg_holding_time_minutes: number;
+    total_commission: number;
+    net_pnl: number;
+  }> {
+    await this.ensure_table();
+
+    let sql = `
+      SELECT
+        COUNT(*) as total_trades,
+        SUM(CASE WHEN realized_pnl > 0 THEN 1 ELSE 0 END) as winning_trades,
+        SUM(CASE WHEN realized_pnl < 0 THEN 1 ELSE 0 END) as losing_trades,
+        SUM(realized_pnl) as total_pnl,
+        AVG(realized_pnl) as avg_pnl,
+        MAX(realized_pnl) as max_win,
+        MIN(realized_pnl) as max_loss,
+        AVG(TIMESTAMPDIFF(MINUTE, opened_at, closed_at)) as avg_holding_time_minutes,
+        SUM(COALESCE(total_commission, 0)) as total_commission,
+        SUM(COALESCE(net_pnl, realized_pnl)) as net_pnl
+      FROM trade_records
+      WHERE status = 'CLOSED' AND trading_mode = ?
+    `;
+    const params: any[] = [trading_mode];
+
+    if (start_date) {
+      sql += ` AND closed_at >= ?`;
+      params.push(start_date);
+    }
+
+    if (end_date) {
+      sql += ` AND closed_at <= ?`;
+      params.push(end_date);
+    }
+
+    const rows = await this.execute_query(sql, params);
+    const row = rows[0];
+
+    const total = parseInt(row.total_trades) || 0;
+    const winning = parseInt(row.winning_trades) || 0;
+
+    return {
+      total_trades: total,
+      winning_trades: winning,
+      losing_trades: parseInt(row.losing_trades) || 0,
+      win_rate: total > 0 ? winning / total : 0,
+      total_pnl: parseFloat(row.total_pnl) || 0,
+      avg_pnl: parseFloat(row.avg_pnl) || 0,
+      max_win: parseFloat(row.max_win) || 0,
+      max_loss: parseFloat(row.max_loss) || 0,
+      avg_holding_time_minutes: parseFloat(row.avg_holding_time_minutes) || 0,
+      total_commission: parseFloat(row.total_commission) || 0,
+      net_pnl: parseFloat(row.net_pnl) || 0
+    };
+  }
+
+  /**
    * 根据ID获取交易记录
    */
   async get_by_id(id: number): Promise<TradeRecordEntity | null> {

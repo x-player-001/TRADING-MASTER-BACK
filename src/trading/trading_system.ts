@@ -562,8 +562,8 @@ export class TradingSystem {
     const trading_mode = this.config.mode === TradingMode.LIVE ? 'LIVE' :
                         this.config.mode === TradingMode.TESTNET ? 'TESTNET' : 'PAPER';
 
-    // 只统计系统启动后的交易（opened_at >= started_at）
-    const db_stats = await this.trade_record_repository.get_statistics(trading_mode, this.started_at);
+    // 只统计系统启动后平仓的交易（closed_at >= started_at）
+    const db_stats = await this.trade_record_repository.get_statistics_by_close_time(trading_mode, this.started_at);
 
     return {
       total_trades: db_stats.total_trades,
