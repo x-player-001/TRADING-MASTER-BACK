@@ -694,6 +694,9 @@ export class TradingSystem {
           this.position_tracker.add_synced_position(new_position);
           logger.info(`[TradingSystem] Synced new position from Binance: ${bp.symbol} ${bp.side} qty=${bp.positionAmt} @ ${bp.entryPrice}, SL=${stop_loss_price?.toFixed(6) || 'N/A'}, TP=${take_profit_price.toFixed(6)}`);
           added++;
+
+          // 检查数据库是否有对应记录，如果没有则创建
+          await this.ensure_trade_record_for_synced_position(new_position, bp);
         } else {
           // 更新未实现盈亏
           local.unrealized_pnl = bp.unrealizedProfit;
@@ -747,6 +750,70 @@ export class TradingSystem {
     } catch (error) {
       logger.error('[TradingSystem] Failed to sync positions from Binance:', error);
       return { synced: 0, added: 0, removed: 0, updated: 0 };
+    }
+  }
+
+  /**
+   * 确保同步的持仓在数据库中有对应记录
+   * 如果数据库没有该持仓的记录，则自动创建
+   */
+  private async ensure_trade_record_for_synced_position(
+    position: PositionRecord,
+    binance_position: {
+      symbol: string;
+      positionAmt: number;
+      entryPrice: number;
+      leverage: number;
+      isolatedWallet: number;
+      side: 'LONG' | 'SHORT';
+      updateTime: number;
+    }
+  ): Promise<void> {
+    try {
+      const trading_mode = this.config.mode === TradingMode.LIVE ? 'LIVE' :
+                          this.config.mode === TradingMode.TESTNET ? 'TESTNET' : 'PAPER';
+
+      // 检查数据库是否已有该持仓的记录
+      const existing = await this.trade_record_repository.find_open_trade_by_symbol(
+        binance_position.symbol,
+        binance_position.side,
+        trading_mode
+      );
+
+      if (existing) {
+        // 已有记录，将数据库ID同步到内存持仓
+        position.id = existing.id;
+        logger.debug(`[TradingSystem] Found existing trade record for ${binance_position.symbol}: id=${existing.id}`);
+        return;
+      }
+
+      // 数据库没有记录，创建新记录
+      const margin = binance_position.isolatedWallet ||
+                    (binance_position.entryPrice * binance_position.positionAmt / binance_position.leverage);
+      const position_value = binance_position.entryPrice * binance_position.positionAmt;
+
+      const db_id = await this.trade_record_repository.create_trade({
+        symbol: binance_position.symbol,
+        side: binance_position.side,
+        trading_mode: trading_mode,
+        entry_price: binance_position.entryPrice,
+        quantity: binance_position.positionAmt,
+        leverage: binance_position.leverage,
+        margin: margin,
+        position_value: position_value,
+        stop_loss_price: position.stop_loss_price,
+        take_profit_price: position.take_profit_price,
+        status: 'OPEN',
+        opened_at: new Date(binance_position.updateTime)
+      });
+
+      // 将数据库ID同步回内存中的持仓
+      position.id = db_id;
+      logger.info(`[TradingSystem] Created trade record for synced position: ${binance_position.symbol} ${binance_position.side}, db_id=${db_id}`);
+
+    } catch (error) {
+      logger.error(`[TradingSystem] Failed to ensure trade record for ${binance_position.symbol}:`, error);
+      // 不影响同步流程
     }
   }
 
