@@ -146,6 +146,7 @@ export class OrderExecutor {
         target_profit_pct: number;
         is_trailing?: boolean;
         trailing_callback_pct?: number;
+        activation_profit_pct?: number;  // 跟踪止盈激活价格（如5表示涨+5%后才开始跟踪）
       }>;
     }
   ): Promise<{
