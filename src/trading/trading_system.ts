@@ -234,11 +234,48 @@ export class TradingSystem {
   async update_positions(price_map: Map<string, number>): Promise<void> {
     await this.position_tracker.update_all_positions_prices(price_map);
 
+    // 检查超时平仓
+    await this.check_and_close_timeout_positions(price_map);
+
     // 计算盈亏并更新账户余额
     if (this.config.mode === TradingMode.PAPER) {
       const pnl = this.position_tracker.calculate_total_pnl();
       // 账户余额 = 初始余额 + 已实现盈亏 + 未实现盈亏
       // 这里简化处理，实际应该更复杂
+    }
+  }
+
+  /**
+   * 检查并关闭超时持仓
+   */
+  private async check_and_close_timeout_positions(price_map: Map<string, number>): Promise<void> {
+    if (!this.config.max_holding_time_minutes) {
+      return; // 未配置最大持仓时间，跳过检查
+    }
+
+    const open_positions = this.position_tracker.get_open_positions();
+    const now = Date.now();
+
+    for (const position of open_positions) {
+      // 检查持仓时间
+      const holding_time_ms = now - position.opened_at.getTime();
+      const holding_time_minutes = holding_time_ms / (1000 * 60);
+
+      if (holding_time_minutes >= this.config.max_holding_time_minutes) {
+        const current_price = price_map.get(position.symbol);
+        if (current_price && position.id) {
+          logger.info(`[TradingSystem] Position ${position.symbol} timeout (${holding_time_minutes.toFixed(1)}min >= ${this.config.max_holding_time_minutes}min), closing...`);
+
+          // 执行超时平仓
+          await this.position_tracker.close_position(position.id, current_price, 'TIMEOUT');
+
+          // 更新账户余额（如果是纸面交易）
+          if (this.config.mode === TradingMode.PAPER) {
+            const capital = position.entry_price * position.quantity;
+            this.paper_account_balance += capital / position.leverage + (position.realized_pnl || 0);
+          }
+        }
+      }
     }
   }
 

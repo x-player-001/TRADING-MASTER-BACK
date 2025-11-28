@@ -301,6 +301,11 @@ export class OIPollingService {
       // 6. ✅ 缓存预热：主动查询统计数据并缓存
       await this.preheat_statistics_cache();
 
+      // 7. ⏱️ 更新交易系统持仓价格（检查超时平仓）
+      if (this.trading_system) {
+        await this.update_trading_positions(premium_map);
+      }
+
       const duration = Date.now() - start_time;
       if (anomalies.length > 0) {
         logger.oi(`${current_time.time_string} - ${oi_results.length} symbols, ${anomalies.length} anomalies detected (${duration}ms):`);
@@ -744,6 +749,39 @@ export class OIPollingService {
 
     logger.info('[OIPolling] Manual poll triggered');
     await this.poll();
+  }
+
+  /**
+   * 更新交易系统持仓价格（每次轮询时调用）
+   */
+  private async update_trading_positions(premium_map: Map<string, any>): Promise<void> {
+    if (!this.trading_system) {
+      return;
+    }
+
+    try {
+      // 获取所有开仓持仓
+      const open_positions = this.trading_system.get_open_positions();
+      if (open_positions.length === 0) {
+        return;
+      }
+
+      // 构建价格Map
+      const price_map = new Map<string, number>();
+      for (const position of open_positions) {
+        const premium = premium_map.get(position.symbol);
+        if (premium && premium.markPrice) {
+          price_map.set(position.symbol, parseFloat(premium.markPrice));
+        }
+      }
+
+      // 更新持仓价格（这会触发超时检查和平仓）
+      await this.trading_system.update_positions(price_map);
+
+      logger.debug(`[OIPolling] Updated ${open_positions.length} positions, checked timeouts`);
+    } catch (error) {
+      logger.error('[OIPolling] Failed to update trading positions:', error);
+    }
   }
 
   /**
