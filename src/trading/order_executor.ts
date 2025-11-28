@@ -598,6 +598,33 @@ export class OrderExecutor {
   }
 
   /**
+   * 撤销指定币种的所有未成交订单
+   * 用于：平仓后撤销剩余的止盈止损挂单，防止开反向仓
+   */
+  async cancel_all_open_orders(symbol: string): Promise<boolean> {
+    logger.info(`[OrderExecutor] Cancelling all open orders for ${symbol}`);
+
+    if (this.mode === TradingMode.PAPER) {
+      // 纸面交易：直接返回成功
+      return true;
+    }
+
+    if (!this.trading_api) {
+      logger.warn('[OrderExecutor] Trading API not initialized, cannot cancel orders');
+      return false;
+    }
+
+    try {
+      await this.trading_api.cancel_all_orders(symbol);
+      logger.info(`[OrderExecutor] All open orders cancelled for ${symbol}`);
+      return true;
+    } catch (error) {
+      logger.error(`[OrderExecutor] Failed to cancel all orders for ${symbol}:`, error);
+      return false;
+    }
+  }
+
+  /**
    * 切换交易模式
    */
   set_mode(mode: TradingMode): void {

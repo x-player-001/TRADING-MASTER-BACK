@@ -285,7 +285,8 @@ export class TradingSystem {
     }
 
     // 生成 position_id（用于关联同一持仓周期的开平仓订单）
-    const position_id = `${signal.symbol}_${Date.now()}`;
+    // 格式：${symbol}_${direction}_${timestamp}，包含方向以区分多空
+    const position_id = `${signal.symbol}_${signal.direction}_${Date.now()}`;
     position.position_id = position_id;
 
     // 写入数据库（统一从 userTrades 获取数据）
@@ -817,9 +818,12 @@ export class TradingSystem {
             margin: margin,
             is_open: true,
             opened_at: actual_opened_at,
-            unrealized_pnl: bp.unrealizedProfit,
-            unrealized_pnl_percent: margin > 0
-              ? (bp.unrealizedProfit / margin) * 100
+            // 盈亏计算：基于保证金而非仓位价值
+            unrealized_pnl_percent: (bp.entryPrice * bp.positionAmt) > 0
+              ? (bp.unrealizedProfit / (bp.entryPrice * bp.positionAmt)) * 100
+              : 0,
+            unrealized_pnl: margin > 0
+              ? margin * (bp.unrealizedProfit / (bp.entryPrice * bp.positionAmt))
               : 0,
             stop_loss_price: stop_loss_price,
             take_profit_price: take_profit_price
@@ -846,13 +850,17 @@ export class TradingSystem {
             local.margin = bp.isolatedWallet || (bp.entryPrice * bp.positionAmt / bp.leverage);
           }
 
-          // 更新未实现盈亏（使用币安返回的精确值）
-          local.unrealized_pnl = bp.unrealizedProfit;
-          // 使用当前保证金计算百分比
+          // 更新未实现盈亏
+          // 币安返回的 unrealizedProfit 是基于仓位价值的盈亏
+          // 我们需要转换为基于保证金的盈亏（用户实际投入的钱）
           const current_margin = local.margin || (local.entry_price * local.quantity / local.leverage);
-          local.unrealized_pnl_percent = current_margin > 0
-            ? (bp.unrealizedProfit / current_margin) * 100
+          const position_value = local.entry_price * local.quantity;
+          // 盈亏率 = 仓位盈亏 / 仓位价值 * 100（价格变化百分比）
+          local.unrealized_pnl_percent = position_value > 0
+            ? (bp.unrealizedProfit / position_value) * 100
             : 0;
+          // 基于保证金的盈亏 = 保证金 * 盈亏率
+          local.unrealized_pnl = current_margin * local.unrealized_pnl_percent / 100;
 
           // 检查是否达到保本止损条件（盈利 >= 10% 且未下过保本止损单）
           if (local.unrealized_pnl_percent >= 10 && !local.breakeven_sl_placed) {
@@ -870,6 +878,15 @@ export class TradingSystem {
         if (!binance && lp.id !== undefined) {
           // 币安没有这个持仓，说明已平仓（手动平仓或止盈止损触发）
           logger.warn(`[TradingSystem] Position ${lp.symbol} ${lp.side} not found in Binance, fetching actual close data...`);
+
+          // ⭐ 撤销该币种所有未成交的止盈/止损挂单
+          // 场景：成本止损或手动平仓后，之前挂的分批止盈单需要撤销，否则会开反向仓
+          try {
+            await this.order_executor.cancel_all_open_orders(lp.symbol);
+            logger.info(`[TradingSystem] Cancelled all open orders for ${lp.symbol} after position closed`);
+          } catch (cancel_err) {
+            logger.warn(`[TradingSystem] Failed to cancel open orders for ${lp.symbol}:`, cancel_err);
+          }
 
           // ⭐ 从币安查询精确的平仓数据
           const close_data = await this.fetch_actual_close_data(lp.symbol, lp.side, lp.opened_at);
@@ -1461,8 +1478,12 @@ export class TradingSystem {
 
           // ⭐ 生成position_id的逻辑
           // 由于不存在加仓情况，一个开仓对应后续的所有平仓（直到下一个开仓）
-          // 用开仓时间作为position_id: ${symbol}_${openTime}
-          let current_position_id: string | null = null;
+          // 用开仓时间+方向作为position_id: ${symbol}_${positionSide}_${openTime}
+          // 区分多空方向，避免多单平仓后紧接着开空单被误认为是同一笔交易
+          const current_position_ids: { LONG: string | null; SHORT: string | null } = {
+            LONG: null,
+            SHORT: null
+          };
 
           // 处理每个订单
           for (const info of order_infos) {
@@ -1471,17 +1492,17 @@ export class TradingSystem {
             // 生成position_id（无论是否已存在都需要计算，用于更新旧记录）
             let position_id: string;
             if (info.order_type === 'OPEN') {
-              // 开仓订单：生成新的position_id
-              position_id = `${symbol}_${info.orderTime}`;
-              current_position_id = position_id;
+              // 开仓订单：生成新的position_id（包含方向）
+              position_id = `${symbol}_${info.position_side}_${info.orderTime}`;
+              current_position_ids[info.position_side] = position_id;
             } else {
-              // 平仓订单：使用当前的position_id
-              if (current_position_id) {
-                position_id = current_position_id;
+              // 平仓订单：使用当前该方向的position_id
+              if (current_position_ids[info.position_side]) {
+                position_id = current_position_ids[info.position_side]!;
               } else {
                 // 没有对应的开仓订单（可能开仓在查询时间范围之前）
                 // 使用一个特殊的position_id标记
-                position_id = `${symbol}_unknown_open`;
+                position_id = `${symbol}_${info.position_side}_unknown_open`;
               }
             }
 
