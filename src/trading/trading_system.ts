@@ -481,12 +481,26 @@ export class TradingSystem {
 
       const trading_mode = this.config.mode === TradingMode.TESTNET ? 'TESTNET' : 'LIVE';
 
+      // 处理 positionSide：BOTH（单向持仓）时根据 side 推断
+      // 开仓：BUY->LONG, SELL->SHORT
+      // 平仓：SELL->LONG（平多）, BUY->SHORT（平空）
+      let position_side: 'LONG' | 'SHORT';
+      if (tradeInfo.positionSide === 'BOTH') {
+        if (order_type === 'OPEN') {
+          position_side = tradeInfo.side === 'BUY' ? 'LONG' : 'SHORT';
+        } else {
+          position_side = tradeInfo.side === 'SELL' ? 'LONG' : 'SHORT';
+        }
+      } else {
+        position_side = tradeInfo.positionSide as 'LONG' | 'SHORT';
+      }
+
       // 从 userTrades 获取的数据写入数据库
       const db_id = await this.order_record_repository.create_order({
         order_id: order_id,
         symbol: symbol,
         side: tradeInfo.side as 'BUY' | 'SELL',
-        position_side: tradeInfo.positionSide as 'LONG' | 'SHORT',
+        position_side: position_side,
         order_type: order_type,
         trading_mode: trading_mode,
         price: tradeInfo.avgPrice,
