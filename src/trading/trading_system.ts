@@ -906,4 +906,235 @@ export class TradingSystem {
   async get_binance_positions(): Promise<any[]> {
     return this.order_executor.get_binance_positions();
   }
+
+  /**
+   * 回填历史交易记录
+   * 从币安查询最近7天的已实现盈亏记录，检查数据库是否存在，不存在则创建
+   *
+   * @param days 回填天数（默认7天，最大7天）
+   * @returns 回填结果
+   */
+  async backfill_historical_trades(days: number = 7): Promise<{
+    total_found: number;
+    already_exists: number;
+    newly_created: number;
+    failed: number;
+    details: string[];
+  }> {
+    if (this.config.mode === TradingMode.PAPER) {
+      return {
+        total_found: 0,
+        already_exists: 0,
+        newly_created: 0,
+        failed: 0,
+        details: ['Paper mode does not support backfill']
+      };
+    }
+
+    const trading_mode = this.config.mode === TradingMode.LIVE ? 'LIVE' : 'TESTNET';
+    const result = {
+      total_found: 0,
+      already_exists: 0,
+      newly_created: 0,
+      failed: 0,
+      details: [] as string[]
+    };
+
+    logger.info(`[TradingSystem] Starting historical trades backfill for last ${days} days...`);
+
+    try {
+      // 1. 获取最近N天的已实现盈亏记录
+      const endTime = Date.now();
+      const startTime = endTime - days * 24 * 60 * 60 * 1000;
+
+      const pnl_records = await this.order_executor.get_income_history({
+        incomeType: 'REALIZED_PNL',
+        startTime,
+        endTime,
+        limit: 1000
+      });
+
+      if (!pnl_records || pnl_records.length === 0) {
+        logger.info('[TradingSystem] No historical PnL records found');
+        return result;
+      }
+
+      // 按symbol分组
+      const symbols_with_pnl = new Set(pnl_records.map(r => r.symbol));
+      logger.info(`[TradingSystem] Found ${pnl_records.length} PnL records across ${symbols_with_pnl.size} symbols`);
+
+      // 2. 对每个有盈亏的币种，获取详细成交记录
+      for (const symbol of symbols_with_pnl) {
+        try {
+          // 获取该币种的成交记录
+          const trades = await this.order_executor.get_historical_trades(symbol, {
+            startTime,
+            endTime,
+            limit: 1000
+          });
+
+          if (!trades || trades.length === 0) continue;
+
+          // 按订单ID分组成交记录
+          const trades_by_order = new Map<number, typeof trades>();
+          for (const trade of trades) {
+            const orderId = trade.orderId;
+            if (!trades_by_order.has(orderId)) {
+              trades_by_order.set(orderId, []);
+            }
+            trades_by_order.get(orderId)!.push(trade);
+          }
+
+          // 找出开仓和平仓订单（通过realizedPnl判断：平仓有盈亏，开仓为0）
+          const entry_orders: number[] = [];
+          const exit_orders: number[] = [];
+
+          for (const [orderId, orderTrades] of trades_by_order) {
+            const totalPnl = orderTrades.reduce((sum, t) => sum + parseFloat(t.realizedPnl), 0);
+            if (Math.abs(totalPnl) > 0.0001) {
+              exit_orders.push(orderId);
+            } else {
+              entry_orders.push(orderId);
+            }
+          }
+
+          // 3. 尝试匹配开仓和平仓，创建完整交易记录
+          for (const exit_order_id of exit_orders) {
+            const exit_trades = trades_by_order.get(exit_order_id)!;
+            result.total_found++;
+
+            // 计算平仓数据
+            const exit_qty = exit_trades.reduce((sum, t) => sum + parseFloat(t.qty), 0);
+            const exit_quote_qty = exit_trades.reduce((sum, t) => sum + parseFloat(t.quoteQty), 0);
+            const exit_price = exit_qty > 0 ? exit_quote_qty / exit_qty : 0;
+            const exit_commission = exit_trades.reduce((sum, t) => sum + parseFloat(t.commission), 0);
+            const realized_pnl = exit_trades.reduce((sum, t) => sum + parseFloat(t.realizedPnl), 0);
+            const exit_time = Math.max(...exit_trades.map(t => t.time));
+            const exit_side = exit_trades[0].side;  // SELL = 平多, BUY = 平空
+            const position_side: 'LONG' | 'SHORT' = exit_side === 'SELL' ? 'LONG' : 'SHORT';
+
+            // 寻找可能的开仓订单（时间早于平仓，方向相反）
+            let matched_entry: typeof trades | undefined;
+            let entry_order_id: number | undefined;
+
+            for (const entry_id of entry_orders) {
+              const entry_trades = trades_by_order.get(entry_id)!;
+              const entry_time = Math.min(...entry_trades.map(t => t.time));
+              const entry_side = entry_trades[0].side;
+
+              // 开仓方向与平仓方向相反，且时间更早
+              if (entry_time < exit_time &&
+                  ((position_side === 'LONG' && entry_side === 'BUY') ||
+                   (position_side === 'SHORT' && entry_side === 'SELL'))) {
+                matched_entry = entry_trades;
+                entry_order_id = entry_id;
+                break;
+              }
+            }
+
+            // 检查数据库是否已存在该记录（使用平仓订单ID查找）
+            // 注：由于历史原因，可能用开仓或平仓订单ID存储
+            const existing_by_exit = await this.trade_record_repository.find_by_entry_order_id(
+              exit_order_id.toString(),
+              trading_mode
+            );
+            const existing_by_entry = entry_order_id
+              ? await this.trade_record_repository.find_by_entry_order_id(
+                  entry_order_id.toString(),
+                  trading_mode
+                )
+              : null;
+
+            if (existing_by_exit || existing_by_entry) {
+              result.already_exists++;
+              continue;
+            }
+
+            // 计算开仓数据
+            let entry_price = exit_price;  // 默认值
+            let entry_commission = 0;
+            let entry_time = exit_time - 60000;  // 默认早1分钟
+            let quantity = exit_qty;
+
+            if (matched_entry) {
+              const entry_qty = matched_entry.reduce((sum, t) => sum + parseFloat(t.qty), 0);
+              const entry_quote_qty = matched_entry.reduce((sum, t) => sum + parseFloat(t.quoteQty), 0);
+              entry_price = entry_qty > 0 ? entry_quote_qty / entry_qty : exit_price;
+              entry_commission = matched_entry.reduce((sum, t) => sum + parseFloat(t.commission), 0);
+              entry_time = Math.min(...matched_entry.map(t => t.time));
+              quantity = entry_qty;
+            } else {
+              // 无法找到开仓订单，通过盈亏反推开仓价格
+              // 做多: pnl = (exit_price - entry_price) * qty
+              // 做空: pnl = (entry_price - exit_price) * qty
+              if (exit_qty > 0) {
+                if (position_side === 'LONG') {
+                  entry_price = exit_price - (realized_pnl / exit_qty);
+                } else {
+                  entry_price = exit_price + (realized_pnl / exit_qty);
+                }
+              }
+            }
+
+            // 假设6倍杠杆（与当前配置一致）
+            const leverage = this.config.risk_config.max_leverage || 6;
+            const position_value = entry_price * quantity;
+            const margin = position_value / leverage;
+            const total_commission = entry_commission + exit_commission;
+            const net_pnl = realized_pnl - total_commission;
+            const realized_pnl_percent = margin > 0 ? (realized_pnl / margin) * 100 : 0;
+
+            // 创建交易记录
+            try {
+              await this.trade_record_repository.create_closed_trade({
+                symbol,
+                side: position_side,
+                trading_mode: trading_mode as 'LIVE' | 'TESTNET' | 'PAPER',
+                entry_price,
+                quantity,
+                leverage,
+                margin,
+                position_value,
+                exit_price,
+                realized_pnl,
+                realized_pnl_percent,
+                close_reason: 'BACKFILLED',
+                entry_commission,
+                exit_commission,
+                total_commission,
+                commission_asset: 'USDT',
+                net_pnl,
+                entry_order_id: entry_order_id?.toString(),
+                exit_order_id: exit_order_id.toString(),
+                status: 'CLOSED',
+                opened_at: new Date(entry_time),
+                closed_at: new Date(exit_time)
+              });
+
+              result.newly_created++;
+              result.details.push(`${symbol} ${position_side}: entry=${entry_price.toFixed(6)} exit=${exit_price.toFixed(6)} pnl=${realized_pnl.toFixed(4)} USDT`);
+              logger.info(`[TradingSystem] Backfilled trade: ${symbol} ${position_side} pnl=${realized_pnl.toFixed(4)}`);
+
+            } catch (error) {
+              result.failed++;
+              logger.error(`[TradingSystem] Failed to create backfill record for ${symbol}:`, error);
+            }
+          }
+
+          // 避免触发限速
+          await new Promise(resolve => setTimeout(resolve, 200));
+
+        } catch (error) {
+          logger.error(`[TradingSystem] Failed to process trades for ${symbol}:`, error);
+        }
+      }
+
+      logger.info(`[TradingSystem] Backfill completed: found=${result.total_found}, exists=${result.already_exists}, created=${result.newly_created}, failed=${result.failed}`);
+      return result;
+
+    } catch (error) {
+      logger.error('[TradingSystem] Failed to backfill historical trades:', error);
+      return result;
+    }
+  }
 }

@@ -687,6 +687,108 @@ export class BinanceFuturesTradingAPI {
   }
 
   /**
+   * 查询账户收益历史（用于获取已实现盈亏记录）
+   * @param incomeType 收益类型，常用 REALIZED_PNL
+   * @param symbol 交易对（可选）
+   * @param startTime 开始时间（可选）
+   * @param endTime 结束时间（可选）
+   * @param limit 返回数量（默认100，最大1000）
+   */
+  async get_income(options?: {
+    incomeType?: 'TRANSFER' | 'WELCOME_BONUS' | 'REALIZED_PNL' | 'FUNDING_FEE' | 'COMMISSION' | 'INSURANCE_CLEAR';
+    symbol?: string;
+    startTime?: number;
+    endTime?: number;
+    limit?: number;
+  }): Promise<{
+    symbol: string;
+    incomeType: string;
+    income: string;       // 收益金额
+    asset: string;        // 资产币种
+    info: string;         // 备注信息
+    time: number;         // 时间戳
+    tranId: number;       // 交易ID
+    tradeId: string;      // 关联的成交ID
+  }[]> {
+    try {
+      const timestamp = Date.now();
+      const params: Record<string, any> = {
+        timestamp,
+        limit: options?.limit || 100
+      };
+
+      if (options?.incomeType) {
+        params.incomeType = options.incomeType;
+      }
+      if (options?.symbol) {
+        params.symbol = options.symbol;
+      }
+      if (options?.startTime) {
+        params.startTime = options.startTime;
+      }
+      if (options?.endTime) {
+        params.endTime = options.endTime;
+      }
+
+      const signature = this.sign_request(params);
+
+      const response = await this.api_client.get('/fapi/v1/income', {
+        params: { ...params, signature }
+      });
+
+      return response.data;
+    } catch (error: any) {
+      logger.error('[BinanceTradingAPI] Failed to get income history:', error.response?.data || error.message);
+      throw new Error(`Failed to get income history: ${error.response?.data?.msg || error.message}`);
+    }
+  }
+
+  /**
+   * 查询历史订单（可查看已完成的订单）
+   * @param symbol 交易对
+   * @param orderId 从该订单ID开始查询（可选）
+   * @param startTime 开始时间（可选）
+   * @param endTime 结束时间（可选）
+   * @param limit 返回数量（默认500，最大1000）
+   */
+  async get_all_orders(symbol: string, options?: {
+    orderId?: number;
+    startTime?: number;
+    endTime?: number;
+    limit?: number;
+  }): Promise<OrderResponse[]> {
+    try {
+      const timestamp = Date.now();
+      const params: Record<string, any> = {
+        symbol,
+        timestamp,
+        limit: options?.limit || 500
+      };
+
+      if (options?.orderId) {
+        params.orderId = options.orderId;
+      }
+      if (options?.startTime) {
+        params.startTime = options.startTime;
+      }
+      if (options?.endTime) {
+        params.endTime = options.endTime;
+      }
+
+      const signature = this.sign_request(params);
+
+      const response = await this.api_client.get<OrderResponse[]>('/fapi/v1/allOrders', {
+        params: { ...params, signature }
+      });
+
+      return response.data;
+    } catch (error: any) {
+      logger.error('[BinanceTradingAPI] Failed to get all orders:', error.response?.data || error.message);
+      throw new Error(`Failed to get all orders: ${error.response?.data?.msg || error.message}`);
+    }
+  }
+
+  /**
    * 一键平仓
    * @param symbol 交易对
    * @param positionSide 持仓方向 (LONG/SHORT for dual position mode, BOTH for one-way mode)

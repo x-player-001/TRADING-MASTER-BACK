@@ -829,4 +829,119 @@ export class OrderExecutor {
       return { success: false, error: error.message };
     }
   }
+
+  /**
+   * 获取历史成交记录（用于回填历史交易）
+   * @param symbol 交易对
+   * @param startTime 开始时间（毫秒）
+   * @param endTime 结束时间（毫秒）
+   * @param limit 数量限制
+   */
+  async get_historical_trades(symbol: string, options?: {
+    startTime?: number;
+    endTime?: number;
+    limit?: number;
+  }): Promise<{
+    symbol: string;
+    id: number;
+    orderId: number;
+    side: string;
+    price: string;
+    qty: string;
+    realizedPnl: string;
+    quoteQty: string;
+    commission: string;
+    commissionAsset: string;
+    time: number;
+    positionSide: string;
+    buyer: boolean;
+    maker: boolean;
+  }[] | null> {
+    if (this.mode === TradingMode.PAPER || !this.trading_api) {
+      return null;
+    }
+
+    try {
+      return await this.trading_api.get_user_trades(symbol, options);
+    } catch (error) {
+      logger.error(`[OrderExecutor] Failed to get historical trades for ${symbol}:`, error);
+      return null;
+    }
+  }
+
+  /**
+   * 获取所有币种的历史成交（需要币种列表）
+   * @param symbols 币种列表
+   * @param startTime 开始时间
+   * @param endTime 结束时间
+   */
+  async get_all_historical_trades(symbols: string[], options?: {
+    startTime?: number;
+    endTime?: number;
+    limit?: number;
+  }): Promise<Map<string, any[]>> {
+    const result = new Map<string, any[]>();
+
+    for (const symbol of symbols) {
+      const trades = await this.get_historical_trades(symbol, options);
+      if (trades && trades.length > 0) {
+        result.set(symbol, trades);
+      }
+      // 避免触发限速
+      await new Promise(resolve => setTimeout(resolve, 100));
+    }
+
+    return result;
+  }
+
+  /**
+   * 获取账户收益历史
+   */
+  async get_income_history(options?: {
+    incomeType?: 'REALIZED_PNL' | 'COMMISSION' | 'FUNDING_FEE';
+    symbol?: string;
+    startTime?: number;
+    endTime?: number;
+    limit?: number;
+  }): Promise<{
+    symbol: string;
+    incomeType: string;
+    income: string;
+    asset: string;
+    info: string;
+    time: number;
+    tranId: number;
+    tradeId: string;
+  }[] | null> {
+    if (this.mode === TradingMode.PAPER || !this.trading_api) {
+      return null;
+    }
+
+    try {
+      return await this.trading_api.get_income(options);
+    } catch (error) {
+      logger.error('[OrderExecutor] Failed to get income history:', error);
+      return null;
+    }
+  }
+
+  /**
+   * 获取历史订单
+   */
+  async get_historical_orders(symbol: string, options?: {
+    startTime?: number;
+    endTime?: number;
+    limit?: number;
+  }): Promise<any[] | null> {
+    if (this.mode === TradingMode.PAPER || !this.trading_api) {
+      return null;
+    }
+
+    try {
+      return await this.trading_api.get_all_orders(symbol, options);
+    } catch (error) {
+      logger.error(`[OrderExecutor] Failed to get historical orders for ${symbol}:`, error);
+      return null;
+    }
+  }
 }

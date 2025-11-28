@@ -169,6 +169,24 @@ async function main() {
       console.log('⚠️ 初始同步失败，将在后续定时同步');
     }
 
+    // ⭐ 回填历史交易记录（7天内系统启动前的交易）
+    console.log('📜 正在回填历史交易记录...');
+    try {
+      const backfill_result = await trading_system.backfill_historical_trades(7);
+      if (backfill_result.newly_created > 0) {
+        console.log(`✅ 回填完成: 发现 ${backfill_result.total_found} 笔, 新增 ${backfill_result.newly_created} 笔, 已存在 ${backfill_result.already_exists} 笔`);
+        for (const detail of backfill_result.details) {
+          console.log(`   └─ ${detail}`);
+        }
+      } else if (backfill_result.total_found > 0) {
+        console.log(`✅ 回填完成: 发现 ${backfill_result.total_found} 笔历史交易, 全部已存在于数据库`);
+      } else {
+        console.log('✅ 回填完成: 无需回填的历史交易');
+      }
+    } catch (err) {
+      console.log('⚠️ 历史交易回填失败:', err instanceof Error ? err.message : err);
+    }
+
     console.log('⏳ 等待高质量交易信号...\n');
 
     // ⭐ 定时同步币安持仓（每30秒）

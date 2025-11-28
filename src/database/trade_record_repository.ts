@@ -495,6 +495,77 @@ export class TradeRecordRepository extends BaseRepository {
   }
 
   /**
+   * 根据开仓订单ID查找记录（用于去重）
+   */
+  async find_by_entry_order_id(entry_order_id: string, trading_mode: string): Promise<TradeRecordEntity | null> {
+    await this.ensure_table();
+
+    const sql = `
+      SELECT * FROM trade_records
+      WHERE entry_order_id = ? AND trading_mode = ?
+      LIMIT 1
+    `;
+
+    const rows = await this.execute_query(sql, [entry_order_id, trading_mode]);
+    return rows.length > 0 ? this.map_row_to_entity(rows[0]) : null;
+  }
+
+  /**
+   * 创建已平仓的交易记录（用于回填历史交易）
+   */
+  async create_closed_trade(record: Omit<TradeRecordEntity, 'id' | 'created_at' | 'updated_at'>): Promise<number> {
+    await this.ensure_table();
+
+    const sql = `
+      INSERT INTO trade_records (
+        symbol, side, trading_mode,
+        entry_price, quantity, leverage, margin, position_value,
+        stop_loss_price, take_profit_price,
+        exit_price, realized_pnl, realized_pnl_percent, close_reason,
+        entry_commission, exit_commission, total_commission, commission_asset, net_pnl,
+        entry_order_id, exit_order_id, tp_order_ids,
+        signal_id, signal_score, anomaly_id,
+        status, opened_at, closed_at
+      ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+    `;
+
+    const params = [
+      record.symbol,
+      record.side,
+      record.trading_mode,
+      record.entry_price,
+      record.quantity,
+      record.leverage,
+      record.margin,
+      record.position_value,
+      record.stop_loss_price || null,
+      record.take_profit_price || null,
+      record.exit_price || null,
+      record.realized_pnl || null,
+      record.realized_pnl_percent || null,
+      record.close_reason || null,
+      record.entry_commission || null,
+      record.exit_commission || null,
+      record.total_commission || null,
+      record.commission_asset || null,
+      record.net_pnl || null,
+      record.entry_order_id || null,
+      record.exit_order_id || null,
+      record.tp_order_ids || null,
+      record.signal_id || null,
+      record.signal_score || null,
+      record.anomaly_id || null,
+      record.status,
+      record.opened_at,
+      record.closed_at || null
+    ];
+
+    const id = await this.insert_and_get_id(sql, params);
+    logger.info(`[TradeRecordRepository] Created closed trade record id=${id} ${record.symbol} ${record.side} pnl=${record.realized_pnl}`);
+    return id;
+  }
+
+  /**
    * 更新止盈订单ID
    */
   async update_tp_order_ids(id: number, tp_order_ids: string[]): Promise<boolean> {
