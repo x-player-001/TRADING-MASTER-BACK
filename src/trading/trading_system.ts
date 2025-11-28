@@ -749,24 +749,47 @@ export class TradingSystem {
         const binance = binance_positions.find(bp => bp.symbol === lp.symbol && bp.side === lp.side);
 
         if (!binance && lp.id !== undefined) {
-          // 币安没有这个持仓，说明已平仓
-          logger.warn(`[TradingSystem] Position ${lp.symbol} ${lp.side} not found in Binance, marking as closed`);
-          // 标记为已关闭（实际盈亏未知，需要查询历史）
-          this.position_tracker.mark_position_closed(lp.id, lp.unrealized_pnl || 0);
+          // 币安没有这个持仓，说明已平仓（手动平仓或止盈止损触发）
+          logger.warn(`[TradingSystem] Position ${lp.symbol} ${lp.side} not found in Binance, fetching actual close data...`);
+
+          // ⭐ 从币安查询精确的平仓数据
+          const close_data = await this.fetch_actual_close_data(lp.symbol, lp.side, lp.opened_at);
+
+          // 使用精确数据或回退到近似值
+          const exit_price = close_data?.exit_price || lp.current_price;
+          const realized_pnl = close_data?.realized_pnl ?? lp.unrealized_pnl ?? 0;
+          const exit_commission = close_data?.exit_commission || 0;
+          const exit_order_id = close_data?.exit_order_id;
+          const closed_at = close_data?.closed_at;
+
+          // 标记为已关闭
+          this.position_tracker.mark_position_closed(lp.id, realized_pnl);
           removed++;
 
           // 更新数据库记录（同步发现的平仓）
           try {
             const margin = lp.margin || (lp.entry_price * lp.quantity / lp.leverage);
-            const realized_pnl_percent = margin > 0 ? ((lp.unrealized_pnl || 0) / margin) * 100 : 0;
+            const realized_pnl_percent = margin > 0 ? (realized_pnl / margin) * 100 : 0;
+
             await this.trade_record_repository.close_trade(
               lp.id,
-              lp.current_price,
-              lp.unrealized_pnl || 0,
+              exit_price,
+              realized_pnl,
               realized_pnl_percent,
-              'SYNC_CLOSED'
+              'SYNC_CLOSED',
+              exit_order_id?.toString()
             );
-            logger.info(`[TradingSystem] Trade record updated in database for sync-closed position, id=${lp.id}`);
+
+            // 如果有手续费数据，更新手续费
+            if (exit_commission > 0) {
+              await this.trade_record_repository.update_exit_commission(
+                lp.id,
+                exit_commission,
+                realized_pnl  // 使用币安返回的精确盈亏
+              );
+            }
+
+            logger.info(`[TradingSystem] Trade record updated with actual data: id=${lp.id}, exit_price=${exit_price.toFixed(6)}, pnl=${realized_pnl.toFixed(4)}`);
           } catch (err) {
             logger.error('[TradingSystem] Failed to update sync-closed trade in database:', err);
           }
@@ -886,6 +909,95 @@ export class TradingSystem {
       }
     } catch (error) {
       logger.error(`[TradingSystem] Error placing breakeven stop loss for ${position.symbol}:`, error);
+    }
+  }
+
+  /**
+   * 从币安查询精确的平仓数据
+   * 用于手动平仓或止盈止损触发时获取实际成交信息
+   */
+  private async fetch_actual_close_data(
+    symbol: string,
+    side: PositionSide,
+    opened_at: Date
+  ): Promise<{
+    exit_price: number;
+    realized_pnl: number;
+    exit_commission: number;
+    exit_order_id: number;
+    closed_at: Date;
+  } | null> {
+    try {
+      // 查询从开仓时间到现在的成交记录
+      const startTime = opened_at.getTime();
+      const endTime = Date.now();
+
+      const trades = await this.order_executor.get_historical_trades(symbol, {
+        startTime,
+        endTime,
+        limit: 100
+      });
+
+      if (!trades || trades.length === 0) {
+        logger.warn(`[TradingSystem] No trades found for ${symbol} since ${opened_at.toISOString()}`);
+        return null;
+      }
+
+      // 按订单ID分组
+      const trades_by_order = new Map<number, typeof trades>();
+      for (const trade of trades) {
+        if (!trades_by_order.has(trade.orderId)) {
+          trades_by_order.set(trade.orderId, []);
+        }
+        trades_by_order.get(trade.orderId)!.push(trade);
+      }
+
+      // 找出平仓订单（有realized_pnl的是平仓）
+      // 平多用SELL，平空用BUY
+      const close_side = side === PositionSide.LONG ? 'SELL' : 'BUY';
+
+      let latest_close_order: typeof trades | null = null;
+      let latest_close_time = 0;
+      let latest_order_id = 0;
+
+      for (const [orderId, orderTrades] of trades_by_order) {
+        const totalPnl = orderTrades.reduce((sum, t) => sum + parseFloat(t.realizedPnl), 0);
+        const trade_side = orderTrades[0].side;
+        const trade_time = Math.max(...orderTrades.map(t => t.time));
+
+        // 是平仓方向且有盈亏且是最近的
+        if (trade_side === close_side && Math.abs(totalPnl) > 0.0001 && trade_time > latest_close_time) {
+          latest_close_order = orderTrades;
+          latest_close_time = trade_time;
+          latest_order_id = orderId;
+        }
+      }
+
+      if (!latest_close_order) {
+        logger.warn(`[TradingSystem] No closing trade found for ${symbol} ${side}`);
+        return null;
+      }
+
+      // 计算平仓数据
+      const exit_qty = latest_close_order.reduce((sum, t) => sum + parseFloat(t.qty), 0);
+      const exit_quote_qty = latest_close_order.reduce((sum, t) => sum + parseFloat(t.quoteQty), 0);
+      const exit_price = exit_qty > 0 ? exit_quote_qty / exit_qty : 0;
+      const exit_commission = latest_close_order.reduce((sum, t) => sum + parseFloat(t.commission), 0);
+      const realized_pnl = latest_close_order.reduce((sum, t) => sum + parseFloat(t.realizedPnl), 0);
+
+      logger.info(`[TradingSystem] Found actual close data for ${symbol}: price=${exit_price.toFixed(6)}, pnl=${realized_pnl.toFixed(4)}, commission=${exit_commission.toFixed(4)}`);
+
+      return {
+        exit_price,
+        realized_pnl,
+        exit_commission,
+        exit_order_id: latest_order_id,
+        closed_at: new Date(latest_close_time)
+      };
+
+    } catch (error) {
+      logger.error(`[TradingSystem] Failed to fetch actual close data for ${symbol}:`, error);
+      return null;
     }
   }
 
