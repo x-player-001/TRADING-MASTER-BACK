@@ -160,9 +160,10 @@ export class OrderExecutor {
     // 如果配置了止盈且是TESTNET或LIVE模式，下止盈订单
     if (take_profit_config && this.trading_api && (this.mode === TradingMode.TESTNET || this.mode === TradingMode.LIVE)) {
       const entry_price = entry_order.average_price || signal.entry_price || 0;
-      const binance_position_side = signal.direction === 'LONG'
-        ? BinancePositionSide.LONG
-        : BinancePositionSide.SHORT;
+
+      // 使用 BOTH + reduceOnly 模式（单向持仓模式）
+      // 这样可以兼容单向/双向持仓模式，避免 "position side does not match" 错误
+      const binance_position_side = BinancePositionSide.BOTH;
 
       // 平仓方向相反
       const close_side = signal.direction === 'LONG' ? OrderSide.SELL : OrderSide.BUY;
