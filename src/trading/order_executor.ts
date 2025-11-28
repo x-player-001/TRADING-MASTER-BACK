@@ -328,17 +328,14 @@ export class OrderExecutor {
       await this.trading_api.set_leverage(order.symbol, leverage);
       logger.info(`[OrderExecutor] Set ${order.symbol} leverage to ${leverage}x`);
 
-      // 3. 下市价单
+      // 3. 下市价单（使用单向持仓模式 BOTH）
       const binance_side = order.side === PositionSide.LONG ? OrderSide.BUY : OrderSide.SELL;
-      const binance_position_side = order.side === PositionSide.LONG
-        ? BinancePositionSide.LONG
-        : BinancePositionSide.SHORT;
 
       const result = await this.trading_api.place_market_order(
         order.symbol,
         binance_side,
         order.quantity,
-        binance_position_side,
+        BinancePositionSide.BOTH,  // 单向持仓模式
         false  // not reduceOnly
       );
 
@@ -396,17 +393,14 @@ export class OrderExecutor {
       await this.trading_api.set_leverage(order.symbol, leverage);
       logger.info(`[OrderExecutor] Set ${order.symbol} leverage to ${leverage}x`);
 
-      // 3. 下市价单
+      // 3. 下市价单（使用单向持仓模式 BOTH）
       const binance_side = order.side === PositionSide.LONG ? OrderSide.BUY : OrderSide.SELL;
-      const binance_position_side = order.side === PositionSide.LONG
-        ? BinancePositionSide.LONG
-        : BinancePositionSide.SHORT;
 
       const result = await this.trading_api.place_market_order(
         order.symbol,
         binance_side,
         order.quantity,
-        binance_position_side,
+        BinancePositionSide.BOTH,  // 单向持仓模式
         false  // not reduceOnly
       );
 
@@ -516,16 +510,14 @@ export class OrderExecutor {
           throw new Error('Trading API not initialized');
         }
 
-        const binance_side = side === PositionSide.LONG ? OrderSide.SELL : OrderSide.BUY;  // 平仓相反方向
-        const binance_position_side = side === PositionSide.LONG
-          ? BinancePositionSide.LONG
-          : BinancePositionSide.SHORT;
+        // 单向持仓模式：平仓用相反方向，不指定 positionSide
+        const binance_side = side === PositionSide.LONG ? OrderSide.SELL : OrderSide.BUY;
 
         const result = await this.trading_api.place_market_order(
           symbol,
           binance_side,
           formatted_quantity,
-          binance_position_side,
+          BinancePositionSide.BOTH,  // 单向持仓模式
           true  // reduceOnly = true (平仓单)
         );
 
