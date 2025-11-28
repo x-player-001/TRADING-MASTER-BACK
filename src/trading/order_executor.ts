@@ -186,15 +186,29 @@ export class OrderExecutor {
         if (target.is_trailing) {
           // 使用TRAILING_STOP_MARKET订单
           try {
+            // ⚠️ 必须设置激活价格，否则一开仓就开始跟踪，容易被回调止损
+            // 激活价格 = 开仓价 * (1 + activation_profit_pct%)
+            // 默认激活价格为 +5%（即涨5%后才开始跟踪）
+            const activation_profit_pct = target.activation_profit_pct || 5;
+            let activation_price = signal.direction === 'LONG'
+              ? entry_price * (1 + activation_profit_pct / 100)
+              : entry_price * (1 - activation_profit_pct / 100);
+
+            // 格式化激活价格
+            if (precision) {
+              activation_price = this.format_price(activation_price, precision.price_precision);
+            }
+
             const tp_order = await this.trading_api.place_trailing_stop_order(
               signal.symbol,
               close_side,
               target_quantity,
               target.trailing_callback_pct || 10,  // 默认10%回调
-              binance_position_side
+              binance_position_side,
+              activation_price  // ⭐ 传入激活价格
             );
             tp_order_ids.push(tp_order.orderId);
-            logger.info(`[OrderExecutor] Trailing TP order placed: ${tp_order.orderId} (${target.percentage}% @ ${target.trailing_callback_pct}% callback, qty=${target_quantity})`);
+            logger.info(`[OrderExecutor] Trailing TP order placed: ${tp_order.orderId} (${target.percentage}% @ activation=${activation_profit_pct}%, callback=${target.trailing_callback_pct}%, qty=${target_quantity})`);
           } catch (error) {
             logger.error(`[OrderExecutor] Failed to place trailing TP order:`, error);
           }

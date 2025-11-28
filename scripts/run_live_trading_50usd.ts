@@ -78,11 +78,11 @@ async function main() {
       default_take_profit_percent: 8,         // 默认止盈8%（用于回退）
       use_trailing_stop: true,                // 启用跟踪止盈
       trailing_stop_callback_rate: 15,        // 回调15%触发
-      // ⭐ 分批止盈配置: 30%@+7%, 30%@+13.8%, 40%跟踪止盈(10%回调)
+      // ⭐ 分批止盈配置: 30%@+7%, 30%@+13.8%, 40%跟踪止盈(激活+5%, 回调10%)
       take_profit_targets: [
         { percentage: 30, target_profit_pct: 7 },              // 第1批: 30%仓位 @+7% (PnL≈42%)
         { percentage: 30, target_profit_pct: 13.8 },           // 第2批: 30%仓位 @+13.8% (PnL≈83%)
-        { percentage: 40, target_profit_pct: 0, is_trailing: true, trailing_callback_pct: 10 }  // 第3批: 40%仓位 跟踪止盈(10%回调)
+        { percentage: 40, target_profit_pct: 0, is_trailing: true, trailing_callback_pct: 3, activation_profit_pct: 5 }  // 第3批: 40%仓位 激活+5%后开始跟踪(价格回调3%平仓)
       ],
       daily_loss_limit_percent: 20,           // 每日亏损20%暂停
       consecutive_loss_limit: 999,            // 不限制连续亏损（与回测一致）
@@ -238,27 +238,32 @@ async function main() {
 
       console.log('-'.repeat(80));
 
-      // 交易统计
-      const win_count = statistics.winning_trades;
-      const lose_count = statistics.losing_trades;
-      const total_trades = statistics.total_trades;
-      const win_rate = total_trades > 0 ? (win_count / total_trades * 100).toFixed(1) : '0.0';
-      const pnl_sign = statistics.total_pnl >= 0 ? '+' : '';
-      const return_rate = (statistics.total_pnl / initial_balance * 100).toFixed(2);
-
-      console.log(`总交易: ${total_trades}笔 | 胜率: ${win_rate}% (${win_count}胜/${lose_count}负)`);
-      console.log(`总盈亏: ${pnl_sign}$${statistics.total_pnl.toFixed(2)} (${pnl_sign}${return_rate}%) | 最大回撤: ${statistics.max_drawdown_percent.toFixed(2)}%`);
-
-      // 从数据库获取手续费统计
+      // 交易统计（从数据库获取，更准确）
       try {
         const db_stats = await trading_system.get_statistics_from_db();
-        if (db_stats.total_trades > 0) {
-          const commission_sign = db_stats.total_commission > 0 ? '-' : '';
-          const net_sign = db_stats.net_pnl >= 0 ? '+' : '';
-          console.log(`总手续费: ${commission_sign}$${db_stats.total_commission.toFixed(4)} | 净盈亏: ${net_sign}$${db_stats.net_pnl.toFixed(2)}`);
-        }
+        const win_count = db_stats.winning_trades;
+        const lose_count = db_stats.losing_trades;
+        const total_trades = db_stats.total_trades;
+        const win_rate = total_trades > 0 ? (win_count / total_trades * 100).toFixed(1) : '0.0';
+        const pnl_sign = db_stats.total_pnl >= 0 ? '+' : '';
+        const return_rate = (db_stats.total_pnl / initial_balance * 100).toFixed(2);
+        const commission_sign = db_stats.total_commission > 0 ? '-' : '';
+        const net_sign = db_stats.net_pnl >= 0 ? '+' : '';
+
+        console.log(`总交易: ${total_trades}笔 | 胜率: ${win_rate}% (${win_count}胜/${lose_count}负)`);
+        console.log(`总盈亏: ${pnl_sign}$${db_stats.total_pnl.toFixed(2)} (${pnl_sign}${return_rate}%) | 最大回撤: ${statistics.max_drawdown_percent.toFixed(2)}%`);
+        console.log(`总手续费: ${commission_sign}$${db_stats.total_commission.toFixed(4)} | 净盈亏: ${net_sign}$${db_stats.net_pnl.toFixed(2)}`);
       } catch (err) {
-        // 数据库查询失败时静默处理
+        // 数据库查询失败时使用内存统计
+        const win_count = statistics.winning_trades;
+        const lose_count = statistics.losing_trades;
+        const total_trades = statistics.total_trades;
+        const win_rate = total_trades > 0 ? (win_count / total_trades * 100).toFixed(1) : '0.0';
+        const pnl_sign = statistics.total_pnl >= 0 ? '+' : '';
+        const return_rate = (statistics.total_pnl / initial_balance * 100).toFixed(2);
+
+        console.log(`总交易: ${total_trades}笔 | 胜率: ${win_rate}% (${win_count}胜/${lose_count}负)`);
+        console.log(`总盈亏: ${pnl_sign}$${statistics.total_pnl.toFixed(2)} (${pnl_sign}${return_rate}%) | 最大回撤: ${statistics.max_drawdown_percent.toFixed(2)}%`);
       }
 
       // 今日交易统计

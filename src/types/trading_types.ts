@@ -131,6 +131,7 @@ export interface TakeProfitTargetConfig {
   target_profit_pct: number;       // 目标收益率（如8表示+8%）
   is_trailing?: boolean;           // 是否使用跟踪止盈
   trailing_callback_pct?: number;  // 跟踪回调百分比（如15表示回调15%时平仓）
+  activation_profit_pct?: number;  // 跟踪止盈激活价格（如5表示涨+5%后才开始跟踪）
 }
 
 /**

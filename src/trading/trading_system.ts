@@ -780,7 +780,8 @@ export class TradingSystem {
 
         if (!local) {
           // 本地没有这个持仓，需要添加
-          const margin = bp.isolatedWallet || bp.entryPrice * bp.positionAmt / bp.leverage;
+          // ⚠️ 保证金用固定公式计算，不用 isolatedWallet（会随浮动盈亏变化）
+          const margin = bp.entryPrice * bp.positionAmt / bp.leverage;
           const side = bp.side === 'LONG' ? PositionSide.LONG : PositionSide.SHORT;
 
           // 根据风险配置计算止盈价格（止损通常设为100%表示不使用固定止损）
@@ -848,14 +849,17 @@ export class TradingSystem {
 
             // 更新本地持仓数量
             local.quantity = bp.positionAmt;
-            // 更新保证金（使用币安返回的实际保证金或重新计算）
-            local.margin = bp.isolatedWallet || (bp.entryPrice * bp.positionAmt / bp.leverage);
+            // 更新保证金（用固定公式计算，不用 isolatedWallet）
+            local.margin = local.entry_price * bp.positionAmt / local.leverage;
           }
 
           // 更新未实现盈亏
           // 币安返回的 unrealizedProfit 就是真实的仓位盈亏（美元）
           // 盈亏率 = unrealizedProfit / 保证金（相对保证金的收益率）
-          const current_margin = local.margin || (local.entry_price * local.quantity / local.leverage);
+          // ⚠️ 保证金必须用固定公式计算：entry_price * quantity / leverage
+          // 不能用 isolatedWallet，因为 isolatedWallet 会随浮动盈亏变化导致 PnL% 波动
+          const current_margin = local.entry_price * local.quantity / local.leverage;
+          local.margin = current_margin;  // 同时更新 local.margin 保持一致
           local.unrealized_pnl = bp.unrealizedProfit;
           local.unrealized_pnl_percent = current_margin > 0
             ? (bp.unrealizedProfit / current_margin) * 100
