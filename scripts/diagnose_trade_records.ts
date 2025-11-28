@@ -23,9 +23,17 @@ if (result.error) {
   console.log('✅ .env 加载成功');
 }
 
-// 检查关键环境变量
-console.log(`🔑 BINANCE_API_KEY: ${process.env.BINANCE_API_KEY ? '已设置 (' + process.env.BINANCE_API_KEY.substring(0, 8) + '...)' : '❌ 未设置'}`);
-console.log(`🔑 BINANCE_API_SECRET: ${process.env.BINANCE_API_SECRET ? '已设置 (长度:' + process.env.BINANCE_API_SECRET.length + ')' : '❌ 未设置'}`);
+// 检查关键环境变量（支持两种命名方式）
+const api_key = process.env.BINANCE_TRADE_API_KEY || process.env.BINANCE_API_KEY;
+const api_secret = process.env.BINANCE_TRADE_SECRET || process.env.BINANCE_API_SECRET;
+
+console.log(`🔑 API_KEY: ${api_key ? '已设置 (' + api_key.substring(0, 8) + '...)' : '❌ 未设置'}`);
+console.log(`🔑 API_SECRET: ${api_secret ? '已设置 (长度:' + api_secret.length + ')' : '❌ 未设置'}`);
+
+if (!api_key || !api_secret) {
+  console.error('\n❌ 缺少API密钥配置！请检查.env文件中的 BINANCE_TRADE_API_KEY 和 BINANCE_TRADE_SECRET');
+  process.exit(1);
+}
 
 import { ConfigManager } from '../src/core/config/config_manager';
 import { DatabaseConfig } from '../src/core/config/database';
@@ -43,8 +51,9 @@ async function main() {
   ConfigManager.getInstance().initialize();
   console.log('✅ 配置初始化完成');
 
+  // 使用正确的API密钥创建客户端
   console.log('⏳ 创建API客户端...');
-  const api = new BinanceFuturesTradingAPI();
+  const api = new BinanceFuturesTradingAPI(api_key, api_secret);
   console.log('✅ API客户端创建完成');
 
   console.log('⏳ 获取数据库连接...');
