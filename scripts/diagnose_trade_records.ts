@@ -18,15 +18,24 @@ import { DatabaseConfig } from '../src/core/config/database';
 import { BinanceFuturesTradingAPI } from '../src/api/binance_futures_trading_api';
 
 async function main() {
+  console.log('🔧 诊断脚本启动...');
+
   console.log('═'.repeat(80));
   console.log('📊 交易记录诊断工具');
   console.log('═'.repeat(80));
 
   // 初始化配置
+  console.log('⏳ 初始化配置...');
   ConfigManager.getInstance().initialize();
+  console.log('✅ 配置初始化完成');
 
+  console.log('⏳ 创建API客户端...');
   const api = new BinanceFuturesTradingAPI();
+  console.log('✅ API客户端创建完成');
+
+  console.log('⏳ 获取数据库连接...');
   const conn = await DatabaseConfig.get_mysql_connection();
+  console.log('✅ 数据库连接成功');
 
   try {
     // 1. 获取币安 PnL 记录（过去 7 天）
