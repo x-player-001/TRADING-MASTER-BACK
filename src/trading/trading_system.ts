@@ -818,12 +818,11 @@ export class TradingSystem {
             margin: margin,
             is_open: true,
             opened_at: actual_opened_at,
-            // 盈亏率 = unrealizedProfit / 保证金（包含杠杆效应）
+            // PnL 直接用币安返回值，盈亏率 = PnL / 保证金
+            unrealized_pnl: bp.unrealizedProfit,
             unrealized_pnl_percent: margin > 0
               ? (bp.unrealizedProfit / margin) * 100
               : 0,
-            // PnL = unrealizedProfit / 杠杆（基于保证金的盈亏）
-            unrealized_pnl: bp.unrealizedProfit / bp.leverage,
             stop_loss_price: stop_loss_price,
             take_profit_price: take_profit_price
           };
@@ -850,14 +849,13 @@ export class TradingSystem {
           }
 
           // 更新未实现盈亏
-          // 币安返回的 unrealizedProfit 是仓位价值盈亏 = 保证金 × 杠杆 × 价格涨幅
-          // 盈亏率 = unrealizedProfit / 保证金（相对保证金的收益率，已包含杠杆效应）
+          // 币安返回的 unrealizedProfit 就是真实的仓位盈亏（美元）
+          // 盈亏率 = unrealizedProfit / 保证金（相对保证金的收益率）
           const current_margin = local.margin || (local.entry_price * local.quantity / local.leverage);
+          local.unrealized_pnl = bp.unrealizedProfit;
           local.unrealized_pnl_percent = current_margin > 0
             ? (bp.unrealizedProfit / current_margin) * 100
             : 0;
-          // PnL = unrealizedProfit / 杠杆（基于保证金的盈亏）
-          local.unrealized_pnl = bp.unrealizedProfit / local.leverage;
 
           // 检查是否达到保本止损条件（盈利 >= 10% 且未下过保本止损单）
           if (local.unrealized_pnl_percent >= 10 && !local.breakeven_sl_placed) {
