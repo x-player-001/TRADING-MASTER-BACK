@@ -490,9 +490,28 @@ export class TradingSystem {
         if (!local) {
           // 本地没有这个持仓，需要添加
           const margin = bp.isolatedWallet || bp.entryPrice * bp.positionAmt / bp.leverage;
+          const side = bp.side === 'LONG' ? PositionSide.LONG : PositionSide.SHORT;
+
+          // 根据风险配置计算止盈价格（止损通常设为100%表示不使用固定止损）
+          const stop_loss_pct = this.config.risk_config.default_stop_loss_percent / 100;
+          const take_profit_pct = this.config.risk_config.default_take_profit_percent / 100;
+
+          // 止损：如果设置为100%，表示不使用固定止损（逐仓爆仓即止损）
+          let stop_loss_price: number | undefined;
+          if (stop_loss_pct < 0.99) {  // 小于99%才设置止损
+            stop_loss_price = side === PositionSide.LONG
+              ? bp.entryPrice * (1 - stop_loss_pct)
+              : bp.entryPrice * (1 + stop_loss_pct);
+          }
+
+          // 止盈：始终设置
+          const take_profit_price = side === PositionSide.LONG
+            ? bp.entryPrice * (1 + take_profit_pct)
+            : bp.entryPrice * (1 - take_profit_pct);
+
           const new_position: PositionRecord = {
             symbol: bp.symbol,
-            side: bp.side === 'LONG' ? PositionSide.LONG : PositionSide.SHORT,
+            side: side,
             entry_price: bp.entryPrice,
             current_price: bp.entryPrice,
             quantity: bp.positionAmt,
@@ -503,11 +522,13 @@ export class TradingSystem {
             unrealized_pnl: bp.unrealizedProfit,
             unrealized_pnl_percent: margin > 0
               ? (bp.unrealizedProfit / margin) * 100
-              : 0
+              : 0,
+            stop_loss_price: stop_loss_price,
+            take_profit_price: take_profit_price
           };
 
           this.position_tracker.add_synced_position(new_position);
-          logger.info(`[TradingSystem] Synced new position from Binance: ${bp.symbol} ${bp.side} qty=${bp.positionAmt} @ ${bp.entryPrice}`);
+          logger.info(`[TradingSystem] Synced new position from Binance: ${bp.symbol} ${bp.side} qty=${bp.positionAmt} @ ${bp.entryPrice}, SL=${stop_loss_price?.toFixed(6) || 'N/A'}, TP=${take_profit_price.toFixed(6)}`);
           added++;
         } else {
           // 更新未实现盈亏
