@@ -219,16 +219,14 @@ async function main() {
     console.log('\n\n' + '═'.repeat(80));
     console.log('📊 诊断汇总');
     console.log('═'.repeat(80));
-    console.log(`  币安 PnL 记录: ${pnl_records.length} 条`);
-    console.log(`  数据库交易记录: ${db_records.length} 条`);
-    console.log(`  缺失记录: ${missing_count} 条`);
+    console.log(`  币安 PnL 记录: ${pnl_records.length} 条 (注意: 一笔交易可能有多条PnL记录)`);
+    console.log(`  数据库交易记录: ${db_records.length} 条 (已平仓: ${closed_trades.length}, 未平仓: ${open_trades.length})`);
 
-    if (missing_count > 0) {
-      console.log('\n  💡 可能的原因:');
-      console.log('     1. 交易发生在系统启动之前，且回填逻辑未正确处理');
-      console.log('     2. 部分平仓的 PnL 与完整交易记录的 exit_order_id 不匹配');
-      console.log('     3. 订单 ID 类型不匹配（number vs string）');
-    }
+    console.log('\n  💡 说明:');
+    console.log('     - PnL记录的tradeId是成交ID，不是订单ID');
+    console.log('     - 一个订单可能有多笔成交（分批成交）');
+    console.log('     - 部分止盈会产生多条PnL记录，但对应同一持仓');
+    console.log('     - 通过步骤4的成交记录的orderId来匹配数据库的exit_order_id');
 
     console.log('\n');
 
