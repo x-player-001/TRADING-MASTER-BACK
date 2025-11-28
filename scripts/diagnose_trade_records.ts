@@ -103,7 +103,7 @@ async function main() {
     console.log('\n\n📊 步骤 2: 获取数据库交易记录...');
     const [db_records] = await conn.query<any[]>(`
       SELECT id, symbol, side, entry_order_id, exit_order_id,
-             entry_price, exit_price, realized_pnl, commission,
+             entry_price, exit_price, realized_pnl, total_commission,
              opened_at, closed_at, status, close_reason
       FROM trade_records
       WHERE opened_at >= DATE_SUB(NOW(), INTERVAL 7 DAY)
@@ -122,7 +122,7 @@ async function main() {
       console.log(`     开仓: ${record.opened_at?.toLocaleString('zh-CN') || 'N/A'} @ ${record.entry_price}`);
       console.log(`     平仓: ${record.closed_at?.toLocaleString('zh-CN') || '未平仓'} @ ${record.exit_price || 'N/A'}`);
       console.log(`     盈亏: ${pnl_sign}${(record.realized_pnl || 0).toFixed(4)} USDT`);
-      console.log(`     手续费: ${(record.commission || 0).toFixed(4)} USDT`);
+      console.log(`     手续费: ${(record.total_commission || 0).toFixed(4)} USDT`);
       console.log(`     状态: ${record.status} (${record.close_reason || 'N/A'})`);
       console.log('');
     }
