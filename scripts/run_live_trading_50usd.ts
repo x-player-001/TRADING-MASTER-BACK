@@ -100,7 +100,7 @@ async function main() {
     console.log(`  最多持仓: ${risk_config.max_total_positions}个`);
     console.log(`  单笔最大亏损: $${initial_balance * (risk_config.max_position_size_percent / 100)} (逐仓保证金)`);
     console.log(`  策略: 只做多突破策略 (评分≥8分 ⭐)`);
-    console.log(`  追高阈值: 16% ⭐ (优化值)`);
+    console.log(`  追高阈值: 10% ⭐ (price_from_2h_low_pct限制)`);
     console.log(`  最大持仓时间: 120分钟`);
     console.log(`  止盈: 第一批8%`);
     console.log(`  止损: 无 (逐仓模式自动限损)`);
@@ -129,6 +129,7 @@ async function main() {
     // 初始化交易系统（传递$50配置）
     oi_service.initialize_trading_system(true, {
       mode: trading_mode,
+      initial_balance: initial_balance,  // ⭐ 传递初始资金（用于仓位计算）
       strategies: [strategy_config],
       active_strategy_type: StrategyType.BREAKOUT,
       risk_config: risk_config,
@@ -143,11 +144,11 @@ async function main() {
       throw new Error('Failed to initialize trading system');
     }
 
-    // ⭐ 设置追高阈值为16%（基于回测优化结果）
-    trading_system.set_chase_high_threshold(16);
+    // ⭐ 设置追高阈值为10%（避免追高）
+    trading_system.set_chase_high_threshold(10);
 
     console.log('\n✅ 交易引擎已启动');
-    console.log('✅ 追高阈值已设置为 16%');
+    console.log('✅ 追高阈值已设置为 10%');
     console.log('✅ 通知推送已启用');
 
     // 启动OI监控

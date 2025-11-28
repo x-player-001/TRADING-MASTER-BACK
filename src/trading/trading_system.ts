@@ -87,6 +87,13 @@ export class TradingSystem {
     this.order_executor = new OrderExecutor(this.config.mode);
     this.position_tracker = new PositionTracker(this.order_executor, this.risk_manager);
 
+    // 设置初始资金（用于仓位计算）
+    if (this.config.initial_balance) {
+      this.paper_account_balance = this.config.initial_balance;
+      this.risk_manager.set_initial_balance(this.config.initial_balance);
+      logger.info(`[TradingSystem] Initial balance set to $${this.config.initial_balance}`);
+    }
+
     this.is_enabled = this.config.enabled;
 
     logger.info(`[TradingSystem] Initialized in ${this.config.mode} mode, enabled=${this.is_enabled}`);

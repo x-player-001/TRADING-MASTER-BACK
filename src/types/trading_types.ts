@@ -291,6 +291,9 @@ export interface TradingSystemConfig {
   mode: TradingMode;
   enabled: boolean;
 
+  // 初始资金（用于计算仓位大小）
+  initial_balance?: number;
+
   // 策略配置
   strategies: StrategyConfig[];
   active_strategy_type: StrategyType;
