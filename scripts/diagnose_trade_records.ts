@@ -157,29 +157,40 @@ async function main() {
       console.log(`  - ${id}`);
     }
 
-    // 查找未在数据库中的 PnL 记录
-    console.log('\n\n🔍 未在数据库中找到对应记录的 PnL:');
-    let missing_count = 0;
+    // ⚠️ 注意：PnL 记录的 tradeId 是成交ID，不是订单ID
+    // 需要通过成交记录来获取 orderId，再与数据库匹配
+    console.log('\n\n🔍 分析 PnL 记录与数据库记录的对应关系:');
+    console.log('  ⚠️ 注意: PnL的tradeId是成交ID，需要通过成交记录获取orderId');
 
+    // 统计数据库中已平仓的交易
+    const closed_trades = db_records.filter(r => r.status === 'CLOSED');
+    const open_trades = db_records.filter(r => r.status === 'OPEN');
+
+    console.log(`\n  数据库已平仓: ${closed_trades.length} 笔`);
+    console.log(`  数据库未平仓: ${open_trades.length} 笔`);
+
+    // 按币种统计 PnL
+    const pnl_summary: Record<string, { count: number; total: number }> = {};
     for (const pnl of pnl_records) {
-      const trade_id = String(pnl.tradeId);
-
-      // 检查 tradeId 是否在数据库的 exit_order_id 或 entry_order_id 中
-      const found_as_exit = db_exit_order_ids.has(trade_id);
-      const found_as_entry = db_entry_order_ids.has(trade_id);
-
-      if (!found_as_exit && !found_as_entry) {
-        missing_count++;
-        const time = new Date(pnl.time).toLocaleString('zh-CN');
-        const sign = pnl.income >= 0 ? '+' : '';
-        console.log(`  ❌ ${pnl.symbol}: ${time} | ${sign}${pnl.income.toFixed(4)} USDT | tradeId: ${trade_id}`);
+      if (!pnl_summary[pnl.symbol]) {
+        pnl_summary[pnl.symbol] = { count: 0, total: 0 };
       }
+      pnl_summary[pnl.symbol].count++;
+      pnl_summary[pnl.symbol].total += pnl.income;
     }
 
-    if (missing_count === 0) {
-      console.log('  ✅ 所有 PnL 记录都有对应的数据库记录');
-    } else {
-      console.log(`\n  ⚠️ 共有 ${missing_count} 条 PnL 记录未找到对应的数据库记录`);
+    console.log('\n  币安 PnL 汇总 (按币种):');
+    for (const [symbol, data] of Object.entries(pnl_summary)) {
+      const sign = data.total >= 0 ? '+' : '';
+      console.log(`    ${symbol}: ${data.count} 条, 合计 ${sign}${data.total.toFixed(4)} USDT`);
+    }
+
+    // 检查数据库中的平仓记录是否有对应的 exit_order_id
+    console.log('\n  数据库平仓记录的 exit_order_id 状态:');
+    for (const record of closed_trades) {
+      const has_exit_id = record.exit_order_id ? '✅' : '❌';
+      const pnl_value = parseFloat(record.realized_pnl) || 0;
+      console.log(`    ${has_exit_id} ${record.symbol}: exit_order_id=${record.exit_order_id || 'N/A'}, pnl=${pnl_value.toFixed(4)}`);
     }
 
     // 4. 检查币安近期所有交易（用于更详细的分析）
