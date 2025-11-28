@@ -172,8 +172,7 @@ async function main() {
       console.log('-'.repeat(80));
 
       // 交易状态
-      const mode_text = trading_mode === TradingMode.PAPER ? '📝 纸面交易' : trading_mode === TradingMode.TESTNET ? '🧪 测试网' : '💰 实盘';
-      console.log(`交易模式: ${mode_text} | 系统状态: ${trade_status.enabled ? '✅ 启用' : '❌ 禁用'}`);
+      console.log(`交易模式: 💰 实盘 | 系统状态: ${trade_status.enabled ? '✅ 启用' : '❌ 禁用'}`);
 
       // 持仓统计
       const max_positions = risk_config.max_total_positions;
