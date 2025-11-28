@@ -70,7 +70,8 @@ export interface OrderResponse {
   workingType: string;
   priceProtect: boolean;
   origType: string;
-  updateTime: number;
+  time?: number;        // 订单创建时间（毫秒时间戳）
+  updateTime: number;   // 订单最后更新时间
 }
 
 /**

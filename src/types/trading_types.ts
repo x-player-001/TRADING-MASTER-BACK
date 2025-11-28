@@ -277,6 +277,10 @@ export interface PositionRecord {
 
   // 分批止盈记录（新增）
   take_profit_executions?: TakeProfitExecution[];
+
+  // 新表关联字段
+  position_id?: string;           // 持仓周期ID（用于关联 order_records 表）
+  legacy_db_id?: number;          // 旧表 trade_records 的 ID（兼容过渡期）
 }
 
 /**

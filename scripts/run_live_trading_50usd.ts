@@ -260,6 +260,22 @@ async function main() {
         // 数据库查询失败时静默处理
       }
 
+      // 今日交易统计
+      try {
+        const today_stats = await trading_system.get_today_statistics_from_db();
+        console.log('-'.repeat(80));
+        const today_win_rate = today_stats.total_trades > 0
+          ? (today_stats.winning_trades / today_stats.total_trades * 100).toFixed(1)
+          : '0.0';
+        const today_pnl_sign = today_stats.total_pnl >= 0 ? '+' : '';
+        const today_net_sign = today_stats.net_pnl >= 0 ? '+' : '';
+        const today_commission_sign = today_stats.total_commission > 0 ? '-' : '';
+        console.log(`📅 今日交易: ${today_stats.total_trades}笔 | 胜率: ${today_win_rate}% (${today_stats.winning_trades}胜/${today_stats.losing_trades}负)`);
+        console.log(`📅 今日盈亏: ${today_pnl_sign}$${today_stats.total_pnl.toFixed(2)} | 手续费: ${today_commission_sign}$${today_stats.total_commission.toFixed(4)} | 净盈亏: ${today_net_sign}$${today_stats.net_pnl.toFixed(2)}`);
+      } catch (err) {
+        // 数据库查询失败时静默处理
+      }
+
       console.log('='.repeat(80) + '\n');
     }, 120000); // 2分钟 = 120000ms
 

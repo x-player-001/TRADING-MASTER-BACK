@@ -22,7 +22,7 @@ import { StrategyEngine } from './strategy_engine';
 import { RiskManager } from './risk_manager';
 import { OrderExecutor } from './order_executor';
 import { PositionTracker } from './position_tracker';
-import { TradeRecordRepository } from '../database/trade_record_repository';
+import { OrderRecordRepository } from '../database/order_record_repository';
 
 export class TradingSystem {
   private signal_generator: SignalGenerator;
@@ -30,7 +30,7 @@ export class TradingSystem {
   private risk_manager: RiskManager;
   private order_executor: OrderExecutor;
   private position_tracker: PositionTracker;
-  private trade_record_repository: TradeRecordRepository;
+  private order_record_repository: OrderRecordRepository;
 
   private config: TradingSystemConfig;
   private is_enabled: boolean = false;
@@ -92,7 +92,7 @@ export class TradingSystem {
     this.risk_manager = new RiskManager(this.config.risk_config);
     this.order_executor = new OrderExecutor(this.config.mode);
     this.position_tracker = new PositionTracker(this.order_executor, this.risk_manager);
-    this.trade_record_repository = TradeRecordRepository.get_instance();
+    this.order_record_repository = OrderRecordRepository.get_instance();
 
     // 设置初始资金（用于仓位计算）
     if (this.config.initial_balance) {
@@ -284,43 +284,48 @@ export class TradingSystem {
       this.paper_account_balance -= position_size / leverage; // 扣除保证金
     }
 
-    // 写入数据库
-    try {
-      const margin = position_size / leverage;
-      const trading_mode_str = this.config.mode === TradingMode.PAPER ? 'PAPER'
-        : this.config.mode === TradingMode.TESTNET ? 'TESTNET' : 'LIVE';
+    // 生成 position_id（用于关联同一持仓周期的开平仓订单）
+    const position_id = `${signal.symbol}_${Date.now()}`;
+    position.position_id = position_id;
 
-      const db_id = await this.trade_record_repository.create_trade({
-        symbol: signal.symbol,
-        side: signal.direction === 'LONG' ? 'LONG' : 'SHORT',
-        trading_mode: trading_mode_str as 'PAPER' | 'TESTNET' | 'LIVE',
-        entry_price: entry_order.average_price || entry_price,
-        quantity: entry_order.filled_quantity || quantity,
-        leverage: leverage,
-        margin: margin,
-        position_value: position_size,
-        stop_loss_price: stop_loss,
-        take_profit_price: take_profit,
-        entry_order_id: entry_order.order_id?.toString(),
-        tp_order_ids: tp_order_ids.length > 0 ? JSON.stringify(tp_order_ids) : undefined,
-        signal_id: signal.source_anomaly_id,  // 关联异动记录ID
-        signal_score: signal.score,
-        anomaly_id: signal.source_anomaly_id,
-        status: 'OPEN',
-        opened_at: position.opened_at
-      });
-
-      // 将数据库ID关联到仓位记录
-      position.id = db_id;
-      logger.info(`[TradingSystem] Trade record saved to database, id=${db_id}`);
-
-      // 异步查询币安成交记录更新手续费（不阻塞主流程）
-      if (entry_order.order_id && this.config.mode !== TradingMode.PAPER) {
-        this.fetch_and_update_entry_commission(db_id, signal.symbol, parseInt(entry_order.order_id));
+    // 写入数据库（统一从 userTrades 获取数据）
+    if (this.config.mode === TradingMode.PAPER) {
+      // 纸面交易：直接用下单返回值写库
+      try {
+        const order_db_id = await this.order_record_repository.create_order({
+          order_id: `PAPER_${Date.now()}`,
+          symbol: signal.symbol,
+          side: signal.direction === 'LONG' ? 'BUY' : 'SELL',
+          position_side: signal.direction === 'LONG' ? 'LONG' : 'SHORT',
+          order_type: 'OPEN',
+          trading_mode: 'PAPER',
+          price: entry_order.average_price || entry_price,
+          quantity: entry_order.filled_quantity || quantity,
+          leverage: leverage,
+          position_id: position_id,
+          signal_id: signal.source_anomaly_id,
+          anomaly_id: signal.source_anomaly_id,
+          order_time: position.opened_at
+        });
+        position.id = order_db_id;
+        logger.info(`[TradingSystem] Paper order record saved, id=${order_db_id}`);
+      } catch (error) {
+        logger.error('[TradingSystem] Failed to save paper order record:', error);
       }
-    } catch (error) {
-      logger.error('[TradingSystem] Failed to save trade record to database:', error);
-      // 不影响交易，只记录日志
+    } else if (entry_order.order_id) {
+      // 实盘/测试网：异步从 userTrades 获取数据后写库
+      this.save_order_from_user_trades(
+        entry_order.order_id,
+        signal.symbol,
+        'OPEN',
+        position_id,
+        leverage,
+        signal.source_anomaly_id
+      ).then(db_id => {
+        if (db_id) {
+          position.id = db_id;
+        }
+      });
     }
 
     return position;
@@ -410,90 +415,100 @@ export class TradingSystem {
    * 平仓后更新数据库记录
    */
   private async update_trade_record_on_close(position: PositionRecord): Promise<void> {
-    if (!position.id) {
-      logger.warn(`[TradingSystem] Cannot update trade record: position has no id`);
+    // 纸面交易：直接用本地数据写库
+    if (this.config.mode === TradingMode.PAPER) {
+      try {
+        await this.order_record_repository.create_order({
+          order_id: `PAPER_CLOSE_${Date.now()}`,
+          symbol: position.symbol,
+          side: position.side === PositionSide.LONG ? 'SELL' : 'BUY',
+          position_side: position.side === PositionSide.LONG ? 'LONG' : 'SHORT',
+          order_type: 'CLOSE',
+          trading_mode: 'PAPER',
+          price: position.current_price,
+          quantity: position.quantity,
+          realized_pnl: position.realized_pnl || 0,
+          position_id: position.position_id,
+          related_order_id: position.entry_order_id?.toString(),
+          close_reason: position.close_reason || 'MANUAL',
+          order_time: position.closed_at || new Date()
+        });
+        logger.info(`[TradingSystem] Paper close order saved, pnl=${(position.realized_pnl || 0).toFixed(4)}`);
+      } catch (error) {
+        logger.error('[TradingSystem] Failed to save paper close order:', error);
+      }
       return;
     }
 
-    try {
-      // 计算基于保证金的收益率
-      const margin = position.margin || (position.entry_price * position.quantity / position.leverage);
-      const realized_pnl_percent = margin > 0 ? ((position.realized_pnl || 0) / margin) * 100 : 0;
-
-      await this.trade_record_repository.close_trade(
-        position.id,
-        position.current_price,
-        position.realized_pnl || 0,
-        realized_pnl_percent,
-        position.close_reason || 'MANUAL',
-        position.exit_order_id?.toString(),
-        position.take_profit_executions ? JSON.stringify(position.take_profit_executions) : undefined
+    // 实盘/测试网：从 userTrades 获取数据后写库
+    if (position.exit_order_id) {
+      this.save_order_from_user_trades(
+        position.exit_order_id.toString(),
+        position.symbol,
+        'CLOSE',
+        position.position_id,
+        position.leverage,
+        undefined,
+        position.entry_order_id?.toString(),
+        position.close_reason
       );
-
-      logger.info(`[TradingSystem] Trade record updated in database, id=${position.id}, pnl=${(position.realized_pnl || 0).toFixed(4)}`);
-
-      // 异步查询平仓手续费（不阻塞主流程）
-      if (position.exit_order_id && this.config.mode !== TradingMode.PAPER) {
-        this.fetch_and_update_exit_commission(position.id, position.symbol, position.exit_order_id);
-      }
-    } catch (error) {
-      logger.error('[TradingSystem] Failed to update trade record in database:', error);
-      // 不影响交易，只记录日志
     }
   }
 
   /**
-   * 异步获取平仓订单的成交详情并更新手续费
+   * 从 userTrades 获取订单数据并写入数据库
+   * 统一的数据存储入口，确保所有订单数据来源一致
    */
-  private async fetch_and_update_exit_commission(
-    db_id: number,
+  private async save_order_from_user_trades(
+    order_id: string,
     symbol: string,
-    orderId: number
-  ): Promise<void> {
+    order_type: 'OPEN' | 'CLOSE',
+    position_id?: string,
+    leverage?: number,
+    signal_id?: number,
+    related_order_id?: string,
+    close_reason?: string
+  ): Promise<number | null> {
     try {
-      // 延迟1秒确保成交记录已同步
+      // 延迟1秒确保成交记录已同步到币安
       await new Promise(resolve => setTimeout(resolve, 1000));
 
-      const tradeInfo = await this.order_executor.get_order_trades(symbol, orderId);
-      if (tradeInfo) {
-        await this.trade_record_repository.update_exit_commission(
-          db_id,
-          tradeInfo.totalCommission,
-          tradeInfo.realizedPnl  // 平仓时从币安获取的实际盈亏
-        );
-        logger.info(`[TradingSystem] Exit commission updated for trade ${db_id}: commission=${tradeInfo.totalCommission.toFixed(4)} USDT, binance_pnl=${tradeInfo.realizedPnl.toFixed(4)}`);
+      const tradeInfo = await this.order_executor.get_order_trades(symbol, parseInt(order_id));
+      if (!tradeInfo) {
+        logger.warn(`[TradingSystem] No trade info found for order ${order_id}`);
+        return null;
       }
-    } catch (error) {
-      logger.error(`[TradingSystem] Failed to fetch exit commission for trade ${db_id}:`, error);
-      // 不影响主流程
-    }
-  }
 
-  /**
-   * 异步获取开仓订单的成交详情并更新手续费
-   */
-  private async fetch_and_update_entry_commission(
-    db_id: number,
-    symbol: string,
-    orderId: number
-  ): Promise<void> {
-    try {
-      // 延迟1秒确保成交记录已同步
-      await new Promise(resolve => setTimeout(resolve, 1000));
+      const trading_mode = this.config.mode === TradingMode.TESTNET ? 'TESTNET' : 'LIVE';
 
-      const tradeInfo = await this.order_executor.get_order_trades(symbol, orderId);
-      if (tradeInfo) {
-        await this.trade_record_repository.update_entry_commission(
-          db_id,
-          tradeInfo.totalCommission,
-          tradeInfo.commissionAsset,
-          tradeInfo.avgPrice,
-          tradeInfo.totalQuantity
-        );
-        logger.info(`[TradingSystem] Updated entry commission for trade ${db_id}: ${tradeInfo.totalCommission} ${tradeInfo.commissionAsset}`);
-      }
+      // 从 userTrades 获取的数据写入数据库
+      const db_id = await this.order_record_repository.create_order({
+        order_id: order_id,
+        symbol: symbol,
+        side: tradeInfo.side as 'BUY' | 'SELL',
+        position_side: tradeInfo.positionSide as 'LONG' | 'SHORT',
+        order_type: order_type,
+        trading_mode: trading_mode,
+        price: tradeInfo.avgPrice,
+        quantity: tradeInfo.totalQuantity,
+        quote_quantity: tradeInfo.avgPrice * tradeInfo.totalQuantity,
+        leverage: leverage || 1,
+        realized_pnl: order_type === 'CLOSE' ? tradeInfo.realizedPnl : undefined,
+        commission: tradeInfo.totalCommission,
+        commission_asset: tradeInfo.commissionAsset,
+        position_id: position_id,
+        related_order_id: related_order_id,
+        close_reason: order_type === 'CLOSE' ? close_reason : undefined,
+        signal_id: signal_id,
+        anomaly_id: signal_id,
+        order_time: new Date(tradeInfo.time)
+      });
+
+      logger.info(`[TradingSystem] Order saved from userTrades: ${order_type} ${symbol} order_id=${order_id}, price=${tradeInfo.avgPrice}, qty=${tradeInfo.totalQuantity}, commission=${tradeInfo.totalCommission}${order_type === 'CLOSE' ? `, pnl=${tradeInfo.realizedPnl}` : ''}`);
+      return db_id;
     } catch (error) {
-      logger.error(`[TradingSystem] Failed to fetch entry commission for trade ${db_id}:`, error);
+      logger.error(`[TradingSystem] Failed to save order from userTrades:`, error);
+      return null;
     }
   }
 
@@ -586,13 +601,45 @@ export class TradingSystem {
     const trading_mode = this.config.mode === TradingMode.LIVE ? 'LIVE' :
                         this.config.mode === TradingMode.TESTNET ? 'TESTNET' : 'PAPER';
 
-    // 只统计系统启动后平仓的交易（closed_at >= started_at）
-    const db_stats = await this.trade_record_repository.get_statistics_by_close_time(trading_mode, this.started_at);
+    // 使用新表 order_records 统计
+    const db_stats = await this.order_record_repository.get_statistics(trading_mode, this.started_at);
 
     return {
-      total_trades: db_stats.total_trades,
-      winning_trades: db_stats.winning_trades,
-      losing_trades: db_stats.losing_trades,
+      total_trades: db_stats.close_orders,  // 平仓订单数
+      winning_trades: db_stats.winning_orders,
+      losing_trades: db_stats.losing_orders,
+      win_rate: db_stats.win_rate * 100,
+      total_pnl: db_stats.total_pnl,
+      total_commission: db_stats.total_commission,
+      net_pnl: db_stats.net_pnl
+    };
+  }
+
+  /**
+   * 获取今日交易统计（从数据库）
+   */
+  async get_today_statistics_from_db(): Promise<{
+    total_trades: number;
+    winning_trades: number;
+    losing_trades: number;
+    win_rate: number;
+    total_pnl: number;
+    total_commission: number;
+    net_pnl: number;
+  }> {
+    const trading_mode = this.config.mode === TradingMode.LIVE ? 'LIVE' :
+                        this.config.mode === TradingMode.TESTNET ? 'TESTNET' : 'PAPER';
+
+    // 获取今日0点时间
+    const today_start = new Date();
+    today_start.setHours(0, 0, 0, 0);
+
+    const db_stats = await this.order_record_repository.get_statistics(trading_mode, today_start);
+
+    return {
+      total_trades: db_stats.close_orders,
+      winning_trades: db_stats.winning_orders,
+      losing_trades: db_stats.losing_orders,
       win_rate: db_stats.win_rate * 100,
       total_pnl: db_stats.total_pnl,
       total_commission: db_stats.total_commission,
@@ -732,6 +779,18 @@ export class TradingSystem {
             ? bp.entryPrice * (1 + take_profit_pct)
             : bp.entryPrice * (1 - take_profit_pct);
 
+          // 查询真正的开仓时间（通过历史成交记录）
+          let actual_opened_at = new Date(bp.updateTime);  // 默认使用 updateTime
+          try {
+            const entry_time = await this.fetch_actual_entry_time(bp.symbol, side);
+            if (entry_time) {
+              actual_opened_at = entry_time;
+              logger.info(`[TradingSystem] Found actual entry time for ${bp.symbol}: ${actual_opened_at.toISOString()}`);
+            }
+          } catch (err) {
+            logger.warn(`[TradingSystem] Failed to fetch actual entry time for ${bp.symbol}, using updateTime`);
+          }
+
           const new_position: PositionRecord = {
             symbol: bp.symbol,
             side: side,
@@ -741,7 +800,7 @@ export class TradingSystem {
             leverage: bp.leverage,
             margin: margin,
             is_open: true,
-            opened_at: new Date(bp.updateTime),  // 临时用updateTime，数据库有记录时会被覆盖
+            opened_at: actual_opened_at,
             unrealized_pnl: bp.unrealizedProfit,
             unrealized_pnl_percent: margin > 0
               ? (bp.unrealizedProfit / margin) * 100
@@ -810,32 +869,33 @@ export class TradingSystem {
           this.position_tracker.mark_position_closed(lp.id, realized_pnl);
           removed++;
 
-          // 更新数据库记录（同步发现的平仓）
-          try {
-            const margin = lp.margin || (lp.entry_price * lp.quantity / lp.leverage);
-            const realized_pnl_percent = margin > 0 ? (realized_pnl / margin) * 100 : 0;
+          // 写入新表 order_records（同步发现的平仓）
+          const trading_mode_str = this.config.mode === TradingMode.TESTNET ? 'TESTNET' : 'LIVE';
 
-            await this.trade_record_repository.close_trade(
-              lp.id,
-              exit_price,
-              realized_pnl,
-              realized_pnl_percent,
-              'SYNC_CLOSED',
-              exit_order_id?.toString()
-            );
-
-            // 如果有手续费数据，更新手续费
-            if (exit_commission > 0) {
-              await this.trade_record_repository.update_exit_commission(
-                lp.id,
-                exit_commission,
-                realized_pnl  // 使用币安返回的精确盈亏
-              );
+          if (exit_order_id) {
+            try {
+              const close_side = lp.side === PositionSide.LONG ? 'SELL' : 'BUY';
+              await this.order_record_repository.create_order({
+                order_id: exit_order_id.toString(),
+                symbol: lp.symbol,
+                side: close_side as 'BUY' | 'SELL',
+                position_side: lp.side === PositionSide.LONG ? 'LONG' : 'SHORT',
+                order_type: 'CLOSE',
+                trading_mode: trading_mode_str as 'PAPER' | 'TESTNET' | 'LIVE',
+                price: exit_price,
+                quantity: lp.quantity,
+                realized_pnl: realized_pnl,
+                commission: exit_commission,
+                commission_asset: 'USDT',
+                position_id: lp.position_id,
+                related_order_id: lp.entry_order_id?.toString(),
+                close_reason: 'SYNC_CLOSED',
+                order_time: closed_at || new Date()
+              });
+              logger.info(`[TradingSystem] Sync-closed order saved to order_records: order_id=${exit_order_id}, pnl=${realized_pnl.toFixed(4)}`);
+            } catch (err) {
+              logger.error('[TradingSystem] Failed to save sync-closed order to order_records:', err);
             }
-
-            logger.info(`[TradingSystem] Trade record updated with actual data: id=${lp.id}, exit_price=${exit_price.toFixed(6)}, pnl=${realized_pnl.toFixed(4)}`);
-          } catch (err) {
-            logger.error('[TradingSystem] Failed to update sync-closed trade in database:', err);
           }
         }
       }
@@ -876,47 +936,47 @@ export class TradingSystem {
       const trading_mode = this.config.mode === TradingMode.LIVE ? 'LIVE' :
                           this.config.mode === TradingMode.TESTNET ? 'TESTNET' : 'PAPER';
 
-      // 检查数据库是否已有该持仓的记录
-      const existing = await this.trade_record_repository.find_open_trade_by_symbol(
-        binance_position.symbol,
-        binance_position.side,
-        trading_mode
-      );
+      // 生成 position_id
+      const position_id = `${binance_position.symbol}_${binance_position.updateTime}`;
+
+      // 检查 order_records 是否已有该持仓的开仓记录
+      const pseudo_order_id = `SYNC_${binance_position.updateTime}`;
+      const existing = await this.order_record_repository.find_by_order_id(pseudo_order_id, trading_mode);
 
       if (existing) {
         // 已有记录，将数据库ID和开仓时间同步到内存持仓
         position.id = existing.id;
-        // ⭐ 重要：使用数据库中保存的真实开仓时间，而不是币安的updateTime
-        if (existing.opened_at) {
-          position.opened_at = existing.opened_at;
+        position.position_id = existing.position_id;
+        if (existing.order_time) {
+          position.opened_at = existing.order_time;
         }
-        logger.debug(`[TradingSystem] Found existing trade record for ${binance_position.symbol}: id=${existing.id}, opened_at=${position.opened_at.toISOString()}`);
+        logger.debug(`[TradingSystem] Found existing order record for ${binance_position.symbol}: id=${existing.id}, opened_at=${position.opened_at.toISOString()}`);
         return;
       }
 
       // 数据库没有记录，创建新记录
-      const margin = binance_position.isolatedWallet ||
-                    (binance_position.entryPrice * binance_position.positionAmt / binance_position.leverage);
-      const position_value = binance_position.entryPrice * binance_position.positionAmt;
+      position.position_id = position_id;
 
-      const db_id = await this.trade_record_repository.create_trade({
-        symbol: binance_position.symbol,
-        side: binance_position.side,
-        trading_mode: trading_mode,
-        entry_price: binance_position.entryPrice,
-        quantity: binance_position.positionAmt,
-        leverage: binance_position.leverage,
-        margin: margin,
-        position_value: position_value,
-        stop_loss_price: position.stop_loss_price,
-        take_profit_price: position.take_profit_price,
-        status: 'OPEN',
-        opened_at: new Date(binance_position.updateTime)
-      });
-
-      // 将数据库ID同步回内存中的持仓
-      position.id = db_id;
-      logger.info(`[TradingSystem] Created trade record for synced position: ${binance_position.symbol} ${binance_position.side}, db_id=${db_id}`);
+      try {
+        const entry_side = binance_position.side === 'LONG' ? 'BUY' : 'SELL';
+        const order_db_id = await this.order_record_repository.create_order({
+          order_id: pseudo_order_id,
+          symbol: binance_position.symbol,
+          side: entry_side as 'BUY' | 'SELL',
+          position_side: binance_position.side,
+          order_type: 'OPEN',
+          trading_mode: trading_mode as 'PAPER' | 'TESTNET' | 'LIVE',
+          price: binance_position.entryPrice,
+          quantity: binance_position.positionAmt,
+          leverage: binance_position.leverage,
+          position_id: position_id,
+          order_time: new Date(binance_position.updateTime)
+        });
+        position.id = order_db_id;
+        logger.info(`[TradingSystem] Synced open order saved to order_records: id=${order_db_id}, position_id=${position_id}`);
+      } catch (err) {
+        logger.error(`[TradingSystem] Failed to save synced open order to order_records:`, err);
+      }
 
     } catch (error) {
       logger.error(`[TradingSystem] Failed to ensure trade record for ${binance_position.symbol}:`, error);
@@ -1043,26 +1103,87 @@ export class TradingSystem {
       }
       local_position.take_profit_executions.push(execution);
 
-      // 更新数据库（如果有记录的话）
-      if (local_position.id) {
-        try {
-          // 记录分批止盈执行
-          await this.trade_record_repository.add_take_profit_execution(local_position.id, execution);
+      // 写入新表 order_records（分批平仓订单）
+      const trading_mode_str = this.config.mode === TradingMode.PAPER ? 'PAPER'
+        : this.config.mode === TradingMode.TESTNET ? 'TESTNET' : 'LIVE';
 
-          // 更新数据库中的持仓数量和保证金
-          const new_quantity = binance_position.positionAmt;
-          const new_margin = binance_position.isolatedWallet || (binance_position.entryPrice * new_quantity / binance_position.leverage);
-          await this.trade_record_repository.update_quantity(local_position.id, new_quantity, new_margin);
+      try {
+        await this.order_record_repository.create_order({
+          order_id: recent_order_id.toString(),
+          symbol: local_position.symbol,
+          side: close_side as 'BUY' | 'SELL',
+          position_side: local_position.side === PositionSide.LONG ? 'LONG' : 'SHORT',
+          order_type: 'CLOSE',
+          trading_mode: trading_mode_str as 'PAPER' | 'TESTNET' | 'LIVE',
+          price: exit_price,
+          quantity: closed_qty,
+          realized_pnl: realized_pnl,
+          commission: exit_commission,
+          commission_asset: 'USDT',
+          position_id: local_position.position_id,
+          related_order_id: local_position.entry_order_id?.toString(),
+          close_reason: 'PARTIAL_TAKE_PROFIT',
+          order_time: new Date(recent_close_time)
+        });
 
-          logger.info(`[TradingSystem] Recorded partial close: ${local_position.symbol} qty=${closed_qty.toFixed(6)} @ ${exit_price.toFixed(6)}, pnl=${realized_pnl.toFixed(4)} USDT, remaining_qty=${new_quantity.toFixed(6)}`);
-          console.log(`\n💰 部分止盈已记录: ${local_position.symbol} 平仓 ${closed_qty.toFixed(4)} @ ${exit_price.toFixed(6)}, 盈亏: ${realized_pnl >= 0 ? '+' : ''}$${realized_pnl.toFixed(4)}, 剩余数量: ${new_quantity.toFixed(4)}\n`);
-        } catch (err) {
-          logger.error(`[TradingSystem] Failed to record partial close to database:`, err);
-        }
+        logger.info(`[TradingSystem] Partial close order saved to order_records: order_id=${recent_order_id}, pnl=${realized_pnl.toFixed(4)}`);
+        console.log(`\n💰 部分止盈已记录: ${local_position.symbol} 平仓 ${closed_qty.toFixed(4)} @ ${exit_price.toFixed(6)}, 盈亏: ${realized_pnl >= 0 ? '+' : ''}$${realized_pnl.toFixed(4)}\n`);
+      } catch (err) {
+        logger.error(`[TradingSystem] Failed to save partial close to order_records:`, err);
       }
 
     } catch (error) {
       logger.error(`[TradingSystem] Error recording partial close for ${local_position.symbol}:`, error);
+    }
+  }
+
+  /**
+   * 查询真正的开仓时间
+   * 通过成交记录找到最早的开仓成交时间
+   */
+  private async fetch_actual_entry_time(
+    symbol: string,
+    side: PositionSide
+  ): Promise<Date | null> {
+    try {
+      // 查询最近7天的成交记录
+      const endTime = Date.now();
+      const startTime = endTime - 7 * 24 * 60 * 60 * 1000;
+
+      const trades = await this.order_executor.get_historical_trades(symbol, {
+        startTime,
+        endTime,
+        limit: 500
+      });
+
+      if (!trades || trades.length === 0) {
+        return null;
+      }
+
+      // 开仓方向：LONG->BUY, SHORT->SELL
+      const entry_side = side === PositionSide.LONG ? 'BUY' : 'SELL';
+
+      // 找到最早的开仓成交（realizedPnl ≈ 0 表示开仓）
+      let earliest_entry_time: number | null = null;
+
+      for (const trade of trades) {
+        const pnl = parseFloat(trade.realizedPnl);
+        // 是开仓方向且没有PnL（说明是开仓）
+        if (trade.side === entry_side && Math.abs(pnl) < 0.0001) {
+          if (!earliest_entry_time || trade.time < earliest_entry_time) {
+            earliest_entry_time = trade.time;
+          }
+        }
+      }
+
+      if (earliest_entry_time) {
+        return new Date(earliest_entry_time);
+      }
+
+      return null;
+    } catch (error) {
+      logger.error(`[TradingSystem] Failed to fetch entry time for ${symbol}:`, error);
+      return null;
     }
   }
 
@@ -1265,6 +1386,7 @@ export class TradingSystem {
 
           if (!trades || trades.length === 0) continue;
 
+          // ⭐ 新逻辑：按订单存储，每个订单一条记录
           // 按订单ID分组成交记录
           const trades_by_order = new Map<number, typeof trades>();
           for (const trade of trades) {
@@ -1275,164 +1397,77 @@ export class TradingSystem {
             trades_by_order.get(orderId)!.push(trade);
           }
 
-          // 区分开仓和平仓订单
-          // 开仓订单: realizedPnl = 0
-          // 平仓订单: realizedPnl != 0
-          interface OrderInfo {
-            orderId: number;
-            trades: typeof trades;
-            side: string;        // BUY or SELL
-            qty: number;
-            quoteQty: number;
-            commission: number;
-            pnl: number;
-            minTime: number;     // 最早成交时间
-            maxTime: number;     // 最晚成交时间
-          }
+          // 收集所有订单ID，批量检查是否存在
+          const all_order_ids = Array.from(trades_by_order.keys()).map(id => id.toString());
+          const existing_order_ids = await this.order_record_repository.find_existing_order_ids(
+            all_order_ids,
+            trading_mode
+          );
 
-          const entry_orders: OrderInfo[] = [];
-          const exit_orders: OrderInfo[] = [];
-
+          // 处理每个订单
           for (const [orderId, orderTrades] of trades_by_order) {
-            const totalPnl = orderTrades.reduce((sum, t) => sum + parseFloat(t.realizedPnl), 0);
-            const qty = orderTrades.reduce((sum, t) => sum + parseFloat(t.qty), 0);
-            const quoteQty = orderTrades.reduce((sum, t) => sum + parseFloat(t.quoteQty), 0);
-            const commission = orderTrades.reduce((sum, t) => sum + parseFloat(t.commission), 0);
-            const minTime = Math.min(...orderTrades.map(t => t.time));
-            const maxTime = Math.max(...orderTrades.map(t => t.time));
-            const side = orderTrades[0].side;
-
-            const orderInfo: OrderInfo = {
-              orderId,
-              trades: orderTrades,
-              side,
-              qty,
-              quoteQty,
-              commission,
-              pnl: totalPnl,
-              minTime,
-              maxTime
-            };
-
-            if (Math.abs(totalPnl) > 0.0001) {
-              exit_orders.push(orderInfo);
-            } else {
-              entry_orders.push(orderInfo);
-            }
-          }
-
-          // ⭐ 核心改进：按开仓订单分组，找出所有关联的平仓订单
-          // 一个开仓订单可能对应多个平仓订单（分批止盈场景）
-          for (const entry_order of entry_orders) {
             result.total_found++;
 
-            // 确定持仓方向
-            const position_side: 'LONG' | 'SHORT' = entry_order.side === 'BUY' ? 'LONG' : 'SHORT';
-            const close_side = position_side === 'LONG' ? 'SELL' : 'BUY';
-
-            // 检查数据库是否已存在该记录
-            const existing_by_entry = await this.trade_record_repository.find_by_entry_order_id(
-              entry_order.orderId.toString(),
-              trading_mode
-            );
-
-            if (existing_by_entry) {
+            // 检查是否已存在
+            if (existing_order_ids.has(orderId.toString())) {
               result.already_exists++;
               continue;
             }
 
-            // 找出所有关联的平仓订单
-            // 条件：方向相反 && 时间晚于开仓
-            const related_exits = exit_orders.filter(exit =>
-              exit.side === close_side &&
-              exit.minTime > entry_order.minTime
-            );
+            // 汇总订单数据
+            const totalPnl = orderTrades.reduce((sum, t) => sum + parseFloat(t.realizedPnl), 0);
+            const qty = orderTrades.reduce((sum, t) => sum + parseFloat(t.qty), 0);
+            const quoteQty = orderTrades.reduce((sum, t) => sum + parseFloat(t.quoteQty), 0);
+            const commission = orderTrades.reduce((sum, t) => sum + parseFloat(t.commission), 0);
+            const commissionAsset = orderTrades[0].commissionAsset || 'USDT';
+            const orderTime = Math.min(...orderTrades.map(t => t.time));
+            const side = orderTrades[0].side as 'BUY' | 'SELL';
 
-            if (related_exits.length === 0) {
-              // 没有找到平仓订单，可能还在持仓中，跳过
-              logger.debug(`[TradingSystem] No exit orders found for entry ${entry_order.orderId}, might be still open`);
-              result.total_found--;  // 不计入已处理
-              continue;
+            // 计算加权平均价格
+            const avgPrice = qty > 0 ? quoteQty / qty : 0;
+
+            // 判断订单类型：有PnL的是平仓订单，无PnL的是开仓订单
+            const order_type: 'OPEN' | 'CLOSE' = Math.abs(totalPnl) > 0.0001 ? 'CLOSE' : 'OPEN';
+
+            // 确定持仓方向
+            // 开仓: BUY=LONG, SELL=SHORT
+            // 平仓: BUY=SHORT(平空), SELL=LONG(平多)
+            let position_side: 'LONG' | 'SHORT';
+            if (order_type === 'OPEN') {
+              position_side = side === 'BUY' ? 'LONG' : 'SHORT';
+            } else {
+              position_side = side === 'SELL' ? 'LONG' : 'SHORT';
             }
 
-            // ⭐ 累加所有平仓订单的数据
-            let total_exit_qty = 0;
-            let total_exit_quote_qty = 0;
-            let total_exit_commission = 0;
-            let total_realized_pnl = 0;
-            let last_exit_time = 0;
-            let last_exit_order_id = 0;
-            const exit_order_ids: number[] = [];
-
-            // 按时间排序平仓订单
-            related_exits.sort((a, b) => a.minTime - b.minTime);
-
-            // 累加平仓数据，直到平仓数量 >= 开仓数量
-            for (const exit of related_exits) {
-              total_exit_qty += exit.qty;
-              total_exit_quote_qty += exit.quoteQty;
-              total_exit_commission += exit.commission;
-              total_realized_pnl += exit.pnl;
-              exit_order_ids.push(exit.orderId);
-
-              if (exit.maxTime > last_exit_time) {
-                last_exit_time = exit.maxTime;
-                last_exit_order_id = exit.orderId;
-              }
-
-              // 如果平仓数量已经 >= 开仓数量，停止累加
-              if (total_exit_qty >= entry_order.qty - 0.0001) {
-                break;
-              }
-            }
-
-            // 计算加权平均出场价格
-            const exit_price = total_exit_qty > 0 ? total_exit_quote_qty / total_exit_qty : 0;
-            const entry_price = entry_order.qty > 0 ? entry_order.quoteQty / entry_order.qty : 0;
-
-            // 计算杠杆和保证金
-            const leverage = this.config.risk_config.max_leverage || 6;
-            const position_value = entry_price * entry_order.qty;
-            const margin = position_value / leverage;
-            const total_commission = entry_order.commission + total_exit_commission;
-            const net_pnl = total_realized_pnl - total_commission;
-            const realized_pnl_percent = margin > 0 ? (total_realized_pnl / margin) * 100 : 0;
-
-            // 创建交易记录
+            // 创建订单记录
             try {
-              await this.trade_record_repository.create_closed_trade({
+              await this.order_record_repository.create_order({
+                order_id: orderId.toString(),
                 symbol,
-                side: position_side,
+                side,
+                position_side,
+                order_type,
                 trading_mode: trading_mode as 'LIVE' | 'TESTNET' | 'PAPER',
-                entry_price,
-                quantity: entry_order.qty,
-                leverage,
-                margin,
-                position_value,
-                exit_price,
-                realized_pnl: total_realized_pnl,
-                realized_pnl_percent,
-                close_reason: 'BACKFILLED',
-                entry_commission: entry_order.commission,
-                exit_commission: total_exit_commission,
-                total_commission,
-                commission_asset: 'USDT',
-                net_pnl,
-                entry_order_id: entry_order.orderId.toString(),
-                exit_order_id: last_exit_order_id.toString(),  // 使用最后一个平仓订单ID
-                status: 'CLOSED',
-                opened_at: new Date(entry_order.minTime),
-                closed_at: new Date(last_exit_time)
+                price: avgPrice,
+                quantity: qty,
+                quote_quantity: quoteQty,
+                leverage: this.config.risk_config.max_leverage || 6,
+                realized_pnl: order_type === 'CLOSE' ? totalPnl : undefined,
+                commission,
+                commission_asset: commissionAsset,
+                close_reason: order_type === 'CLOSE' ? 'BACKFILLED' : undefined,
+                order_time: new Date(orderTime)
               });
 
               result.newly_created++;
-              const pnl_sign = total_realized_pnl >= 0 ? '+' : '';
-              result.details.push(`${symbol} ${position_side}: entry=${entry_price.toFixed(6)} exit=${exit_price.toFixed(6)} pnl=${pnl_sign}${total_realized_pnl.toFixed(4)} USDT (${exit_order_ids.length}批平仓)`);
-              logger.info(`[TradingSystem] Backfilled trade: ${symbol} ${position_side} pnl=${pnl_sign}${total_realized_pnl.toFixed(4)} (${exit_order_ids.length} exit orders)`);
+              const type_str = order_type === 'OPEN' ? '开仓' : '平仓';
+              const pnl_str = order_type === 'CLOSE' ? ` pnl=${totalPnl >= 0 ? '+' : ''}${totalPnl.toFixed(4)}` : '';
+              result.details.push(`${symbol} ${position_side} ${type_str}: ${side} ${qty.toFixed(6)} @ ${avgPrice.toFixed(6)}${pnl_str}`);
+              logger.info(`[TradingSystem] Backfilled order: ${symbol} ${order_type} ${side} qty=${qty.toFixed(6)} price=${avgPrice.toFixed(6)}${pnl_str}`);
 
             } catch (error) {
               result.failed++;
-              logger.error(`[TradingSystem] Failed to create backfill record for ${symbol}:`, error);
+              logger.error(`[TradingSystem] Failed to create backfill record for ${symbol} order ${orderId}:`, error);
             }
           }
 

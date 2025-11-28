@@ -723,6 +723,9 @@ export class OrderExecutor {
     commissionAsset: string;
     realizedPnl: number;
     tradeCount: number;
+    side: string;
+    positionSide: string;
+    time: number;
   } | null> {
     if (this.mode === TradingMode.PAPER) {
       return null;
@@ -746,6 +749,7 @@ export class OrderExecutor {
       let totalCommission = 0;
       let totalRealizedPnl = 0;
       let commissionAsset = '';
+      let earliestTime = trades[0].time;
 
       for (const trade of trades) {
         const qty = parseFloat(trade.qty);
@@ -755,6 +759,9 @@ export class OrderExecutor {
         totalCommission += parseFloat(trade.commission);
         totalRealizedPnl += parseFloat(trade.realizedPnl);
         commissionAsset = trade.commissionAsset;
+        if (trade.time < earliestTime) {
+          earliestTime = trade.time;
+        }
       }
 
       return {
@@ -763,7 +770,10 @@ export class OrderExecutor {
         totalCommission,
         commissionAsset,
         realizedPnl: totalRealizedPnl,
-        tradeCount: trades.length
+        tradeCount: trades.length,
+        side: trades[0].side,
+        positionSide: trades[0].positionSide,
+        time: earliestTime
       };
     } catch (error) {
       logger.error(`[OrderExecutor] Failed to get order trades for ${symbol} orderId=${orderId}:`, error);
