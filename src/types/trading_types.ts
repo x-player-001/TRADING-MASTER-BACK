@@ -124,6 +124,16 @@ export interface StrategyConfig {
 // ==================== 风险管理 ====================
 
 /**
+ * 分批止盈目标配置
+ */
+export interface TakeProfitTargetConfig {
+  percentage: number;              // 仓位百分比（如30表示30%）
+  target_profit_pct: number;       // 目标收益率（如8表示+8%）
+  is_trailing?: boolean;           // 是否使用跟踪止盈
+  trailing_callback_pct?: number;  // 跟踪回调百分比（如15表示回调15%时平仓）
+}
+
+/**
  * 风险配置
  */
 export interface RiskConfig {
@@ -137,6 +147,9 @@ export interface RiskConfig {
   default_take_profit_percent: number;   // 默认止盈百分比（默认5%）
   use_trailing_stop: boolean;            // 是否使用移动止损
   trailing_stop_callback_rate: number;   // 移动止损回调率（默认1%）
+
+  // 分批止盈配置（可选，不配置则使用默认的单批止盈）
+  take_profit_targets?: TakeProfitTargetConfig[];
 
   // 熔断机制
   daily_loss_limit_percent: number;      // 每日最大亏损百分比（默认5%）

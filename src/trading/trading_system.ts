@@ -215,20 +215,44 @@ export class TradingSystem {
     const { stop_loss, take_profit } = this.risk_manager.calculate_stop_loss_take_profit(signal);
 
     // 构建止盈配置（实盘/测试网会在币安下止盈挂单）
-    const take_profit_pct = this.config.risk_config.default_take_profit_percent;
-    const trailing_callback_pct = this.config.risk_config.trailing_stop_callback_rate || 15;
-    const use_trailing = this.config.risk_config.use_trailing_stop;
-
-    const tp_config = {
-      targets: [
-        {
-          percentage: 100,  // 全部仓位
-          target_profit_pct: take_profit_pct,
-          is_trailing: use_trailing,
-          trailing_callback_pct: trailing_callback_pct
-        }
-      ]
+    let tp_config: {
+      targets: Array<{
+        percentage: number;
+        target_profit_pct: number;
+        is_trailing?: boolean;
+        trailing_callback_pct?: number;
+      }>;
     };
+
+    // 优先使用分批止盈配置
+    if (this.config.risk_config.take_profit_targets && this.config.risk_config.take_profit_targets.length > 0) {
+      // 使用配置的分批止盈
+      tp_config = {
+        targets: this.config.risk_config.take_profit_targets.map(target => ({
+          percentage: target.percentage,
+          target_profit_pct: target.target_profit_pct,
+          is_trailing: target.is_trailing,
+          trailing_callback_pct: target.trailing_callback_pct
+        }))
+      };
+      logger.info(`[TradingSystem] Using multi-batch take profit: ${tp_config.targets.length} targets`);
+    } else {
+      // 回退到单批止盈（默认行为）
+      const take_profit_pct = this.config.risk_config.default_take_profit_percent;
+      const trailing_callback_pct = this.config.risk_config.trailing_stop_callback_rate || 15;
+      const use_trailing = this.config.risk_config.use_trailing_stop;
+
+      tp_config = {
+        targets: [
+          {
+            percentage: 100,  // 全部仓位
+            target_profit_pct: take_profit_pct,
+            is_trailing: use_trailing,
+            trailing_callback_pct: trailing_callback_pct
+          }
+        ]
+      };
+    }
 
     // 执行市价开仓（带止盈挂单）
     const { entry_order, tp_order_ids } = await this.order_executor.execute_market_order_with_tp(
