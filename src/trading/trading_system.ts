@@ -1360,7 +1360,7 @@ export class TradingSystem {
       const binance_positions = await this.order_executor.get_binance_positions();
       if (binance_positions) {
         for (const pos of binance_positions) {
-          const amt = parseFloat(pos.positionAmt);
+          const amt = typeof pos.positionAmt === 'string' ? parseFloat(pos.positionAmt) : pos.positionAmt;
           if (Math.abs(amt) > 0) {
             symbols_to_backfill.add(pos.symbol);
           }
@@ -1404,17 +1404,25 @@ export class TradingSystem {
             trading_mode
           );
 
-          // 处理每个订单
+          // ⭐ 预处理：按时间排序订单，用于生成position_id
+          // 将订单按时间排序，先处理开仓订单，为后续平仓订单分配相同的position_id
+          interface OrderInfo {
+            orderId: number;
+            orderTrades: typeof trades;
+            orderTime: number;
+            order_type: 'OPEN' | 'CLOSE';
+            position_side: 'LONG' | 'SHORT';
+            side: 'BUY' | 'SELL';
+            totalPnl: number;
+            qty: number;
+            quoteQty: number;
+            commission: number;
+            commissionAsset: string;
+            avgPrice: number;
+          }
+
+          const order_infos: OrderInfo[] = [];
           for (const [orderId, orderTrades] of trades_by_order) {
-            result.total_found++;
-
-            // 检查是否已存在
-            if (existing_order_ids.has(orderId.toString())) {
-              result.already_exists++;
-              continue;
-            }
-
-            // 汇总订单数据
             const totalPnl = orderTrades.reduce((sum, t) => sum + parseFloat(t.realizedPnl), 0);
             const qty = orderTrades.reduce((sum, t) => sum + parseFloat(t.qty), 0);
             const quoteQty = orderTrades.reduce((sum, t) => sum + parseFloat(t.quoteQty), 0);
@@ -1422,16 +1430,9 @@ export class TradingSystem {
             const commissionAsset = orderTrades[0].commissionAsset || 'USDT';
             const orderTime = Math.min(...orderTrades.map(t => t.time));
             const side = orderTrades[0].side as 'BUY' | 'SELL';
-
-            // 计算加权平均价格
             const avgPrice = qty > 0 ? quoteQty / qty : 0;
-
-            // 判断订单类型：有PnL的是平仓订单，无PnL的是开仓订单
             const order_type: 'OPEN' | 'CLOSE' = Math.abs(totalPnl) > 0.0001 ? 'CLOSE' : 'OPEN';
 
-            // 确定持仓方向
-            // 开仓: BUY=LONG, SELL=SHORT
-            // 平仓: BUY=SHORT(平空), SELL=LONG(平多)
             let position_side: 'LONG' | 'SHORT';
             if (order_type === 'OPEN') {
               position_side = side === 'BUY' ? 'LONG' : 'SHORT';
@@ -1439,35 +1440,97 @@ export class TradingSystem {
               position_side = side === 'SELL' ? 'LONG' : 'SHORT';
             }
 
+            order_infos.push({
+              orderId,
+              orderTrades,
+              orderTime,
+              order_type,
+              position_side,
+              side,
+              totalPnl,
+              qty,
+              quoteQty,
+              commission,
+              commissionAsset,
+              avgPrice
+            });
+          }
+
+          // 按时间排序
+          order_infos.sort((a, b) => a.orderTime - b.orderTime);
+
+          // ⭐ 生成position_id的逻辑
+          // 由于不存在加仓情况，一个开仓对应后续的所有平仓（直到下一个开仓）
+          // 用开仓时间作为position_id: ${symbol}_${openTime}
+          let current_position_id: string | null = null;
+
+          // 处理每个订单
+          for (const info of order_infos) {
+            result.total_found++;
+
+            // 生成position_id（无论是否已存在都需要计算，用于更新旧记录）
+            let position_id: string;
+            if (info.order_type === 'OPEN') {
+              // 开仓订单：生成新的position_id
+              position_id = `${symbol}_${info.orderTime}`;
+              current_position_id = position_id;
+            } else {
+              // 平仓订单：使用当前的position_id
+              if (current_position_id) {
+                position_id = current_position_id;
+              } else {
+                // 没有对应的开仓订单（可能开仓在查询时间范围之前）
+                // 使用一个特殊的position_id标记
+                position_id = `${symbol}_unknown_open`;
+              }
+            }
+
+            // 检查是否已存在
+            if (existing_order_ids.has(info.orderId.toString())) {
+              result.already_exists++;
+              // 更新已有记录的position_id（如果之前是null）
+              try {
+                await this.order_record_repository.update_position_id(
+                  info.orderId.toString(),
+                  trading_mode,
+                  position_id
+                );
+              } catch {
+                // 忽略更新错误
+              }
+              continue;
+            }
+
             // 创建订单记录
             try {
               await this.order_record_repository.create_order({
-                order_id: orderId.toString(),
+                order_id: info.orderId.toString(),
                 symbol,
-                side,
-                position_side,
-                order_type,
+                side: info.side,
+                position_side: info.position_side,
+                order_type: info.order_type,
                 trading_mode: trading_mode as 'LIVE' | 'TESTNET' | 'PAPER',
-                price: avgPrice,
-                quantity: qty,
-                quote_quantity: quoteQty,
+                price: info.avgPrice,
+                quantity: info.qty,
+                quote_quantity: info.quoteQty,
                 leverage: this.config.risk_config.max_leverage || 6,
-                realized_pnl: order_type === 'CLOSE' ? totalPnl : undefined,
-                commission,
-                commission_asset: commissionAsset,
-                close_reason: order_type === 'CLOSE' ? 'BACKFILLED' : undefined,
-                order_time: new Date(orderTime)
+                realized_pnl: info.order_type === 'CLOSE' ? info.totalPnl : undefined,
+                commission: info.commission,
+                commission_asset: info.commissionAsset,
+                close_reason: info.order_type === 'CLOSE' ? 'BACKFILLED' : undefined,
+                order_time: new Date(info.orderTime),
+                position_id
               });
 
               result.newly_created++;
-              const type_str = order_type === 'OPEN' ? '开仓' : '平仓';
-              const pnl_str = order_type === 'CLOSE' ? ` pnl=${totalPnl >= 0 ? '+' : ''}${totalPnl.toFixed(4)}` : '';
-              result.details.push(`${symbol} ${position_side} ${type_str}: ${side} ${qty.toFixed(6)} @ ${avgPrice.toFixed(6)}${pnl_str}`);
-              logger.info(`[TradingSystem] Backfilled order: ${symbol} ${order_type} ${side} qty=${qty.toFixed(6)} price=${avgPrice.toFixed(6)}${pnl_str}`);
+              const type_str = info.order_type === 'OPEN' ? '开仓' : '平仓';
+              const pnl_str = info.order_type === 'CLOSE' ? ` pnl=${info.totalPnl >= 0 ? '+' : ''}${info.totalPnl.toFixed(4)}` : '';
+              result.details.push(`${symbol} ${info.position_side} ${type_str}: ${info.side} ${info.qty.toFixed(6)} @ ${info.avgPrice.toFixed(6)}${pnl_str}`);
+              logger.info(`[TradingSystem] Backfilled order: ${symbol} ${info.order_type} ${info.side} qty=${info.qty.toFixed(6)} price=${info.avgPrice.toFixed(6)}${pnl_str} position_id=${position_id}`);
 
             } catch (error) {
               result.failed++;
-              logger.error(`[TradingSystem] Failed to create backfill record for ${symbol} order ${orderId}:`, error);
+              logger.error(`[TradingSystem] Failed to create backfill record for ${symbol} order ${info.orderId}:`, error);
             }
           }
 

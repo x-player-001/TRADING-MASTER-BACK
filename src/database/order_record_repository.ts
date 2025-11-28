@@ -249,6 +249,31 @@ export class OrderRecordRepository extends BaseRepository {
   }
 
   /**
+   * 更新订单的position_id
+   */
+  async update_position_id(
+    order_id: string,
+    trading_mode: string,
+    position_id: string
+  ): Promise<boolean> {
+    await this.ensure_table();
+
+    const sql = `
+      UPDATE order_records SET
+        position_id = ?
+      WHERE order_id = ? AND trading_mode = ?
+    `;
+
+    const affected = await this.update_and_get_affected_rows(sql, [
+      position_id,
+      order_id,
+      trading_mode
+    ]);
+
+    return affected > 0;
+  }
+
+  /**
    * 获取所有开仓订单（未完全平仓的）
    */
   async get_open_orders(trading_mode?: string, symbol?: string): Promise<OrderRecordEntity[]> {
