@@ -583,6 +583,66 @@ export class BinanceFuturesTradingAPI {
   }
 
   /**
+   * 查询账户成交历史
+   * @param symbol 交易对
+   * @param orderId 订单ID（可选，按订单筛选）
+   * @param startTime 开始时间（可选）
+   * @param endTime 结束时间（可选）
+   * @param limit 返回数量（默认500，最大1000）
+   */
+  async get_user_trades(symbol: string, options?: {
+    orderId?: number;
+    startTime?: number;
+    endTime?: number;
+    limit?: number;
+  }): Promise<{
+    symbol: string;
+    id: number;           // 成交ID
+    orderId: number;      // 订单ID
+    side: string;         // BUY/SELL
+    price: string;        // 成交价格
+    qty: string;          // 成交数量
+    realizedPnl: string;  // 已实现盈亏
+    quoteQty: string;     // 成交额
+    commission: string;   // 手续费
+    commissionAsset: string;  // 手续费币种
+    time: number;         // 成交时间
+    positionSide: string; // 持仓方向
+    buyer: boolean;
+    maker: boolean;
+  }[]> {
+    try {
+      const timestamp = Date.now();
+      const params: Record<string, any> = {
+        symbol,
+        timestamp,
+        limit: options?.limit || 500
+      };
+
+      if (options?.orderId) {
+        params.orderId = options.orderId;
+      }
+      if (options?.startTime) {
+        params.startTime = options.startTime;
+      }
+      if (options?.endTime) {
+        params.endTime = options.endTime;
+      }
+
+      const signature = this.sign_request(params);
+
+      const response = await this.api_client.get('/fapi/v1/userTrades', {
+        params: { ...params, signature }
+      });
+
+      return response.data;
+    } catch (error: any) {
+      logger.error('[BinanceTradingAPI] Failed to get user trades:', error.response?.data || error.message);
+      throw new Error(`Failed to get user trades: ${error.response?.data?.msg || error.message}`);
+    }
+  }
+
+  /**
    * 一键平仓
    * @param symbol 交易对
    * @param positionSide 持仓方向 (LONG/SHORT for dual position mode, BOTH for one-way mode)

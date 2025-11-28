@@ -243,6 +243,7 @@ export interface PositionRecord {
   // 关联信息
   signal_id?: number;
   entry_order_id?: number;
+  exit_order_id?: number;        // 平仓订单ID（用于查询手续费）
 
   // 状态
   is_open: boolean;

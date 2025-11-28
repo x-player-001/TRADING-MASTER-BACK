@@ -674,4 +674,65 @@ export class OrderExecutor {
       return null;
     }
   }
+
+  /**
+   * 获取订单的成交详情（包括手续费）
+   * @param symbol 交易对
+   * @param orderId 订单ID
+   * @returns 成交详情，包含汇总的价格、数量、手续费等
+   */
+  async get_order_trades(symbol: string, orderId: number): Promise<{
+    avgPrice: number;
+    totalQuantity: number;
+    totalCommission: number;
+    commissionAsset: string;
+    realizedPnl: number;
+    tradeCount: number;
+  } | null> {
+    if (this.mode === TradingMode.PAPER) {
+      return null;
+    }
+
+    if (!this.trading_api) {
+      logger.warn('[OrderExecutor] Trading API not initialized');
+      return null;
+    }
+
+    try {
+      const trades = await this.trading_api.get_user_trades(symbol, { orderId });
+
+      if (trades.length === 0) {
+        return null;
+      }
+
+      // 汇总成交数据
+      let totalQty = 0;
+      let totalQuoteQty = 0;
+      let totalCommission = 0;
+      let totalRealizedPnl = 0;
+      let commissionAsset = '';
+
+      for (const trade of trades) {
+        const qty = parseFloat(trade.qty);
+        const price = parseFloat(trade.price);
+        totalQty += qty;
+        totalQuoteQty += qty * price;
+        totalCommission += parseFloat(trade.commission);
+        totalRealizedPnl += parseFloat(trade.realizedPnl);
+        commissionAsset = trade.commissionAsset;
+      }
+
+      return {
+        avgPrice: totalQty > 0 ? totalQuoteQty / totalQty : 0,
+        totalQuantity: totalQty,
+        totalCommission,
+        commissionAsset,
+        realizedPnl: totalRealizedPnl,
+        tradeCount: trades.length
+      };
+    } catch (error) {
+      logger.error(`[OrderExecutor] Failed to get order trades for ${symbol} orderId=${orderId}:`, error);
+      return null;
+    }
+  }
 }

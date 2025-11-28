@@ -163,6 +163,10 @@ export class PositionTracker {
       position.closed_at = new Date();
       position.close_reason = reason;
       position.updated_at = new Date();
+      // 保存平仓订单ID（用于查询手续费）
+      if (close_order.order_id) {
+        position.exit_order_id = parseInt(close_order.order_id);
+      }
 
       // 记录交易结果到风险管理器
       const is_win = position.realized_pnl! > 0;

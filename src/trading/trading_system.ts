@@ -286,6 +286,11 @@ export class TradingSystem {
       // 将数据库ID关联到仓位记录
       position.id = db_id;
       logger.info(`[TradingSystem] Trade record saved to database, id=${db_id}`);
+
+      // 异步查询币安成交记录更新手续费（不阻塞主流程）
+      if (entry_order.order_id && this.config.mode !== TradingMode.PAPER) {
+        this.fetch_and_update_entry_commission(db_id, signal.symbol, parseInt(entry_order.order_id));
+      }
     } catch (error) {
       logger.error('[TradingSystem] Failed to save trade record to database:', error);
       // 不影响交易，只记录日志
@@ -394,14 +399,74 @@ export class TradingSystem {
         position.realized_pnl || 0,
         realized_pnl_percent,
         position.close_reason || 'MANUAL',
-        undefined,  // exit_order_id - 暂不记录
+        position.exit_order_id?.toString(),
         position.take_profit_executions ? JSON.stringify(position.take_profit_executions) : undefined
       );
 
       logger.info(`[TradingSystem] Trade record updated in database, id=${position.id}, pnl=${(position.realized_pnl || 0).toFixed(4)}`);
+
+      // 异步查询平仓手续费（不阻塞主流程）
+      if (position.exit_order_id && this.config.mode !== TradingMode.PAPER) {
+        this.fetch_and_update_exit_commission(position.id, position.symbol, position.exit_order_id);
+      }
     } catch (error) {
       logger.error('[TradingSystem] Failed to update trade record in database:', error);
       // 不影响交易，只记录日志
+    }
+  }
+
+  /**
+   * 异步获取平仓订单的成交详情并更新手续费
+   */
+  private async fetch_and_update_exit_commission(
+    db_id: number,
+    symbol: string,
+    orderId: number
+  ): Promise<void> {
+    try {
+      // 延迟1秒确保成交记录已同步
+      await new Promise(resolve => setTimeout(resolve, 1000));
+
+      const tradeInfo = await this.order_executor.get_order_trades(symbol, orderId);
+      if (tradeInfo) {
+        await this.trade_record_repository.update_exit_commission(
+          db_id,
+          tradeInfo.totalCommission,
+          tradeInfo.realizedPnl  // 平仓时从币安获取的实际盈亏
+        );
+        logger.info(`[TradingSystem] Exit commission updated for trade ${db_id}: commission=${tradeInfo.totalCommission.toFixed(4)} USDT, binance_pnl=${tradeInfo.realizedPnl.toFixed(4)}`);
+      }
+    } catch (error) {
+      logger.error(`[TradingSystem] Failed to fetch exit commission for trade ${db_id}:`, error);
+      // 不影响主流程
+    }
+  }
+
+  /**
+   * 异步获取开仓订单的成交详情并更新手续费
+   */
+  private async fetch_and_update_entry_commission(
+    db_id: number,
+    symbol: string,
+    orderId: number
+  ): Promise<void> {
+    try {
+      // 延迟1秒确保成交记录已同步
+      await new Promise(resolve => setTimeout(resolve, 1000));
+
+      const tradeInfo = await this.order_executor.get_order_trades(symbol, orderId);
+      if (tradeInfo) {
+        await this.trade_record_repository.update_entry_commission(
+          db_id,
+          tradeInfo.totalCommission,
+          tradeInfo.commissionAsset,
+          tradeInfo.avgPrice,
+          tradeInfo.totalQuantity
+        );
+        logger.info(`[TradingSystem] Updated entry commission for trade ${db_id}: ${tradeInfo.totalCommission} ${tradeInfo.commissionAsset}`);
+      }
+    } catch (error) {
+      logger.error(`[TradingSystem] Failed to fetch entry commission for trade ${db_id}:`, error);
     }
   }
 

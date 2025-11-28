@@ -35,6 +35,13 @@ export interface TradeRecordEntity {
   realized_pnl_percent?: number;     // 基于保证金的收益率
   close_reason?: string;             // STOP_LOSS, TAKE_PROFIT, LIQUIDATION, MANUAL, RISK_LIMIT, TIMEOUT, SYNC_CLOSED
 
+  // 手续费信息
+  entry_commission?: number;         // 开仓手续费
+  exit_commission?: number;          // 平仓手续费
+  total_commission?: number;         // 总手续费
+  commission_asset?: string;         // 手续费币种（通常是USDT）
+  net_pnl?: number;                  // 净盈亏 = realized_pnl - total_commission
+
   // 币安订单信息
   entry_order_id?: string;           // 开仓订单ID
   exit_order_id?: string;            // 平仓订单ID
@@ -107,6 +114,13 @@ export class TradeRecordRepository extends BaseRepository {
         realized_pnl DECIMAL(20, 8),
         realized_pnl_percent DECIMAL(10, 4),
         close_reason VARCHAR(50),
+
+        -- 手续费信息
+        entry_commission DECIMAL(20, 8),
+        exit_commission DECIMAL(20, 8),
+        total_commission DECIMAL(20, 8),
+        commission_asset VARCHAR(10),
+        net_pnl DECIMAL(20, 8),
 
         -- 币安订单信息
         entry_order_id VARCHAR(50),
@@ -227,6 +241,89 @@ export class TradeRecordRepository extends BaseRepository {
 
     if (affected > 0) {
       logger.info(`[TradeRecordRepository] Closed trade id=${id} pnl=${realized_pnl.toFixed(4)} reason=${close_reason}`);
+    }
+    return affected > 0;
+  }
+
+  /**
+   * 更新开仓手续费信息（开仓后查询币安成交记录获取）
+   */
+  async update_entry_commission(
+    id: number,
+    entry_commission: number,
+    commission_asset: string,
+    actual_entry_price?: number,
+    actual_quantity?: number
+  ): Promise<boolean> {
+    await this.ensure_table();
+
+    let sql = `
+      UPDATE trade_records SET
+        entry_commission = ?,
+        commission_asset = ?,
+        total_commission = COALESCE(exit_commission, 0) + ?
+    `;
+    const params: any[] = [entry_commission, commission_asset, entry_commission];
+
+    // 如果提供了实际成交价格和数量，同时更新
+    if (actual_entry_price !== undefined) {
+      sql += `, entry_price = ?`;
+      params.push(actual_entry_price);
+    }
+    if (actual_quantity !== undefined) {
+      sql += `, quantity = ?`;
+      params.push(actual_quantity);
+    }
+
+    sql += ` WHERE id = ?`;
+    params.push(id);
+
+    const affected = await this.update_and_get_affected_rows(sql, params);
+    if (affected > 0) {
+      logger.info(`[TradeRecordRepository] Updated entry commission for id=${id}: ${entry_commission} ${commission_asset}`);
+    }
+    return affected > 0;
+  }
+
+  /**
+   * 更新平仓手续费和净盈亏
+   */
+  async update_exit_commission(
+    id: number,
+    exit_commission: number,
+    realized_pnl_from_binance?: number
+  ): Promise<boolean> {
+    await this.ensure_table();
+
+    // 先获取当前记录的开仓手续费
+    const record = await this.get_by_id(id);
+    if (!record) {
+      return false;
+    }
+
+    const entry_commission = record.entry_commission || 0;
+    const total_commission = entry_commission + exit_commission;
+    const realized_pnl = realized_pnl_from_binance ?? record.realized_pnl ?? 0;
+    const net_pnl = realized_pnl - total_commission;
+
+    const sql = `
+      UPDATE trade_records SET
+        exit_commission = ?,
+        total_commission = ?,
+        net_pnl = ?
+        ${realized_pnl_from_binance !== undefined ? ', realized_pnl = ?' : ''}
+      WHERE id = ?
+    `;
+
+    const params: any[] = [exit_commission, total_commission, net_pnl];
+    if (realized_pnl_from_binance !== undefined) {
+      params.push(realized_pnl_from_binance);
+    }
+    params.push(id);
+
+    const affected = await this.update_and_get_affected_rows(sql, params);
+    if (affected > 0) {
+      logger.info(`[TradeRecordRepository] Updated exit commission for id=${id}: ${exit_commission}, total=${total_commission}, net_pnl=${net_pnl}`);
     }
     return affected > 0;
   }
@@ -422,6 +519,13 @@ export class TradeRecordRepository extends BaseRepository {
       realized_pnl: row.realized_pnl ? parseFloat(row.realized_pnl) : undefined,
       realized_pnl_percent: row.realized_pnl_percent ? parseFloat(row.realized_pnl_percent) : undefined,
       close_reason: row.close_reason || undefined,
+      // 手续费信息
+      entry_commission: row.entry_commission ? parseFloat(row.entry_commission) : undefined,
+      exit_commission: row.exit_commission ? parseFloat(row.exit_commission) : undefined,
+      total_commission: row.total_commission ? parseFloat(row.total_commission) : undefined,
+      commission_asset: row.commission_asset || undefined,
+      net_pnl: row.net_pnl ? parseFloat(row.net_pnl) : undefined,
+      // 订单信息
       entry_order_id: row.entry_order_id || undefined,
       exit_order_id: row.exit_order_id || undefined,
       tp_order_ids: row.tp_order_ids || undefined,
