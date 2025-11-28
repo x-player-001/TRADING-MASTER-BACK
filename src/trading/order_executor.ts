@@ -167,8 +167,20 @@ export class OrderExecutor {
       // 平仓方向相反
       const close_side = signal.direction === 'LONG' ? OrderSide.SELL : OrderSide.BUY;
 
+      // 获取精度信息用于格式化止盈订单数量
+      const precision = await this.get_symbol_precision(signal.symbol);
+
       for (const target of take_profit_config.targets) {
-        const target_quantity = quantity * (target.percentage / 100);
+        let target_quantity = quantity * (target.percentage / 100);
+
+        // 格式化止盈订单数量
+        if (precision) {
+          target_quantity = this.format_quantity(
+            target_quantity,
+            precision.quantity_precision,
+            precision.step_size
+          );
+        }
 
         if (target.is_trailing) {
           // 使用TRAILING_STOP_MARKET订单
@@ -181,15 +193,20 @@ export class OrderExecutor {
               binance_position_side
             );
             tp_order_ids.push(tp_order.orderId);
-            logger.info(`[OrderExecutor] Trailing TP order placed: ${tp_order.orderId} (${target.percentage}% @ ${target.trailing_callback_pct}% callback)`);
+            logger.info(`[OrderExecutor] Trailing TP order placed: ${tp_order.orderId} (${target.percentage}% @ ${target.trailing_callback_pct}% callback, qty=${target_quantity})`);
           } catch (error) {
             logger.error(`[OrderExecutor] Failed to place trailing TP order:`, error);
           }
         } else {
           // 使用TAKE_PROFIT_MARKET订单
-          const tp_price = signal.direction === 'LONG'
+          let tp_price = signal.direction === 'LONG'
             ? entry_price * (1 + target.target_profit_pct / 100)
             : entry_price * (1 - target.target_profit_pct / 100);
+
+          // 格式化止盈价格
+          if (precision) {
+            tp_price = this.format_price(tp_price, precision.price_precision);
+          }
 
           try {
             const tp_order = await this.trading_api.place_take_profit_market_order(
@@ -201,7 +218,7 @@ export class OrderExecutor {
               true  // reduceOnly
             );
             tp_order_ids.push(tp_order.orderId);
-            logger.info(`[OrderExecutor] TP order placed: ${tp_order.orderId} (${target.percentage}% @ +${target.target_profit_pct}%)`);
+            logger.info(`[OrderExecutor] TP order placed: ${tp_order.orderId} (${target.percentage}% @ +${target.target_profit_pct}%, qty=${target_quantity})`);
           } catch (error) {
             logger.error(`[OrderExecutor] Failed to place TP order:`, error);
           }
