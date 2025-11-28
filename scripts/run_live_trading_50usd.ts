@@ -156,22 +156,53 @@ async function main() {
     console.log('📡 OI监控已启动 (每分钟检测持仓量异动)');
     console.log('⏳ 等待高质量交易信号...\n');
 
-    // 状态显示间隔（30秒）
+    // 状态显示间隔（2分钟）
     setInterval(() => {
       const oi_status = oi_service.get_status();
+      const trade_status = trading_system.get_status();
+      const statistics = trading_system.get_statistics();
+      const open_positions = trading_system.get_open_positions();
 
       console.log('\n' + '='.repeat(80));
       console.log(`📊 实时状态 [${new Date().toLocaleString('zh-CN')}]`);
       console.log('='.repeat(80));
-      console.log(`OI监控: ${oi_status.is_running ? '✅ 运行中' : '❌ 已停止'}`);
-      console.log(`监控币种: ${oi_status.active_symbols_count}个`);
-      console.log(`运行时长: ${Math.floor(oi_status.uptime_ms / 60000)}分钟`);
 
-      // TODO: 从TradingSystem获取交易统计
-      // 目前TradingSystem没有提供统计接口，需要添加
+      // OI监控状态
+      console.log(`OI监控: ${oi_status.is_running ? '✅ 运行中' : '❌ 已停止'} | 监控币种: ${oi_status.active_symbols_count}个 | 运行时长: ${Math.floor(oi_status.uptime_ms / 60000)}分钟`);
+      console.log('-'.repeat(80));
+
+      // 交易状态
+      const mode_text = trading_mode === TradingMode.PAPER ? '📝 纸面交易' : trading_mode === TradingMode.TESTNET ? '🧪 测试网' : '💰 实盘';
+      console.log(`交易模式: ${mode_text} | 系统状态: ${trade_status.enabled ? '✅ 启用' : '❌ 禁用'}`);
+
+      // 持仓统计
+      const max_positions = risk_config.max_total_positions;
+      console.log(`当前持仓: ${open_positions.length}/${max_positions}个`);
+
+      // 显示持仓详情
+      if (open_positions.length > 0) {
+        open_positions.forEach(pos => {
+          const pnl_sign = pos.unrealized_pnl >= 0 ? '+' : '';
+          const hold_time = Math.floor((Date.now() - pos.opened_at.getTime()) / 60000);
+          console.log(`  └─ ${pos.symbol}: ${pos.side} @ $${pos.entry_price.toFixed(4)} | PnL: ${pnl_sign}$${pos.unrealized_pnl.toFixed(2)} (${pnl_sign}${pos.unrealized_pnl_percent.toFixed(2)}%) | 持仓: ${hold_time}分钟`);
+        });
+      }
+
+      console.log('-'.repeat(80));
+
+      // 交易统计
+      const win_count = statistics.winning_trades;
+      const lose_count = statistics.losing_trades;
+      const total_trades = statistics.total_trades;
+      const win_rate = total_trades > 0 ? (win_count / total_trades * 100).toFixed(1) : '0.0';
+      const pnl_sign = statistics.total_pnl >= 0 ? '+' : '';
+      const return_rate = (statistics.total_pnl / initial_balance * 100).toFixed(2);
+
+      console.log(`总交易: ${total_trades}笔 | 胜率: ${win_rate}% (${win_count}胜/${lose_count}负)`);
+      console.log(`总盈亏: ${pnl_sign}$${statistics.total_pnl.toFixed(2)} (${pnl_sign}${return_rate}%) | 最大回撤: ${statistics.max_drawdown_percent.toFixed(2)}%`);
 
       console.log('='.repeat(80) + '\n');
-    }, 30000);
+    }, 120000); // 2分钟 = 120000ms
 
     // 优雅退出
     process.on('SIGINT', async () => {
