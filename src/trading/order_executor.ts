@@ -613,6 +613,7 @@ export class OrderExecutor {
     marginType: string;
     isolatedWallet: number;
     side: 'LONG' | 'SHORT';
+    updateTime: number;  // 仓位最后更新时间（毫秒时间戳）
   }[]> {
     if (this.mode === TradingMode.PAPER) {
       return [];
@@ -635,7 +636,8 @@ export class OrderExecutor {
         leverage: parseInt(p.leverage),
         marginType: p.marginType,
         isolatedWallet: parseFloat(p.isolatedWallet || '0'),
-        side: parseFloat(p.positionAmt) > 0 ? 'LONG' as const : 'SHORT' as const
+        side: parseFloat(p.positionAmt) > 0 ? 'LONG' as const : 'SHORT' as const,
+        updateTime: parseInt(p.updateTime) || Date.now()
       }));
     } catch (error) {
       logger.error('[OrderExecutor] Failed to get Binance positions:', error);

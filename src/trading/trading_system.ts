@@ -539,7 +539,7 @@ export class TradingSystem {
             leverage: bp.leverage,
             margin: margin,
             is_open: true,
-            opened_at: new Date(),
+            opened_at: new Date(bp.updateTime),  // 使用币安返回的updateTime
             unrealized_pnl: bp.unrealizedProfit,
             unrealized_pnl_percent: margin > 0
               ? (bp.unrealizedProfit / margin) * 100
