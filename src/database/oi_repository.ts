@@ -1063,4 +1063,66 @@ export class OIRepository {
       `, [days_to_keep]);
     });
   }
+
+  /**
+   * 获取用于价格窗口预热的快照数据
+   * 查询指定时间后的所有币种价格数据，按币种和时间排序
+   * @param since_time 起始时间
+   * @returns 快照数据列表（包含symbol和mark_price）
+   */
+  async get_snapshots_for_price_window(since_time: Date): Promise<Array<{ symbol: string; mark_price: number; snapshot_time: Date }>> {
+    return this.execute_with_connection(async (conn) => {
+      // 将UTC时间转换为北京时间（UTC+8）后计算日期范围
+      const since_date_beijing = new Date(since_time.getTime() + 8 * 60 * 60 * 1000);
+      const now_date_beijing = new Date(Date.now() + 8 * 60 * 60 * 1000);
+
+      // 获取需要查询的日期范围内的所有表（基于北京时间）
+      const tables: string[] = [];
+      const current_date = new Date(since_date_beijing);
+
+      while (current_date <= now_date_beijing) {
+        const date_key = current_date.toISOString().split('T')[0]; // YYYY-MM-DD (北京时间)
+        const table_name = daily_table_manager.get_table_name(date_key);
+        tables.push(table_name);
+        current_date.setDate(current_date.getDate() + 1);
+      }
+
+      // 构建UNION ALL查询
+      const union_queries = tables.map(table => `
+        SELECT symbol, mark_price, snapshot_time
+        FROM ${table}
+        WHERE snapshot_time >= ? AND mark_price IS NOT NULL AND mark_price > 0
+      `).join(' UNION ALL ');
+
+      const final_sql = `
+        SELECT * FROM (${union_queries}) AS combined
+        ORDER BY symbol ASC, snapshot_time ASC
+      `;
+
+      // 为每个UNION部分准备参数
+      const params: any[] = [];
+      tables.forEach(() => {
+        params.push(since_time);
+      });
+
+      try {
+        const [rows] = await conn.execute<RowDataPacket[]>(final_sql, params);
+        return rows as Array<{ symbol: string; mark_price: number; snapshot_time: Date }>;
+      } catch (error: any) {
+        // 如果任何表不存在，尝试从原始表查询
+        if (error.code === 'ER_NO_SUCH_TABLE') {
+          logger.warn(`[OIRepository] Some daily tables not found, fallback to original table`);
+          const fallback_sql = `
+            SELECT symbol, mark_price, snapshot_time
+            FROM open_interest_snapshots
+            WHERE snapshot_time >= ? AND mark_price IS NOT NULL AND mark_price > 0
+            ORDER BY symbol ASC, snapshot_time ASC
+          `;
+          const [fallback_rows] = await conn.execute<RowDataPacket[]>(fallback_sql, [since_time]);
+          return fallback_rows as Array<{ symbol: string; mark_price: number; snapshot_time: Date }>;
+        }
+        throw error;
+      }
+    });
+  }
 }

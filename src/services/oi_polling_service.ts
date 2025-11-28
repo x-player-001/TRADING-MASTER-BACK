@@ -138,6 +138,9 @@ export class OIPollingService {
       // 初始化币种列表
       await this.refresh_symbols();
 
+      // 预热2小时价格窗口缓存（从数据库加载历史数据）
+      await this.preheat_price_2h_window();
+
       // 启动轮询
       this.start_time = Date.now();
       this.is_running = true;
@@ -958,6 +961,71 @@ export class OIPollingService {
           this.update_price_2h_window(symbol, price);
         }
       }
+    }
+  }
+
+  /**
+   * 预热2小时价格窗口缓存
+   * 从数据库加载最近2小时的价格数据，填充环形队列
+   * 这样启动后立即就能使用2小时低点判断，不需要等待2小时
+   */
+  private async preheat_price_2h_window(): Promise<void> {
+    try {
+      logger.info('[OIPolling] Preheating 2h price window cache from database...');
+      const start_time = Date.now();
+
+      // 查询最近2小时的价格数据（按币种和时间排序）
+      const two_hours_ago = new Date(Date.now() - 2 * 60 * 60 * 1000);
+      const snapshots = await this.oi_repository.get_snapshots_for_price_window(two_hours_ago);
+
+      if (snapshots.length === 0) {
+        logger.warn('[OIPolling] No historical price data found for preheating');
+        return;
+      }
+
+      // 按币种分组并填充环形队列
+      let symbols_count = 0;
+      let prices_count = 0;
+      const symbol_prices = new Map<string, number[]>();
+
+      // 先按币种分组
+      for (const snapshot of snapshots) {
+        if (!snapshot.mark_price || snapshot.mark_price <= 0) continue;
+
+        if (!symbol_prices.has(snapshot.symbol)) {
+          symbol_prices.set(snapshot.symbol, []);
+        }
+        symbol_prices.get(snapshot.symbol)!.push(snapshot.mark_price);
+      }
+
+      // 填充每个币种的环形队列
+      for (const [symbol, prices] of symbol_prices) {
+        // 初始化环形队列
+        const window = {
+          prices: new Array(this.PRICE_WINDOW_SIZE).fill(0),
+          index: 0,
+          count: 0
+        };
+
+        // 按时间顺序填充（最多120个点）
+        const prices_to_use = prices.slice(-this.PRICE_WINDOW_SIZE);
+        for (const price of prices_to_use) {
+          window.prices[window.index] = price;
+          window.index = (window.index + 1) % this.PRICE_WINDOW_SIZE;
+          window.count = Math.min(window.count + 1, this.PRICE_WINDOW_SIZE);
+        }
+
+        this.price_2h_window.set(symbol, window);
+        symbols_count++;
+        prices_count += prices_to_use.length;
+      }
+
+      const duration = Date.now() - start_time;
+      logger.info(`[OIPolling] ✅ Preheated 2h price window: ${symbols_count} symbols, ${prices_count} price points (${duration}ms)`);
+
+    } catch (error) {
+      logger.error('[OIPolling] ❌ Failed to preheat 2h price window:', error);
+      // 预热失败不影响主流程，只是启动后需要等待缓存积累
     }
   }
 
