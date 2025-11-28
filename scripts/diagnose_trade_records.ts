@@ -11,14 +11,28 @@
  */
 
 import dotenv from 'dotenv';
-dotenv.config();
+import path from 'path';
+
+// 确保从项目根目录加载 .env
+const env_path = path.resolve(__dirname, '../.env');
+console.log(`📁 加载环境变量: ${env_path}`);
+const result = dotenv.config({ path: env_path });
+if (result.error) {
+  console.error('❌ 加载 .env 失败:', result.error.message);
+} else {
+  console.log('✅ .env 加载成功');
+}
+
+// 检查关键环境变量
+console.log(`🔑 BINANCE_API_KEY: ${process.env.BINANCE_API_KEY ? '已设置 (' + process.env.BINANCE_API_KEY.substring(0, 8) + '...)' : '❌ 未设置'}`);
+console.log(`🔑 BINANCE_API_SECRET: ${process.env.BINANCE_API_SECRET ? '已设置 (长度:' + process.env.BINANCE_API_SECRET.length + ')' : '❌ 未设置'}`);
 
 import { ConfigManager } from '../src/core/config/config_manager';
 import { DatabaseConfig } from '../src/core/config/database';
 import { BinanceFuturesTradingAPI } from '../src/api/binance_futures_trading_api';
 
 async function main() {
-  console.log('🔧 诊断脚本启动...');
+  console.log('\n🔧 诊断脚本启动...');
 
   console.log('═'.repeat(80));
   console.log('📊 交易记录诊断工具');
