@@ -119,12 +119,16 @@ export class TradingSystem {
       return { action: 'DISABLED', reason: 'Trading system is disabled' };
     }
 
-    // 1. 生成交易信号
-    const signal = this.signal_generator.generate_signal(anomaly);
-    if (!signal) {
-      logger.debug(`[TradingSystem] No signal generated for ${anomaly.symbol}`);
-      return { action: 'NO_SIGNAL' };
+    // 1. 生成交易信号（使用带原因的版本）
+    const signal_result = this.signal_generator.generate_signal_with_reason(anomaly);
+    if (!signal_result.signal) {
+      // 返回具体的拒绝原因
+      return {
+        action: 'SIGNAL_REJECTED',
+        reason: signal_result.reason || '无有效信号'
+      };
     }
+    const signal = signal_result.signal;
 
     logger.info(`[TradingSystem] Signal generated: ${signal.symbol} ${signal.direction} (score: ${signal.score.toFixed(2)})`);
 

@@ -26,17 +26,20 @@ export class SignalGenerator {
   }
 
   /**
-   * 从异动记录生成交易信号
+   * 从异动记录生成交易信号（带拒绝原因）
    * @param anomaly 异动记录
-   * @returns 交易信号或null（如果不符合条件）
+   * @returns 信号生成结果，包含信号或拒绝原因
    */
-  generate_signal(anomaly: OIAnomalyRecord): TradingSignal | null {
+  generate_signal_with_reason(anomaly: OIAnomalyRecord): {
+    signal: TradingSignal | null;
+    rejected: boolean;
+    reason?: string;
+  } {
     try {
       // 1. 【避免追高】检查是否已进入晚期狂欢阶段
       const chase_check = this.check_avoid_chase_high(anomaly);
       if (!chase_check.allowed) {
-        logger.debug(`[SignalGenerator] Avoid chasing high: ${chase_check.reason} for ${anomaly.symbol}`);
-        return null;
+        return { signal: null, rejected: true, reason: chase_check.reason };
       }
 
       // 2. 计算各项评分
@@ -44,31 +47,24 @@ export class SignalGenerator {
 
       // 3. 如果总分太低，不生成信号
       if (score_breakdown.total_score < 4) {
-        logger.debug(`[SignalGenerator] Signal score too low (${score_breakdown.total_score}) for ${anomaly.symbol}`);
-        return null;
+        return {
+          signal: null,
+          rejected: true,
+          reason: `评分过低 (${score_breakdown.total_score.toFixed(1)}分 < 4分)`
+        };
       }
 
       // 4. 确定信号方向
       const direction = this.determine_direction(anomaly);
       if (direction === SignalDirection.NEUTRAL) {
-        logger.debug(`[SignalGenerator] Neutral signal for ${anomaly.symbol}, skipping`);
-        return null;
+        return { signal: null, rejected: true, reason: '方向不明确 (NEUTRAL)' };
       }
 
-      // 5. 确定信号强度
+      // 5-7. 生成信号（后续逻辑）
       const strength = this.determine_strength(score_breakdown.total_score);
-
-      // 6. 计算置信度
       const confidence = this.calculate_confidence(anomaly, score_breakdown);
+      const price_suggestions = this.calculate_price_suggestions(anomaly, direction, strength);
 
-      // 6. 计算建议价格
-      const price_suggestions = this.calculate_price_suggestions(
-        anomaly,
-        direction,
-        strength
-      );
-
-      // 7. 构建信号对象
       const signal: TradingSignal = {
         symbol: anomaly.symbol,
         direction,
@@ -86,11 +82,22 @@ export class SignalGenerator {
 
       logger.info(`[SignalGenerator] Generated ${strength} ${direction} signal for ${anomaly.symbol}, score: ${score_breakdown.total_score.toFixed(2)}, confidence: ${(confidence * 100).toFixed(1)}%`);
 
-      return signal;
+      return { signal, rejected: false };
     } catch (error) {
       logger.error('[SignalGenerator] Failed to generate signal:', error);
-      return null;
+      return { signal: null, rejected: true, reason: '信号生成异常' };
     }
+  }
+
+  /**
+   * 从异动记录生成交易信号
+   * @param anomaly 异动记录
+   * @returns 交易信号或null（如果不符合条件）
+   * @deprecated 建议使用 generate_signal_with_reason 获取拒绝原因
+   */
+  generate_signal(anomaly: OIAnomalyRecord): TradingSignal | null {
+    const result = this.generate_signal_with_reason(anomaly);
+    return result.signal;
   }
 
   /**

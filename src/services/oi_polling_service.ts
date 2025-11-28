@@ -681,17 +681,17 @@ export class OIPollingService {
 
             if (trade_result.action === 'POSITION_OPENED' && trade_result.position) {
               logger.info(`[OIPolling] 🚀 Trade executed: ${trade_result.position.symbol} ${trade_result.position.side} @ ${trade_result.position.entry_price}`);
-            } else if (trade_result.action === 'NO_SIGNAL') {
-              // 无信号生成（评分过低等）
-              logger.oi(`    ↳ ❌ ${anomaly.symbol}: 无有效信号 (评分不足)`);
             } else if (trade_result.action === 'SIGNAL_REJECTED') {
-              // 信号被策略拒绝，显示具体原因
+              // 信号被拒绝（追高、评分不足、方向过滤等），显示具体原因
               logger.oi(`    ↳ ❌ ${anomaly.symbol}: ${trade_result.reason}`);
             } else if (trade_result.action === 'RISK_REJECTED') {
               // 被风控拒绝，显示风控原因
               logger.oi(`    ↳ ⚠️ ${anomaly.symbol}: ${trade_result.reason}`);
             } else if (trade_result.action === 'DISABLED') {
               // 交易系统禁用，不打印
+            } else if (trade_result.action === 'NO_SIGNAL') {
+              // 兼容旧版：无信号生成
+              logger.oi(`    ↳ ❌ ${anomaly.symbol}: 无有效信号`);
             }
           } catch (trade_error) {
             logger.error(`[OIPolling] Trading system error for ${anomaly.symbol}:`, trade_error);
