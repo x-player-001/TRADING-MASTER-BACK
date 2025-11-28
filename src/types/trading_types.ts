@@ -312,6 +312,9 @@ export interface TradingSystemConfig {
   // 方向过滤（只做多或只做空）
   allowed_directions?: ('LONG' | 'SHORT')[];
 
+  // 最大持仓时间（分钟）
+  max_holding_time_minutes?: number;
+
   // 通知配置
   enable_notifications: boolean;
   notification_channels?: ('email' | 'webhook' | 'telegram')[];

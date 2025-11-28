@@ -101,9 +101,10 @@ async function main() {
     console.log(`  单笔最大亏损: $${initial_balance * (risk_config.max_position_size_percent / 100)} (逐仓保证金)`);
     console.log(`  策略: 只做多突破策略 (评分≥8分 ⭐)`);
     console.log(`  追高阈值: 16% ⭐ (优化值)`);
+    console.log(`  最大持仓时间: 120分钟`);
     console.log(`  止盈: 第一批8%`);
     console.log(`  止损: 无 (逐仓模式自动限损)`);
-    console.log(`  熔断机制: 每日亏损20%或连续6次亏损暂停`);
+    console.log(`  熔断机制: 每日亏损20%暂停`);
     console.log(`  通知推送: ✅ 已启用`);
     console.log('═'.repeat(80));
 
@@ -132,6 +133,7 @@ async function main() {
       active_strategy_type: StrategyType.BREAKOUT,
       risk_config: risk_config,
       allowed_directions: ['LONG'],  // ⚠️ 只做多
+      max_holding_time_minutes: 120, // ⭐ 最大持仓时间120分钟（与回测一致）
       enable_notifications: true     // ⭐ 启用推送通知
     });
 
