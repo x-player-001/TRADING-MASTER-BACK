@@ -224,6 +224,18 @@ async function main() {
       console.log(`总交易: ${total_trades}笔 | 胜率: ${win_rate}% (${win_count}胜/${lose_count}负)`);
       console.log(`总盈亏: ${pnl_sign}$${statistics.total_pnl.toFixed(2)} (${pnl_sign}${return_rate}%) | 最大回撤: ${statistics.max_drawdown_percent.toFixed(2)}%`);
 
+      // 从数据库获取手续费统计
+      try {
+        const db_stats = await trading_system.get_statistics_from_db();
+        if (db_stats.total_trades > 0) {
+          const commission_sign = db_stats.total_commission > 0 ? '-' : '';
+          const net_sign = db_stats.net_pnl >= 0 ? '+' : '';
+          console.log(`总手续费: ${commission_sign}$${db_stats.total_commission.toFixed(4)} | 净盈亏: ${net_sign}$${db_stats.net_pnl.toFixed(2)}`);
+        }
+      } catch (err) {
+        // 数据库查询失败时静默处理
+      }
+
       console.log('='.repeat(80) + '\n');
     }, 120000); // 2分钟 = 120000ms
 

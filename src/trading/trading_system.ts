@@ -531,6 +531,8 @@ export class TradingSystem {
       average_win,
       average_loss,
       profit_factor,
+      total_commission: 0,  // 内存统计暂不支持，需从数据库获取
+      net_pnl: total_pnl,   // 内存统计暂不支持，与total_pnl相同
       max_drawdown,
       max_drawdown_percent,
       average_hold_time,
@@ -538,6 +540,34 @@ export class TradingSystem {
       longest_losing_streak: 0,  // TODO: 实现
       period_start,
       period_end
+    };
+  }
+
+  /**
+   * 从数据库获取统计信息（包含手续费）
+   */
+  async get_statistics_from_db(): Promise<{
+    total_trades: number;
+    winning_trades: number;
+    losing_trades: number;
+    win_rate: number;
+    total_pnl: number;
+    total_commission: number;
+    net_pnl: number;
+  }> {
+    const trading_mode = this.config.mode === TradingMode.LIVE ? 'LIVE' :
+                        this.config.mode === TradingMode.TESTNET ? 'TESTNET' : 'PAPER';
+
+    const db_stats = await this.trade_record_repository.get_statistics(trading_mode);
+
+    return {
+      total_trades: db_stats.total_trades,
+      winning_trades: db_stats.winning_trades,
+      losing_trades: db_stats.losing_trades,
+      win_rate: db_stats.win_rate * 100,
+      total_pnl: db_stats.total_pnl,
+      total_commission: db_stats.total_commission,
+      net_pnl: db_stats.net_pnl
     };
   }
 

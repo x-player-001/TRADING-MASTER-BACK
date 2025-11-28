@@ -345,6 +345,10 @@ export interface TradingStatistics {
   average_loss: number;            // 平均亏损
   profit_factor: number;           // 盈亏比
 
+  // 手续费统计
+  total_commission: number;        // 总手续费
+  net_pnl: number;                 // 净盈亏 (total_pnl - total_commission)
+
   // 回撤统计
   max_drawdown: number;            // 最大回撤
   max_drawdown_percent: number;

@@ -430,6 +430,8 @@ export class TradeRecordRepository extends BaseRepository {
     max_win: number;
     max_loss: number;
     avg_holding_time_minutes: number;
+    total_commission: number;
+    net_pnl: number;
   }> {
     await this.ensure_table();
 
@@ -442,7 +444,9 @@ export class TradeRecordRepository extends BaseRepository {
         AVG(realized_pnl) as avg_pnl,
         MAX(realized_pnl) as max_win,
         MIN(realized_pnl) as max_loss,
-        AVG(TIMESTAMPDIFF(MINUTE, opened_at, closed_at)) as avg_holding_time_minutes
+        AVG(TIMESTAMPDIFF(MINUTE, opened_at, closed_at)) as avg_holding_time_minutes,
+        SUM(COALESCE(total_commission, 0)) as total_commission,
+        SUM(COALESCE(net_pnl, realized_pnl)) as net_pnl
       FROM trade_records
       WHERE status = 'CLOSED' AND trading_mode = ?
     `;
@@ -473,7 +477,9 @@ export class TradeRecordRepository extends BaseRepository {
       avg_pnl: parseFloat(row.avg_pnl) || 0,
       max_win: parseFloat(row.max_win) || 0,
       max_loss: parseFloat(row.max_loss) || 0,
-      avg_holding_time_minutes: parseFloat(row.avg_holding_time_minutes) || 0
+      avg_holding_time_minutes: parseFloat(row.avg_holding_time_minutes) || 0,
+      total_commission: parseFloat(row.total_commission) || 0,
+      net_pnl: parseFloat(row.net_pnl) || 0
     };
   }
 
