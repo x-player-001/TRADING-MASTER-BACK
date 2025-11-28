@@ -226,12 +226,15 @@ async function main() {
       const max_positions = risk_config.max_total_positions;
       console.log(`当前持仓: ${open_positions.length}/${max_positions}个`);
 
-      // 显示持仓详情
+      // 显示持仓详情（带颜色）
       if (open_positions.length > 0) {
         open_positions.forEach(pos => {
           const pnl_sign = pos.unrealized_pnl >= 0 ? '+' : '';
           const hold_time = Math.floor((Date.now() - pos.opened_at.getTime()) / 60000);
-          console.log(`  └─ ${pos.symbol}: ${pos.side} @ $${pos.entry_price.toFixed(4)} | PnL: ${pnl_sign}$${pos.unrealized_pnl.toFixed(2)} (${pnl_sign}${pos.unrealized_pnl_percent.toFixed(2)}%) | 持仓: ${hold_time}分钟`);
+          // ANSI颜色：绿色\x1b[32m 红色\x1b[31m 黄色\x1b[33m 青色\x1b[36m 重置\x1b[0m
+          const pnl_color = pos.unrealized_pnl >= 0 ? '\x1b[32m' : '\x1b[31m'; // 盈利绿色，亏损红色
+          const reset = '\x1b[0m';
+          console.log(`  └─ \x1b[36m${pos.symbol}\x1b[0m: \x1b[33m${pos.side}\x1b[0m @ $${pos.entry_price.toFixed(4)} | PnL: ${pnl_color}${pnl_sign}$${pos.unrealized_pnl.toFixed(2)} (${pnl_sign}${pos.unrealized_pnl_percent.toFixed(2)}%)${reset} | 持仓: ${hold_time}分钟`);
         });
       }
 
