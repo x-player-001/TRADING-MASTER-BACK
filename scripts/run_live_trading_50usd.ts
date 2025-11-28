@@ -204,8 +204,8 @@ async function main() {
       }
     }, 30000); // 30秒同步一次
 
-    // 状态显示间隔（2分钟）
-    setInterval(async () => {
+    // 状态显示函数
+    const print_status = async () => {
       const oi_status = oi_service.get_status();
       const trade_status = trading_system.get_status();
       const statistics = trading_system.get_statistics();
@@ -280,7 +280,13 @@ async function main() {
       }
 
       console.log('='.repeat(80) + '\n');
-    }, 120000); // 2分钟 = 120000ms
+    };
+
+    // 启动时立即打印一次状态
+    await print_status();
+
+    // 状态显示间隔（2分钟）
+    setInterval(print_status, 120000);
 
     // 优雅退出
     process.on('SIGINT', async () => {
