@@ -259,6 +259,9 @@ export interface PositionRecord {
   // 保证金（同步用）
   margin?: number;
 
+  // 保本止损标记（盈利达到阈值后是否已下保本止损单）
+  breakeven_sl_placed?: boolean;
+
   // 分批止盈记录（新增）
   take_profit_executions?: TakeProfitExecution[];
 }

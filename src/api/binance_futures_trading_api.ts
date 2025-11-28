@@ -350,6 +350,50 @@ export class BinanceFuturesTradingAPI {
   }
 
   /**
+   * 下止损市价单 (STOP_MARKET)
+   * @param symbol 交易对
+   * @param side BUY 或 SELL (平仓方向)
+   * @param quantity 数量
+   * @param stopPrice 触发价格
+   * @param positionSide LONG/SHORT/BOTH
+   */
+  async place_stop_loss_order(
+    symbol: string,
+    side: OrderSide,
+    quantity: number,
+    stopPrice: number,
+    positionSide: PositionSide = PositionSide.BOTH
+  ): Promise<OrderResponse> {
+    try {
+      const timestamp = Date.now();
+      const params: Record<string, any> = {
+        symbol,
+        side,
+        type: OrderType.STOP_MARKET,
+        quantity: quantity.toString(),
+        stopPrice: stopPrice.toString(),
+        timestamp
+      };
+
+      if (positionSide !== PositionSide.BOTH) {
+        params.positionSide = positionSide;
+      }
+
+      const signature = this.sign_request(params);
+
+      const response = await this.api_client.post<OrderResponse>('/fapi/v1/order', null, {
+        params: { ...params, signature }
+      });
+
+      logger.info(`[BinanceTradingAPI] Stop loss order placed: ${symbol} ${side} ${quantity} @ stopPrice ${stopPrice}`);
+      return response.data;
+    } catch (error: any) {
+      logger.error(`[BinanceTradingAPI] Failed to place stop loss order for ${symbol}:`, error.response?.data || error.message);
+      throw new Error(`Failed to place stop loss order: ${error.response?.data?.msg || error.message}`);
+    }
+  }
+
+  /**
    * 下追踪止盈单
    * @param symbol 交易对
    * @param side BUY 或 SELL (平仓方向)

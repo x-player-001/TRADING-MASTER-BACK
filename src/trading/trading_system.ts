@@ -734,6 +734,12 @@ export class TradingSystem {
           local.unrealized_pnl_percent = margin > 0
             ? (bp.unrealizedProfit / margin) * 100
             : 0;
+
+          // 检查是否达到保本止损条件（盈利 >= 6% 且未下过保本止损单）
+          if (local.unrealized_pnl_percent >= 6 && !local.breakeven_sl_placed) {
+            await this.try_place_breakeven_stop_loss(local);
+          }
+
           updated++;
         }
       }
@@ -844,6 +850,42 @@ export class TradingSystem {
     } catch (error) {
       logger.error(`[TradingSystem] Failed to ensure trade record for ${binance_position.symbol}:`, error);
       // 不影响同步流程
+    }
+  }
+
+  /**
+   * 尝试下保本止损单
+   * 当盈利达到6%时，在成本价处设置止损单，确保保本
+   * 会先通过币安API检查是否已有止损挂单，避免重复下单
+   */
+  private async try_place_breakeven_stop_loss(position: PositionRecord): Promise<void> {
+    try {
+      logger.info(`[TradingSystem] Position ${position.symbol} reached +${position.unrealized_pnl_percent.toFixed(2)}%, checking/placing breakeven stop loss at entry price ${position.entry_price}`);
+
+      const result = await this.order_executor.place_breakeven_stop_loss(
+        position.symbol,
+        position.side,
+        position.quantity,
+        position.entry_price
+      );
+
+      if (result.success) {
+        // 标记已下保本止损单（无论是新下单还是已存在）
+        position.breakeven_sl_placed = true;
+
+        if (result.alreadyExists) {
+          // 止损单已存在，静默标记
+          logger.info(`[TradingSystem] ✅ Stop loss already exists for ${position.symbol}, marked as breakeven_sl_placed`);
+        } else {
+          // 新下单成功
+          logger.info(`[TradingSystem] ✅ Breakeven stop loss placed for ${position.symbol}: orderId=${result.orderId}, stopPrice=${position.entry_price}`);
+          console.log(`\n🛡️ 保本止损已设置: ${position.symbol} @ ${position.entry_price} (当前盈利: +${position.unrealized_pnl_percent.toFixed(2)}%)\n`);
+        }
+      } else {
+        logger.error(`[TradingSystem] ❌ Failed to place breakeven stop loss for ${position.symbol}: ${result.error}`);
+      }
+    } catch (error) {
+      logger.error(`[TradingSystem] Error placing breakeven stop loss for ${position.symbol}:`, error);
     }
   }
 

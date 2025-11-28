@@ -118,6 +118,17 @@ export class OrderExecutor {
   }
 
   /**
+   * 根据精度格式化价格
+   * @param price 原始价格
+   * @param precision 小数位数精度
+   */
+  private format_price(price: number, precision: number): number {
+    const multiplier = Math.pow(10, precision);
+    // 价格四舍五入而不是截断
+    return Math.round(price * multiplier) / multiplier;
+  }
+
+  /**
    * 执行开仓订单（带止盈配置）
    * @param signal 交易信号
    * @param quantity 数量（币的数量，如0.01 BTC）
@@ -733,6 +744,89 @@ export class OrderExecutor {
     } catch (error) {
       logger.error(`[OrderExecutor] Failed to get order trades for ${symbol} orderId=${orderId}:`, error);
       return null;
+    }
+  }
+
+  /**
+   * 检查某个交易对是否已有止损挂单
+   * @param symbol 交易对
+   * @returns 是否存在止损挂单
+   */
+  async has_stop_loss_order(symbol: string): Promise<boolean> {
+    if (this.mode === TradingMode.PAPER || !this.trading_api) {
+      return false;
+    }
+
+    try {
+      const openOrders = await this.trading_api.get_open_orders(symbol);
+      // 检查是否有 STOP_MARKET 或 STOP 类型的订单
+      const hasStopOrder = openOrders.some(order =>
+        order.type === 'STOP_MARKET' || order.type === 'STOP'
+      );
+      return hasStopOrder;
+    } catch (error) {
+      logger.error(`[OrderExecutor] Failed to check stop loss orders for ${symbol}:`, error);
+      return false;  // 查询失败时返回 false，允许继续尝试下单
+    }
+  }
+
+  /**
+   * 下保本止损单（成本价止损）
+   * @param symbol 交易对
+   * @param side 持仓方向 (LONG/SHORT)
+   * @param quantity 数量
+   * @param stopPrice 止损触发价格（通常设为成本价）
+   */
+  async place_breakeven_stop_loss(
+    symbol: string,
+    side: PositionSide,
+    quantity: number,
+    stopPrice: number
+  ): Promise<{ success: boolean; orderId?: string; error?: string; alreadyExists?: boolean }> {
+    if (this.mode === TradingMode.PAPER) {
+      logger.info(`[OrderExecutor] Paper mode: breakeven stop loss simulated for ${symbol}`);
+      return { success: true, orderId: `PAPER_SL_${Date.now()}` };
+    }
+
+    if (!this.trading_api) {
+      return { success: false, error: 'Trading API not initialized' };
+    }
+
+    try {
+      // ⭐ 先检查是否已有止损挂单，避免重复下单
+      const hasExistingStopLoss = await this.has_stop_loss_order(symbol);
+      if (hasExistingStopLoss) {
+        logger.info(`[OrderExecutor] Stop loss order already exists for ${symbol}, skipping`);
+        return { success: true, alreadyExists: true };
+      }
+
+      // 格式化数量精度
+      const precision = await this.get_symbol_precision(symbol);
+      let formattedQuantity = quantity;
+      let formattedPrice = stopPrice;
+
+      if (precision) {
+        formattedQuantity = this.format_quantity(quantity, precision.quantity_precision, precision.step_size);
+        formattedPrice = this.format_price(stopPrice, precision.price_precision);
+      }
+
+      // 平仓方向：多头止损用SELL，空头止损用BUY
+      const closeSide = side === PositionSide.LONG ? OrderSide.SELL : OrderSide.BUY;
+
+      const result = await this.trading_api.place_stop_loss_order(
+        symbol,
+        closeSide,
+        formattedQuantity,
+        formattedPrice,
+        BinancePositionSide.BOTH  // 单向持仓模式
+      );
+
+      logger.info(`[OrderExecutor] Breakeven stop loss placed: ${symbol} ${side} qty=${formattedQuantity} @ ${formattedPrice}`);
+      return { success: true, orderId: result.orderId.toString() };
+
+    } catch (error: any) {
+      logger.error(`[OrderExecutor] Failed to place breakeven stop loss for ${symbol}:`, error.message);
+      return { success: false, error: error.message };
     }
   }
 }
