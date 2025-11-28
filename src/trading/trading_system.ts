@@ -22,6 +22,7 @@ import { StrategyEngine } from './strategy_engine';
 import { RiskManager } from './risk_manager';
 import { OrderExecutor } from './order_executor';
 import { PositionTracker } from './position_tracker';
+import { TradeRecordRepository } from '../database/trade_record_repository';
 
 export class TradingSystem {
   private signal_generator: SignalGenerator;
@@ -29,6 +30,7 @@ export class TradingSystem {
   private risk_manager: RiskManager;
   private order_executor: OrderExecutor;
   private position_tracker: PositionTracker;
+  private trade_record_repository: TradeRecordRepository;
 
   private config: TradingSystemConfig;
   private is_enabled: boolean = false;
@@ -87,6 +89,7 @@ export class TradingSystem {
     this.risk_manager = new RiskManager(this.config.risk_config);
     this.order_executor = new OrderExecutor(this.config.mode);
     this.position_tracker = new PositionTracker(this.order_executor, this.risk_manager);
+    this.trade_record_repository = TradeRecordRepository.get_instance();
 
     // 设置初始资金（用于仓位计算）
     if (this.config.initial_balance) {
@@ -254,6 +257,40 @@ export class TradingSystem {
       this.paper_account_balance -= position_size / leverage; // 扣除保证金
     }
 
+    // 写入数据库
+    try {
+      const margin = position_size / leverage;
+      const trading_mode_str = this.config.mode === TradingMode.PAPER ? 'PAPER'
+        : this.config.mode === TradingMode.TESTNET ? 'TESTNET' : 'LIVE';
+
+      const db_id = await this.trade_record_repository.create_trade({
+        symbol: signal.symbol,
+        side: signal.direction === 'LONG' ? 'LONG' : 'SHORT',
+        trading_mode: trading_mode_str as 'PAPER' | 'TESTNET' | 'LIVE',
+        entry_price: entry_order.average_price || entry_price,
+        quantity: entry_order.filled_quantity || quantity,
+        leverage: leverage,
+        margin: margin,
+        position_value: position_size,
+        stop_loss_price: stop_loss,
+        take_profit_price: take_profit,
+        entry_order_id: entry_order.order_id?.toString(),
+        tp_order_ids: tp_order_ids.length > 0 ? JSON.stringify(tp_order_ids) : undefined,
+        signal_id: signal.source_anomaly_id,  // 关联异动记录ID
+        signal_score: signal.score,
+        anomaly_id: signal.source_anomaly_id,
+        status: 'OPEN',
+        opened_at: position.opened_at
+      });
+
+      // 将数据库ID关联到仓位记录
+      position.id = db_id;
+      logger.info(`[TradingSystem] Trade record saved to database, id=${db_id}`);
+    } catch (error) {
+      logger.error('[TradingSystem] Failed to save trade record to database:', error);
+      // 不影响交易，只记录日志
+    }
+
     return position;
   }
 
@@ -296,12 +333,17 @@ export class TradingSystem {
           logger.info(`[TradingSystem] Position ${position.symbol} timeout (${holding_time_minutes.toFixed(1)}min >= ${this.config.max_holding_time_minutes}min), closing...`);
 
           // 执行超时平仓
-          await this.position_tracker.close_position(position.id, current_price, 'TIMEOUT');
+          const closed_position = await this.position_tracker.close_position(position.id, current_price, 'TIMEOUT');
 
           // 更新账户余额（如果是纸面交易）
           if (this.config.mode === TradingMode.PAPER) {
             const capital = position.entry_price * position.quantity;
             this.paper_account_balance += capital / position.leverage + (position.realized_pnl || 0);
+          }
+
+          // 更新数据库记录
+          if (closed_position) {
+            await this.update_trade_record_on_close(closed_position);
           }
         }
       }
@@ -324,7 +366,43 @@ export class TradingSystem {
       this.paper_account_balance += capital / position.leverage + (position.realized_pnl || 0);
     }
 
+    // 更新数据库记录
+    if (position) {
+      await this.update_trade_record_on_close(position);
+    }
+
     return position !== null;
+  }
+
+  /**
+   * 平仓后更新数据库记录
+   */
+  private async update_trade_record_on_close(position: PositionRecord): Promise<void> {
+    if (!position.id) {
+      logger.warn(`[TradingSystem] Cannot update trade record: position has no id`);
+      return;
+    }
+
+    try {
+      // 计算基于保证金的收益率
+      const margin = position.margin || (position.entry_price * position.quantity / position.leverage);
+      const realized_pnl_percent = margin > 0 ? ((position.realized_pnl || 0) / margin) * 100 : 0;
+
+      await this.trade_record_repository.close_trade(
+        position.id,
+        position.current_price,
+        position.realized_pnl || 0,
+        realized_pnl_percent,
+        position.close_reason || 'MANUAL',
+        undefined,  // exit_order_id - 暂不记录
+        position.take_profit_executions ? JSON.stringify(position.take_profit_executions) : undefined
+      );
+
+      logger.info(`[TradingSystem] Trade record updated in database, id=${position.id}, pnl=${(position.realized_pnl || 0).toFixed(4)}`);
+    } catch (error) {
+      logger.error('[TradingSystem] Failed to update trade record in database:', error);
+      // 不影响交易，只记录日志
+    }
   }
 
   /**
@@ -572,6 +650,22 @@ export class TradingSystem {
           // 标记为已关闭（实际盈亏未知，需要查询历史）
           this.position_tracker.mark_position_closed(lp.id, lp.unrealized_pnl || 0);
           removed++;
+
+          // 更新数据库记录（同步发现的平仓）
+          try {
+            const margin = lp.margin || (lp.entry_price * lp.quantity / lp.leverage);
+            const realized_pnl_percent = margin > 0 ? ((lp.unrealized_pnl || 0) / margin) * 100 : 0;
+            await this.trade_record_repository.close_trade(
+              lp.id,
+              lp.current_price,
+              lp.unrealized_pnl || 0,
+              realized_pnl_percent,
+              'SYNC_CLOSED'
+            );
+            logger.info(`[TradingSystem] Trade record updated in database for sync-closed position, id=${lp.id}`);
+          } catch (err) {
+            logger.error('[TradingSystem] Failed to update sync-closed trade in database:', err);
+          }
         }
       }
 
