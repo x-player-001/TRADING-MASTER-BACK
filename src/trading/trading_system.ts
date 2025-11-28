@@ -931,8 +931,8 @@ export class TradingSystem {
   }
 
   /**
-   * 确保同步的持仓在数据库中有对应记录
-   * 如果数据库没有该持仓的记录，则自动创建
+   * 尝试关联同步持仓与数据库记录
+   * 不再创建 SYNC_ 伪记录，因为回填历史交易已经覆盖了所有订单
    */
   private async ensure_trade_record_for_synced_position(
     position: PositionRecord,
@@ -946,56 +946,14 @@ export class TradingSystem {
       updateTime: number;
     }
   ): Promise<void> {
-    try {
-      const trading_mode = this.config.mode === TradingMode.LIVE ? 'LIVE' :
-                          this.config.mode === TradingMode.TESTNET ? 'TESTNET' : 'PAPER';
+    // 生成 position_id（用于内存关联）
+    position.position_id = `${binance_position.symbol}_${binance_position.updateTime}`;
 
-      // 生成 position_id
-      const position_id = `${binance_position.symbol}_${binance_position.updateTime}`;
-
-      // 检查 order_records 是否已有该持仓的开仓记录
-      const pseudo_order_id = `SYNC_${binance_position.updateTime}`;
-      const existing = await this.order_record_repository.find_by_order_id(pseudo_order_id, trading_mode);
-
-      if (existing) {
-        // 已有记录，将数据库ID和开仓时间同步到内存持仓
-        position.id = existing.id;
-        position.position_id = existing.position_id;
-        if (existing.order_time) {
-          position.opened_at = existing.order_time;
-        }
-        logger.debug(`[TradingSystem] Found existing order record for ${binance_position.symbol}: id=${existing.id}, opened_at=${position.opened_at.toISOString()}`);
-        return;
-      }
-
-      // 数据库没有记录，创建新记录
-      position.position_id = position_id;
-
-      try {
-        const entry_side = binance_position.side === 'LONG' ? 'BUY' : 'SELL';
-        const order_db_id = await this.order_record_repository.create_order({
-          order_id: pseudo_order_id,
-          symbol: binance_position.symbol,
-          side: entry_side as 'BUY' | 'SELL',
-          position_side: binance_position.side,
-          order_type: 'OPEN',
-          trading_mode: trading_mode as 'PAPER' | 'TESTNET' | 'LIVE',
-          price: binance_position.entryPrice,
-          quantity: binance_position.positionAmt,
-          leverage: binance_position.leverage,
-          position_id: position_id,
-          order_time: new Date(binance_position.updateTime)
-        });
-        position.id = order_db_id;
-        logger.info(`[TradingSystem] Synced open order saved to order_records: id=${order_db_id}, position_id=${position_id}`);
-      } catch (err) {
-        logger.error(`[TradingSystem] Failed to save synced open order to order_records:`, err);
-      }
-
-    } catch (error) {
-      logger.error(`[TradingSystem] Failed to ensure trade record for ${binance_position.symbol}:`, error);
-      // 不影响同步流程
-    }
+    // 注意：不再插入 SYNC_ 伪记录
+    // 开仓订单应该已经通过以下方式存入数据库：
+    // 1. 实时开仓 -> save_order_from_user_trades()
+    // 2. 历史开仓 -> backfill_historical_trades()
+    // 同步持仓只负责将币安持仓同步到内存，不创建数据库记录
   }
 
   /**
