@@ -712,8 +712,9 @@ export class OIRepository {
          funding_rate_before, funding_rate_after, funding_rate_change, funding_rate_change_percent,
          top_trader_long_short_ratio, top_account_long_short_ratio, global_long_short_ratio, taker_buy_sell_ratio,
          signal_score, signal_confidence, signal_direction, avoid_chase_reason,
-         daily_price_low, daily_price_high, price_from_low_pct, price_from_high_pct)
-        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+         daily_price_low, daily_price_high, price_from_low_pct, price_from_high_pct,
+         price_2h_low, price_from_2h_low_pct)
+        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
       `;
 
       const [result] = await conn.execute<ResultSetHeader>(sql, [
@@ -746,7 +747,9 @@ export class OIRepository {
         anomaly.daily_price_low ?? null,
         anomaly.daily_price_high ?? null,
         anomaly.price_from_low_pct ?? null,
-        anomaly.price_from_high_pct ?? null
+        anomaly.price_from_high_pct ?? null,
+        anomaly.price_2h_low ?? null,
+        anomaly.price_from_2h_low_pct ?? null
       ]);
 
       return result.insertId;

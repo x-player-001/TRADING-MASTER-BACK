@@ -88,6 +88,10 @@ export interface OIAnomalyRecord {
   daily_price_high?: number;               // 触发时的日内最高价
   price_from_low_pct?: number;             // 相对日内低点的涨幅(%)
   price_from_high_pct?: number;            // 相对日内高点的跌幅(%)
+
+  // 2小时价格极值相关字段（更精准的追高判断）
+  price_2h_low?: number;                   // 2小时内最低价
+  price_from_2h_low_pct?: number;          // 相对2小时低点的涨幅(%)
 }
 
 // OI监控配置

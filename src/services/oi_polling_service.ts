@@ -44,6 +44,14 @@ export class OIPollingService {
     last_update: number;    // 最后更新时间戳
   }> = new Map();
 
+  // 2小时价格滑动窗口缓存（环形队列，保存120个价格点=2小时@1分钟间隔）
+  private price_2h_window: Map<string, {
+    prices: number[];       // 环形队列存储价格
+    index: number;          // 当前写入位置
+    count: number;          // 已有数据点数量
+  }> = new Map();
+  private readonly PRICE_WINDOW_SIZE = 120;  // 2小时 = 120分钟
+
   // 默认配置
   private config: OIMonitoringSystemConfig = {
     polling_interval_ms: 60000,        // 1分钟
@@ -288,6 +296,9 @@ export class OIPollingService {
 
       // 2.1. 构建premium数据Map（避免重复遍历）
       const premium_map = new Map(premium_data.map(p => [p.symbol, p]));
+
+      // 2.2. 更新2小时价格滑动窗口（用于追高判断）
+      this.update_all_price_2h_windows(premium_map);
 
       // 3. 保存快照数据（合并资金费率）
       await this.save_snapshots_with_premium(oi_results, premium_map, current_time.time_string);
@@ -591,6 +602,11 @@ export class OIPollingService {
               price_from_high_pct: undefined
             };
 
+        // 🎯 获取2小时价格低点（更精准的追高判断）
+        const price_2h_data = current_price > 0
+          ? this.calculate_price_from_2h_low(anomaly.symbol, current_price)
+          : { price_2h_low: undefined, price_from_2h_low_pct: undefined };
+
         // 构建临时的异动记录（用于信号评分计算）
         const temp_record: OIAnomalyRecord = {
           symbol: anomaly.symbol,
@@ -619,7 +635,10 @@ export class OIPollingService {
           daily_price_low: price_extremes.daily_low,
           daily_price_high: price_extremes.daily_high,
           price_from_low_pct: price_extremes.price_from_low_pct,
-          price_from_high_pct: price_extremes.price_from_high_pct
+          price_from_high_pct: price_extremes.price_from_high_pct,
+          // 添加2小时价格极值数据（更精准的追高判断）
+          price_2h_low: price_2h_data.price_2h_low,
+          price_from_2h_low_pct: price_2h_data.price_from_2h_low_pct
         };
 
         // 🎯 计算信号评分
@@ -863,6 +882,83 @@ export class OIPollingService {
       price_from_low_pct,
       price_from_high_pct
     };
+  }
+
+  /**
+   * 更新2小时价格滑动窗口（环形队列）
+   * 每次轮询时调用，为每个币种更新价格窗口
+   */
+  private update_price_2h_window(symbol: string, price: number): void {
+    let window = this.price_2h_window.get(symbol);
+
+    if (!window) {
+      // 初始化环形队列
+      window = {
+        prices: new Array(this.PRICE_WINDOW_SIZE).fill(0),
+        index: 0,
+        count: 0
+      };
+      this.price_2h_window.set(symbol, window);
+    }
+
+    // 写入当前价格到环形队列
+    window.prices[window.index] = price;
+    window.index = (window.index + 1) % this.PRICE_WINDOW_SIZE;
+    window.count = Math.min(window.count + 1, this.PRICE_WINDOW_SIZE);
+  }
+
+  /**
+   * 获取2小时内的最低价
+   * 从环形队列中计算最低价，效率O(n)但n最大120，非常快
+   */
+  private get_price_2h_low(symbol: string): number | undefined {
+    const window = this.price_2h_window.get(symbol);
+    if (!window || window.count === 0) {
+      return undefined;
+    }
+
+    let min_price = Infinity;
+    for (let i = 0; i < window.count; i++) {
+      const price = window.prices[i];
+      if (price > 0 && price < min_price) {
+        min_price = price;
+      }
+    }
+
+    return min_price === Infinity ? undefined : min_price;
+  }
+
+  /**
+   * 计算相对于2小时低点的涨幅
+   */
+  private calculate_price_from_2h_low(symbol: string, current_price: number): {
+    price_2h_low: number | undefined;
+    price_from_2h_low_pct: number | undefined;
+  } {
+    const price_2h_low = this.get_price_2h_low(symbol);
+
+    if (!price_2h_low || price_2h_low <= 0) {
+      return { price_2h_low: undefined, price_from_2h_low_pct: undefined };
+    }
+
+    const price_from_2h_low_pct = ((current_price - price_2h_low) / price_2h_low) * 100;
+
+    return { price_2h_low, price_from_2h_low_pct };
+  }
+
+  /**
+   * 批量更新所有币种的2小时价格窗口
+   * 在每次轮询时调用
+   */
+  private update_all_price_2h_windows(premium_map: Map<string, any>): void {
+    for (const [symbol, premium] of premium_map) {
+      if (premium && premium.markPrice) {
+        const price = parseFloat(premium.markPrice);
+        if (price > 0) {
+          this.update_price_2h_window(symbol, price);
+        }
+      }
+    }
   }
 
   /**

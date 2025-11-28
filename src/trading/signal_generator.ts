@@ -153,9 +153,20 @@ export class SignalGenerator {
       }
     }
 
-    // ❌ 第三步：检查价格极值（最后检查，因为可能需要查询数据库）
-    // 优先使用已有字段，避免查询
-    if (anomaly.price_from_low_pct !== null && anomaly.price_from_low_pct !== undefined) {
+    // ❌ 第三步：检查价格极值 - 优先使用2小时低点（更精准的追高判断）
+    // 2小时低点能更好地捕捉日内二次启动机会，避免因日内凌晨低点而误判
+
+    // 优先检查2小时低点（如果有数据）
+    if (anomaly.price_from_2h_low_pct !== null && anomaly.price_from_2h_low_pct !== undefined) {
+      const pct = parseFloat(anomaly.price_from_2h_low_pct.toString());
+      if (pct > this.chase_high_threshold) {
+        return {
+          allowed: false,
+          reason: `价格从2h低点已涨${pct.toFixed(1)}% (>${this.chase_high_threshold}%), 避免追高`
+        };
+      }
+    } else if (anomaly.price_from_low_pct !== null && anomaly.price_from_low_pct !== undefined) {
+      // 回退到日内低点（兼容历史数据和启动初期数据不足的情况）
       const pct = parseFloat(anomaly.price_from_low_pct.toString());
       if (pct > this.chase_high_threshold) {
         return {
