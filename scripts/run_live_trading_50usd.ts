@@ -133,7 +133,7 @@ async function main() {
     oi_service.initialize_sentiment_manager(cache_manager);
 
     // 初始化交易系统（传递$50配置）
-    oi_service.initialize_trading_system(true, {
+    oi_service.initialize_trading_system(false, {  // ⚠️ 临时禁用开仓，测试超时平仓
       mode: trading_mode,
       initial_balance: initial_balance,  // ⭐ 传递初始资金（用于仓位计算）
       strategies: [strategy_config],
