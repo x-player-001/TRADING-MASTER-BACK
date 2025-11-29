@@ -393,6 +393,14 @@ export class TradingSystem {
         // 执行超时平仓
         const closed_position = await this.position_tracker.close_position(position.id, current_price, 'TIMEOUT');
 
+        // ⭐ 撤销该币种所有未成交的止盈/止损挂单，防止开反向仓
+        try {
+          await this.order_executor.cancel_all_open_orders(position.symbol);
+          logger.info(`[TradingSystem] Cancelled all open orders for ${position.symbol} after timeout close`);
+        } catch (cancel_err) {
+          logger.warn(`[TradingSystem] Failed to cancel open orders for ${position.symbol}:`, cancel_err);
+        }
+
         // 更新账户余额（如果是纸面交易）
         if (this.config.mode === TradingMode.PAPER) {
           const capital = position.entry_price * position.quantity;
@@ -419,14 +427,22 @@ export class TradingSystem {
       'MANUAL'
     );
 
-    if (position && this.config.mode === TradingMode.PAPER) {
-      // 返还保证金 + 盈亏
-      const capital = position.entry_price * position.quantity;
-      this.paper_account_balance += capital / position.leverage + (position.realized_pnl || 0);
-    }
-
-    // 更新数据库记录
     if (position) {
+      // ⭐ 撤销该币种所有未成交的止盈/止损挂单，防止开反向仓
+      try {
+        await this.order_executor.cancel_all_open_orders(position.symbol);
+        logger.info(`[TradingSystem] Cancelled all open orders for ${position.symbol} after manual close`);
+      } catch (cancel_err) {
+        logger.warn(`[TradingSystem] Failed to cancel open orders for ${position.symbol}:`, cancel_err);
+      }
+
+      if (this.config.mode === TradingMode.PAPER) {
+        // 返还保证金 + 盈亏
+        const capital = position.entry_price * position.quantity;
+        this.paper_account_balance += capital / position.leverage + (position.realized_pnl || 0);
+      }
+
+      // 更新数据库记录
       await this.update_trade_record_on_close(position);
     }
 
