@@ -719,7 +719,8 @@ export class OrderExecutor {
       }));
     } catch (error) {
       logger.error('[OrderExecutor] Failed to get Binance positions:', error);
-      return [];
+      // ⚠️ 抛出异常而不是返回空数组，避免调用方误判"无持仓"而清空本地数据
+      throw new Error(`Failed to get Binance positions: ${error instanceof Error ? error.message : error}`);
     }
   }
 

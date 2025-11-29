@@ -791,6 +791,13 @@ export class TradingSystem {
       let removed = 0;
       let updated = 0;
 
+      // ⚠️ 安全检查：如果币安返回空但本地有多个持仓，可能是API异常，跳过本次同步
+      // 避免误判"无持仓"而清空本地数据（真实的多仓同时平仓极罕见）
+      if (binance_positions.length === 0 && local_positions.length > 1) {
+        logger.warn(`[TradingSystem] Binance returned 0 positions but local has ${local_positions.length}, skipping sync to prevent data loss`);
+        return { synced: 0, added: 0, removed: 0, updated: 0 };
+      }
+
       // 检查币安有但本地没有的持仓（需要添加）
       for (const bp of binance_positions) {
         const local = local_positions.find(lp => lp.symbol === bp.symbol && lp.side === bp.side);
