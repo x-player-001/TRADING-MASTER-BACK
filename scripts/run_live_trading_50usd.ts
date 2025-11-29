@@ -133,14 +133,14 @@ async function main() {
     oi_service.initialize_sentiment_manager(cache_manager);
 
     // 初始化交易系统（传递$50配置）
-    oi_service.initialize_trading_system(false, {  // ⚠️ 临时禁用开仓，测试超时平仓
+    oi_service.initialize_trading_system(true, {
       mode: trading_mode,
       initial_balance: initial_balance,  // ⭐ 传递初始资金（用于仓位计算）
       strategies: [strategy_config],
       active_strategy_type: StrategyType.BREAKOUT,
       risk_config: risk_config,
       allowed_directions: ['LONG'],  // ⚠️ 只做多
-      max_holding_time_minutes: 2, // ⚠️ 临时改为2分钟测试超时平仓
+      max_holding_time_minutes: 120, // ⭐ 最大持仓时间120分钟
       enable_notifications: true     // ⭐ 启用推送通知
     });
 
