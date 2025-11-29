@@ -365,6 +365,11 @@ export class TradingSystem {
     const open_positions = this.position_tracker.get_open_positions();
     const now = Date.now();
 
+    // 调试：打印所有持仓的超时状态
+    if (open_positions.length > 0) {
+      logger.info(`[TradingSystem] Timeout check: ${open_positions.length} positions, max_hold=${this.config.max_holding_time_minutes}min, price_map has ${price_map.size} prices`);
+    }
+
     for (const position of open_positions) {
       // 检查持仓时间
       const holding_time_ms = now - position.opened_at.getTime();
