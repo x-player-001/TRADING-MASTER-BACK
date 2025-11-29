@@ -613,10 +613,100 @@ export class OrderExecutor {
   }
 
   /**
-   * 撤销指定币种的所有未成交订单
-   * 用于：平仓后撤销剩余的止盈止损挂单，防止开反向仓
+   * 获取指定币种的所有未成交挂单
+   * @returns 挂单列表，包含数量、类型等信息
    */
-  async cancel_all_open_orders(symbol: string): Promise<boolean> {
+  async get_open_orders(symbol: string): Promise<Array<{
+    orderId: number;
+    type: string;
+    side: string;
+    positionSide: string;
+    origQty: number;
+    executedQty: number;
+    remainingQty: number;
+  }>> {
+    if (this.mode === TradingMode.PAPER || !this.trading_api) {
+      return [];
+    }
+
+    try {
+      const orders = await this.trading_api.get_open_orders(symbol);
+      return orders.map(order => ({
+        orderId: order.orderId,
+        type: order.type,
+        side: order.side,
+        positionSide: order.positionSide,
+        origQty: parseFloat(order.origQty),
+        executedQty: parseFloat(order.executedQty),
+        remainingQty: parseFloat(order.origQty) - parseFloat(order.executedQty)
+      }));
+    } catch (error) {
+      logger.error(`[OrderExecutor] Failed to get open orders for ${symbol}:`, error);
+      return [];
+    }
+  }
+
+  /**
+   * 检查挂单总量是否超过剩余仓位，如超过则撤销所有挂单
+   * @param symbol 交易对
+   * @param remaining_position_qty 剩余仓位数量
+   * @param position_side 持仓方向 (LONG/SHORT)
+   * @returns true=已撤单或无需撤单, false=检查失败
+   */
+  async check_and_cancel_excess_orders(
+    symbol: string,
+    remaining_position_qty: number,
+    position_side: 'LONG' | 'SHORT'
+  ): Promise<boolean> {
+    if (this.mode === TradingMode.PAPER) {
+      return true;
+    }
+
+    try {
+      const open_orders = await this.get_open_orders(symbol);
+
+      if (open_orders.length === 0) {
+        logger.debug(`[OrderExecutor] No open orders for ${symbol}`);
+        return true;
+      }
+
+      // 只计算平仓方向的挂单（LONG持仓的平仓单是SELL，SHORT持仓的平仓单是BUY）
+      const close_side = position_side === 'LONG' ? 'SELL' : 'BUY';
+      const close_orders = open_orders.filter(o =>
+        o.side === close_side && o.positionSide === position_side
+      );
+
+      // 计算挂单总量（未执行部分）
+      const total_pending_qty = close_orders.reduce((sum, o) => sum + o.remainingQty, 0);
+
+      logger.info(`[OrderExecutor] ${symbol} pending orders check: position_qty=${remaining_position_qty.toFixed(6)}, pending_close_qty=${total_pending_qty.toFixed(6)}, orders_count=${close_orders.length}`);
+
+      // 如果挂单总量超过剩余仓位，撤销所有挂单
+      // 使用小容差避免浮点数精度问题
+      if (total_pending_qty > remaining_position_qty + 0.0001) {
+        logger.warn(`[OrderExecutor] ⚠️ Pending orders (${total_pending_qty.toFixed(6)}) exceed remaining position (${remaining_position_qty.toFixed(6)}) for ${symbol}, cancelling all orders to prevent reverse position`);
+
+        const cancelled = await this.cancel_all_open_orders(symbol);
+        if (cancelled) {
+          console.log(`\n⚠️ 检测到挂单数量(${total_pending_qty.toFixed(4)})超过剩余仓位(${remaining_position_qty.toFixed(4)})，已撤销${symbol}所有挂单\n`);
+        }
+        return cancelled;
+      }
+
+      return true;
+    } catch (error) {
+      logger.error(`[OrderExecutor] Failed to check excess orders for ${symbol}:`, error);
+      return false;
+    }
+  }
+
+  /**
+   * 撤销指定币种的所有未成交订单（带重试）
+   * 用于：平仓前撤销剩余的止盈止损挂单，防止开反向仓
+   * @param symbol 交易对
+   * @param max_retries 最大重试次数，默认3次
+   */
+  async cancel_all_open_orders(symbol: string, max_retries: number = 3): Promise<boolean> {
     logger.info(`[OrderExecutor] Cancelling all open orders for ${symbol}`);
 
     if (this.mode === TradingMode.PAPER) {
@@ -629,14 +719,24 @@ export class OrderExecutor {
       return false;
     }
 
-    try {
-      await this.trading_api.cancel_all_orders(symbol);
-      logger.info(`[OrderExecutor] All open orders cancelled for ${symbol}`);
-      return true;
-    } catch (error) {
-      logger.error(`[OrderExecutor] Failed to cancel all orders for ${symbol}:`, error);
-      return false;
+    // 带重试的撤单逻辑
+    for (let attempt = 1; attempt <= max_retries; attempt++) {
+      try {
+        await this.trading_api.cancel_all_orders(symbol);
+        logger.info(`[OrderExecutor] All open orders cancelled for ${symbol} (attempt ${attempt})`);
+        return true;
+      } catch (error) {
+        logger.error(`[OrderExecutor] Failed to cancel orders for ${symbol} (attempt ${attempt}/${max_retries}):`, error);
+
+        if (attempt < max_retries) {
+          // 等待500ms后重试
+          await new Promise(resolve => setTimeout(resolve, 500));
+        }
+      }
     }
+
+    logger.error(`[OrderExecutor] Failed to cancel orders for ${symbol} after ${max_retries} attempts`);
+    return false;
   }
 
   /**

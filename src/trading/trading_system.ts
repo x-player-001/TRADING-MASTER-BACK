@@ -390,16 +390,20 @@ export class TradingSystem {
 
         logger.info(`[TradingSystem] Position ${position.symbol} timeout (${holding_time_minutes.toFixed(1)}min >= ${this.config.max_holding_time_minutes}min), closing @ ${current_price}...`);
 
+        // ⭐ 先撤销所有挂单，再平仓（防止竞态：平仓后止盈单触发导致开反向仓）
+        try {
+          const cancelled = await this.order_executor.cancel_all_open_orders(position.symbol);
+          if (cancelled) {
+            logger.info(`[TradingSystem] Cancelled all open orders for ${position.symbol} before timeout close`);
+          } else {
+            logger.warn(`[TradingSystem] Failed to cancel orders for ${position.symbol}, proceeding with close anyway`);
+          }
+        } catch (cancel_err) {
+          logger.warn(`[TradingSystem] Error cancelling orders for ${position.symbol}:`, cancel_err);
+        }
+
         // 执行超时平仓
         const closed_position = await this.position_tracker.close_position(position.id, current_price, 'TIMEOUT');
-
-        // ⭐ 撤销该币种所有未成交的止盈/止损挂单，防止开反向仓
-        try {
-          await this.order_executor.cancel_all_open_orders(position.symbol);
-          logger.info(`[TradingSystem] Cancelled all open orders for ${position.symbol} after timeout close`);
-        } catch (cancel_err) {
-          logger.warn(`[TradingSystem] Failed to cancel open orders for ${position.symbol}:`, cancel_err);
-        }
 
         // 更新账户余额（如果是纸面交易）
         if (this.config.mode === TradingMode.PAPER) {
@@ -421,6 +425,26 @@ export class TradingSystem {
    * 手动平仓
    */
   async close_position_manual(position_id: number, current_price: number): Promise<boolean> {
+    // 先获取仓位信息，用于撤单
+    const position_info = this.position_tracker.get_position(position_id);
+    if (!position_info) {
+      logger.warn(`[TradingSystem] Position ${position_id} not found for manual close`);
+      return false;
+    }
+
+    // ⭐ 先撤销所有挂单，再平仓（防止竞态：平仓后止盈单触发导致开反向仓）
+    try {
+      const cancelled = await this.order_executor.cancel_all_open_orders(position_info.symbol);
+      if (cancelled) {
+        logger.info(`[TradingSystem] Cancelled all open orders for ${position_info.symbol} before manual close`);
+      } else {
+        logger.warn(`[TradingSystem] Failed to cancel orders for ${position_info.symbol}, proceeding with close anyway`);
+      }
+    } catch (cancel_err) {
+      logger.warn(`[TradingSystem] Error cancelling orders for ${position_info.symbol}:`, cancel_err);
+    }
+
+    // 执行手动平仓
     const position = await this.position_tracker.close_position(
       position_id,
       current_price,
@@ -428,14 +452,6 @@ export class TradingSystem {
     );
 
     if (position) {
-      // ⭐ 撤销该币种所有未成交的止盈/止损挂单，防止开反向仓
-      try {
-        await this.order_executor.cancel_all_open_orders(position.symbol);
-        logger.info(`[TradingSystem] Cancelled all open orders for ${position.symbol} after manual close`);
-      } catch (cancel_err) {
-        logger.warn(`[TradingSystem] Failed to cancel open orders for ${position.symbol}:`, cancel_err);
-      }
-
       if (this.config.mode === TradingMode.PAPER) {
         // 返还保证金 + 盈亏
         const capital = position.entry_price * position.quantity;
@@ -807,9 +823,9 @@ export class TradingSystem {
       let removed = 0;
       let updated = 0;
 
-      // ⚠️ 安全检查：如果币安返回空但本地有多个持仓，可能是API异常，跳过本次同步
-      // 避免误判"无持仓"而清空本地数据（真实的多仓同时平仓极罕见）
-      if (binance_positions.length === 0 && local_positions.length > 1) {
+      // ⚠️ 安全检查：如果币安返回空但本地有持仓，可能是API异常，跳过本次同步
+      // 避免误判"无持仓"而清空本地数据
+      if (binance_positions.length === 0 && local_positions.length >= 1) {
         logger.warn(`[TradingSystem] Binance returned 0 positions but local has ${local_positions.length}, skipping sync to prevent data loss`);
         return { synced: 0, added: 0, removed: 0, updated: 0 };
       }
@@ -891,6 +907,14 @@ export class TradingSystem {
             local.quantity = bp.positionAmt;
             // 更新保证金（用固定公式计算，不用 isolatedWallet）
             local.margin = local.entry_price * bp.positionAmt / local.leverage;
+
+            // ⭐ 检查挂单数量是否超过剩余仓位，超过则撤销所有挂单防止开反向仓
+            const position_side = local.side === PositionSide.LONG ? 'LONG' : 'SHORT';
+            await this.order_executor.check_and_cancel_excess_orders(
+              local.symbol,
+              bp.positionAmt,  // 剩余仓位数量
+              position_side
+            );
           }
 
           // 更新未实现盈亏
@@ -1125,6 +1149,18 @@ export class TradingSystem {
         return;
       }
 
+      // ⭐ 检查该订单是否已记录过，避免重复记录
+      const trading_mode_str = this.config.mode === TradingMode.PAPER ? 'PAPER'
+        : this.config.mode === TradingMode.TESTNET ? 'TESTNET' : 'LIVE';
+      const existing_record = await this.order_record_repository.find_by_order_id(
+        recent_order_id.toString(),
+        trading_mode_str
+      );
+      if (existing_record) {
+        logger.debug(`[TradingSystem] Order ${recent_order_id} already recorded, skipping duplicate`);
+        return;
+      }
+
       // 计算部分平仓的数据
       const closed_qty = recent_close_trades.reduce((sum, t) => sum + parseFloat(t.qty), 0);
       const closed_quote_qty = recent_close_trades.reduce((sum, t) => sum + parseFloat(t.quoteQty), 0);
@@ -1152,9 +1188,6 @@ export class TradingSystem {
       local_position.take_profit_executions.push(execution);
 
       // 写入新表 order_records（分批平仓订单）
-      const trading_mode_str = this.config.mode === TradingMode.PAPER ? 'PAPER'
-        : this.config.mode === TradingMode.TESTNET ? 'TESTNET' : 'LIVE';
-
       try {
         await this.order_record_repository.create_order({
           order_id: recent_order_id.toString(),
