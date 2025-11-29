@@ -140,7 +140,7 @@ async function main() {
       active_strategy_type: StrategyType.BREAKOUT,
       risk_config: risk_config,
       allowed_directions: ['LONG'],  // ⚠️ 只做多
-      max_holding_time_minutes: 120, // ⭐ 最大持仓时间120分钟（与回测一致）
+      max_holding_time_minutes: 2, // ⚠️ 临时改为2分钟测试超时平仓
       enable_notifications: true     // ⭐ 启用推送通知
     });
 
