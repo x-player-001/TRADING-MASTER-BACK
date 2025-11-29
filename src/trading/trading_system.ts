@@ -358,6 +358,7 @@ export class TradingSystem {
    */
   private async check_and_close_timeout_positions(price_map: Map<string, number>): Promise<void> {
     if (!this.config.max_holding_time_minutes) {
+      logger.debug('[TradingSystem] Timeout check skipped: max_holding_time_minutes not configured');
       return; // 未配置最大持仓时间，跳过检查
     }
 
@@ -371,22 +372,33 @@ export class TradingSystem {
 
       if (holding_time_minutes >= this.config.max_holding_time_minutes) {
         const current_price = price_map.get(position.symbol);
-        if (current_price && position.id) {
-          logger.info(`[TradingSystem] Position ${position.symbol} timeout (${holding_time_minutes.toFixed(1)}min >= ${this.config.max_holding_time_minutes}min), closing...`);
 
-          // 执行超时平仓
-          const closed_position = await this.position_tracker.close_position(position.id, current_price, 'TIMEOUT');
+        // 调试日志：为什么没有平仓
+        if (!current_price) {
+          logger.warn(`[TradingSystem] Position ${position.symbol} timeout (${holding_time_minutes.toFixed(1)}min) but NO PRICE in price_map. Available: [${Array.from(price_map.keys()).join(', ')}]`);
+          continue;
+        }
+        if (!position.id) {
+          logger.warn(`[TradingSystem] Position ${position.symbol} timeout but NO ID`);
+          continue;
+        }
 
-          // 更新账户余额（如果是纸面交易）
-          if (this.config.mode === TradingMode.PAPER) {
-            const capital = position.entry_price * position.quantity;
-            this.paper_account_balance += capital / position.leverage + (position.realized_pnl || 0);
-          }
+        logger.info(`[TradingSystem] Position ${position.symbol} timeout (${holding_time_minutes.toFixed(1)}min >= ${this.config.max_holding_time_minutes}min), closing @ ${current_price}...`);
 
-          // 更新数据库记录
-          if (closed_position) {
-            await this.update_trade_record_on_close(closed_position);
-          }
+        // 执行超时平仓
+        const closed_position = await this.position_tracker.close_position(position.id, current_price, 'TIMEOUT');
+
+        // 更新账户余额（如果是纸面交易）
+        if (this.config.mode === TradingMode.PAPER) {
+          const capital = position.entry_price * position.quantity;
+          this.paper_account_balance += capital / position.leverage + (position.realized_pnl || 0);
+        }
+
+        // 更新数据库记录
+        if (closed_position) {
+          await this.update_trade_record_on_close(closed_position);
+        } else {
+          logger.error(`[TradingSystem] Failed to close timeout position ${position.symbol}`);
         }
       }
     }
