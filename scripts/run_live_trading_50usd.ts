@@ -200,7 +200,7 @@ async function main() {
       } catch (err) {
         // 静默处理同步错误，避免刷屏
       }
-    }, 10000); // 30秒同步一次
+    }, 30000); // 30秒同步一次
 
     // 状态显示函数
     const print_status = async () => {
