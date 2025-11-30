@@ -138,7 +138,12 @@ export class PositionTracker {
     reason: 'STOP_LOSS' | 'TAKE_PROFIT' | 'MANUAL' | 'RISK_LIMIT' | 'TIMEOUT'
   ): Promise<PositionRecord | null> {
     const position = this.positions.get(position_id);
-    if (!position || !position.is_open) {
+    if (!position) {
+      logger.error(`[PositionTracker] close_position failed: position_id=${position_id} not found in positions map (size=${this.positions.size}, keys=[${Array.from(this.positions.keys()).join(',')}])`);
+      return null;
+    }
+    if (!position.is_open) {
+      logger.error(`[PositionTracker] close_position failed: position ${position.symbol} (id=${position_id}) is already closed`);
       return null;
     }
 
