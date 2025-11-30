@@ -172,19 +172,90 @@ export class OrderExecutor {
       // 获取精度信息用于格式化止盈订单数量
       const precision = await this.get_symbol_precision(signal.symbol);
 
-      for (const target of take_profit_config.targets) {
-        let target_quantity = quantity * (target.percentage / 100);
+      // ⭐ 检查是否可以分批止盈：如果最小档位格式化后为0，则用全部仓位下单个止盈单
+      const min_batch_qty = quantity * (Math.min(...take_profit_config.targets.map(t => t.percentage)) / 100);
+      const formatted_min_batch = precision
+        ? this.format_quantity(min_batch_qty, precision.quantity_precision, precision.step_size)
+        : min_batch_qty;
 
-        // 格式化止盈订单数量
-        if (precision) {
-          target_quantity = this.format_quantity(
-            target_quantity,
-            precision.quantity_precision,
-            precision.step_size
-          );
+      const can_batch = formatted_min_batch > 0;
+
+      if (!can_batch) {
+        // 仓位太小无法分批，使用全部仓位下单个止盈单
+        logger.warn(`[OrderExecutor] Position too small for batch TP (qty=${quantity}, min_batch=${min_batch_qty.toFixed(8)}), using single TP order with full quantity`);
+
+        // 使用最后一档（通常是跟踪止盈）的配置
+        const last_target = take_profit_config.targets[take_profit_config.targets.length - 1];
+
+        if (last_target.is_trailing) {
+          // 跟踪止盈
+          try {
+            const activation_profit_pct = last_target.activation_profit_pct || 5;
+            let activation_price = signal.direction === 'LONG'
+              ? entry_price * (1 + activation_profit_pct / 100)
+              : entry_price * (1 - activation_profit_pct / 100);
+            if (precision) {
+              activation_price = this.format_price(activation_price, precision.price_precision);
+            }
+
+            const tp_order = await this.trading_api.place_trailing_stop_order(
+              signal.symbol,
+              close_side,
+              quantity,  // 全部仓位
+              last_target.trailing_callback_pct || 3,
+              binance_position_side,
+              activation_price
+            );
+            tp_order_ids.push(tp_order.orderId);
+            logger.info(`[OrderExecutor] Single trailing TP order placed: ${tp_order.orderId} (100% @ activation=${activation_profit_pct}%, callback=${last_target.trailing_callback_pct}%, qty=${quantity})`);
+          } catch (error) {
+            logger.error(`[OrderExecutor] Failed to place single trailing TP order:`, error);
+          }
+        } else {
+          // 固定止盈
+          try {
+            let tp_price = signal.direction === 'LONG'
+              ? entry_price * (1 + last_target.target_profit_pct / 100)
+              : entry_price * (1 - last_target.target_profit_pct / 100);
+            if (precision) {
+              tp_price = this.format_price(tp_price, precision.price_precision);
+            }
+
+            const tp_order = await this.trading_api.place_take_profit_market_order(
+              signal.symbol,
+              close_side,
+              quantity,  // 全部仓位
+              tp_price,
+              binance_position_side,
+              true
+            );
+            tp_order_ids.push(tp_order.orderId);
+            logger.info(`[OrderExecutor] Single TP order placed: ${tp_order.orderId} (100% @ +${last_target.target_profit_pct}%, qty=${quantity})`);
+          } catch (error) {
+            logger.error(`[OrderExecutor] Failed to place single TP order:`, error);
+          }
         }
+      } else {
+        // 可以分批止盈
+        for (const target of take_profit_config.targets) {
+          let target_quantity = quantity * (target.percentage / 100);
 
-        if (target.is_trailing) {
+          // 格式化止盈订单数量
+          if (precision) {
+            target_quantity = this.format_quantity(
+              target_quantity,
+              precision.quantity_precision,
+              precision.step_size
+            );
+          }
+
+          // ⚠️ 如果格式化后数量为0，跳过这个止盈单
+          if (target_quantity <= 0) {
+            logger.warn(`[OrderExecutor] Skipping TP target ${target.percentage}%: quantity too small after formatting`);
+            continue;
+          }
+
+          if (target.is_trailing) {
           // 使用TRAILING_STOP_MARKET订单
           try {
             // ⚠️ 必须设置激活价格，否则一开仓就开始跟踪，容易被回调止损
@@ -239,7 +310,8 @@ export class OrderExecutor {
             logger.error(`[OrderExecutor] Failed to place TP order:`, error);
           }
         }
-      }
+        }  // end for loop
+      }  // end can_batch else
     }
 
     return { entry_order, tp_order_ids };
