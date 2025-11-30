@@ -312,8 +312,9 @@ export class TradingSystem {
           anomaly_id: signal.source_anomaly_id,
           order_time: position.opened_at
         });
-        position.id = order_db_id;
-        logger.info(`[TradingSystem] Paper order record saved, id=${order_db_id}`);
+        // ⚠️ 不要修改 position.id，它是 position_tracker Map 的 key
+        // position.position_id 用于数据库关联
+        logger.info(`[TradingSystem] Paper order record saved, db_id=${order_db_id}`);
       } catch (error) {
         logger.error('[TradingSystem] Failed to save paper order record:', error);
       }
@@ -327,8 +328,10 @@ export class TradingSystem {
         leverage,
         signal.source_anomaly_id
       ).then(db_id => {
+        // ⚠️ 不要修改 position.id，它是 position_tracker Map 的 key
+        // db_id 只用于日志，数据库关联用 position.position_id
         if (db_id) {
-          position.id = db_id;
+          logger.debug(`[TradingSystem] Order saved to db, db_id=${db_id}`);
         }
       });
     }
