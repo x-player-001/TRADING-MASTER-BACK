@@ -826,12 +826,8 @@ export class TradingSystem {
       let removed = 0;
       let updated = 0;
 
-      // ⚠️ 安全检查：如果币安返回空但本地有持仓，可能是API异常，跳过本次同步
-      // 避免误判"无持仓"而清空本地数据
-      if (binance_positions.length === 0 && local_positions.length >= 1) {
-        logger.warn(`[TradingSystem] Binance returned 0 positions but local has ${local_positions.length}, skipping sync to prevent data loss`);
-        return { synced: 0, added: 0, removed: 0, updated: 0 };
-      }
+      // 完全以币安数据为准，不做安全检查
+      // 即使API偶尔返回空，下次同步也会恢复
 
       // 检查币安有但本地没有的持仓（需要添加）
       for (const bp of binance_positions) {
