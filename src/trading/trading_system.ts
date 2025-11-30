@@ -856,16 +856,23 @@ export class TradingSystem {
             ? bp.entryPrice * (1 + take_profit_pct)
             : bp.entryPrice * (1 - take_profit_pct);
 
-          // 查询真正的开仓时间（通过历史成交记录）
+          // 查询真正的开仓时间（通过历史成交记录反向累加匹配）
           let actual_opened_at = new Date(bp.updateTime);  // 默认使用 updateTime
           try {
-            const entry_time = await this.fetch_actual_entry_time(bp.symbol, side);
+            const entry_time = await this.fetch_actual_entry_time(
+              bp.symbol,
+              side,
+              bp.positionAmt,  // 当前持仓数量
+              bp.entryPrice    // 开仓均价
+            );
             if (entry_time) {
               actual_opened_at = entry_time;
               logger.info(`[TradingSystem] Found actual entry time for ${bp.symbol}: ${actual_opened_at.toISOString()}`);
+            } else {
+              logger.warn(`[TradingSystem] Could not find matching entry time for ${bp.symbol}, using updateTime as fallback`);
             }
           } catch (err) {
-            logger.warn(`[TradingSystem] Failed to fetch actual entry time for ${bp.symbol}, using updateTime`);
+            logger.warn(`[TradingSystem] Failed to fetch actual entry time for ${bp.symbol}, using updateTime:`, err);
           }
 
           const new_position: PositionRecord = {
@@ -1219,11 +1226,21 @@ export class TradingSystem {
 
   /**
    * 查询真正的开仓时间
-   * 通过成交记录找到最早的开仓成交时间
+   * 通过反向累加持仓量，找到当前持仓的真实开仓时间点
+   *
+   * ⭐ 核心逻辑：从最新交易往前推，累加开平仓数量，找到持仓从0开始的转折点
+   * 支持多次开平仓、部分止盈等复杂场景
+   *
+   * @param symbol 交易对
+   * @param side 持仓方向
+   * @param current_position_amt 当前持仓数量
+   * @param entry_price 开仓均价（用于价格验证）
    */
   private async fetch_actual_entry_time(
     symbol: string,
-    side: PositionSide
+    side: PositionSide,
+    current_position_amt: number,
+    entry_price: number
   ): Promise<Date | null> {
     try {
       // 查询最近7天的成交记录
@@ -1242,24 +1259,47 @@ export class TradingSystem {
 
       // 开仓方向：LONG->BUY, SHORT->SELL
       const entry_side = side === PositionSide.LONG ? 'BUY' : 'SELL';
+      const exit_side = side === PositionSide.LONG ? 'SELL' : 'BUY';
 
-      // 找到最早的开仓成交（realizedPnl ≈ 0 表示开仓）
-      let earliest_entry_time: number | null = null;
+      // ⭐ 反向累加持仓量，从最新交易往前推
+      let position_amt = current_position_amt;
 
-      for (const trade of trades) {
-        const pnl = parseFloat(trade.realizedPnl);
-        // 是开仓方向且没有PnL（说明是开仓）
-        if (trade.side === entry_side && Math.abs(pnl) < 0.0001) {
-          if (!earliest_entry_time || trade.time < earliest_entry_time) {
-            earliest_entry_time = trade.time;
+      logger.debug(`[TradingSystem] Backtracking entry time for ${symbol} ${side}, current_amt=${current_position_amt}, entry_price=${entry_price}`);
+
+      for (let i = trades.length - 1; i >= 0; i--) {
+        const trade = trades[i];
+        const trade_qty = parseFloat(trade.qty);
+        const trade_price = parseFloat(trade.price);
+
+        if (trade.side === exit_side) {
+          // 平仓交易 → 之前持仓应该更多
+          position_amt += trade_qty;
+          logger.debug(`[TradingSystem]   ${new Date(trade.time).toISOString()} ${trade.side} ${trade_qty} (CLOSE) → position_amt=${position_amt.toFixed(4)}`);
+
+        } else if (trade.side === entry_side) {
+          // 开仓/加仓交易
+          const prev_position = position_amt - trade_qty;
+
+          logger.debug(`[TradingSystem]   ${new Date(trade.time).toISOString()} ${trade.side} ${trade_qty} @ ${trade_price} (OPEN) → prev=${prev_position.toFixed(4)}`);
+
+          // 🎯 找到持仓从0开始的点
+          if (prev_position <= 0.0001) {
+            // 价格验证：确保是同一批持仓（允许5%误差）
+            const price_diff_pct = Math.abs(trade_price - entry_price) / entry_price;
+
+            if (price_diff_pct < 0.05) {
+              logger.info(`[TradingSystem] ✅ Found entry time for ${symbol}: ${new Date(trade.time).toISOString()}, price=${trade_price} (diff=${(price_diff_pct*100).toFixed(2)}%)`);
+              return new Date(trade.time);
+            } else {
+              logger.warn(`[TradingSystem] ⚠️ Found position start but price mismatch: trade=${trade_price} vs entry=${entry_price} (diff=${(price_diff_pct*100).toFixed(2)}%), continuing search...`);
+            }
           }
+
+          position_amt = prev_position;
         }
       }
 
-      if (earliest_entry_time) {
-        return new Date(earliest_entry_time);
-      }
-
+      logger.warn(`[TradingSystem] ❌ No matching entry trade found for ${symbol} ${side} (backtracked to position_amt=${position_amt.toFixed(4)})`);
       return null;
     } catch (error) {
       logger.error(`[TradingSystem] Failed to fetch entry time for ${symbol}:`, error);
