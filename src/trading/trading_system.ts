@@ -30,7 +30,6 @@ import {
   SignalDirection,
   CreateSignalProcessingRecordInput
 } from '../types/signal_processing';
-import { BinanceAPI } from '../api/binance_api';
 
 export class TradingSystem {
   private signal_generator: SignalGenerator;
@@ -199,22 +198,22 @@ export class TradingSystem {
       };
     }
 
-    // 3.5. 价格趋势检查（2小时涨幅 + 30分钟趋势）
+    // 3.5. 价格趋势检查（2小时涨幅）
     if (signal.entry_price) {
-      const trend_check = await this.check_price_trend(signal.symbol, signal.entry_price);
+      const trend_check = this.check_price_trend(anomaly, signal.entry_price);
       if (!trend_check.passed) {
-      logger.info(`[TradingSystem] Signal rejected by price trend check: ${trend_check.reason}`);
+        logger.info(`[TradingSystem] Signal rejected by price trend check: ${trend_check.reason}`);
 
-      // ⭐ 记录拒绝：价格趋势不符合
-      await this.record_signal_rejection({
-        anomaly_id: anomaly.id,
-        symbol: signal.symbol,
-        signal_direction: signal.direction === 'LONG' ? SignalDirection.LONG : SignalDirection.SHORT,
-        signal_score: signal.score,
-        rejection_reason: trend_check.reason || 'Price trend check failed',
-        rejection_category: RejectionCategory.MARKET_CONDITIONS,
-        signal_received_at
-      });
+        // ⭐ 记录拒绝：价格趋势不符合
+        await this.record_signal_rejection({
+          anomaly_id: anomaly.id,
+          symbol: signal.symbol,
+          signal_direction: signal.direction === 'LONG' ? SignalDirection.LONG : SignalDirection.SHORT,
+          signal_score: signal.score,
+          rejection_reason: trend_check.reason || 'Price trend check failed',
+          rejection_category: RejectionCategory.MARKET_CONDITIONS,
+          signal_received_at
+        });
 
         return {
           signal,
@@ -381,90 +380,50 @@ export class TradingSystem {
   }
 
   /**
-   * 检查价格趋势（2小时涨幅和30分钟趋势）
-   * @param symbol 交易对
+   * 检查价格趋势（2小时涨幅检查）
+   * @param anomaly OI异动记录（包含price_from_2h_low_pct）
    * @param current_price 当前价格（来自信号的开仓价）
    * @returns 检查结果
    */
-  private async check_price_trend(
-    symbol: string,
+  private check_price_trend(
+    anomaly: OIAnomalyRecord,
     current_price: number
-  ): Promise<{
+  ): {
     passed: boolean;
     reason?: string;
-    data?: {
-      price_2h_low: number;
-      price_30m_high: number;
-      rise_from_2h_low_pct: number;
-      current_price: number;
-    };
-  }> {
+  } {
     try {
-      // 直接从币安API获取最新25根5分钟K线（覆盖2小时）
-      // 不使用缓存，保证实时性
-      const binance_api = BinanceAPI.getInstance();
-      const klines = await binance_api.get_klines(symbol, '5m', undefined, undefined, 25);
+      // ✅ 检查1: 2小时涨幅不超过8%（使用OI系统已计算的数据）
+      if (anomaly.price_from_2h_low_pct !== null && anomaly.price_from_2h_low_pct !== undefined) {
+        const rise_pct = parseFloat(anomaly.price_from_2h_low_pct.toString());
 
-      if (!klines || klines.length < 25) {
-        logger.warn(`[TradingSystem] Failed to get klines for ${symbol}, skip price trend check`);
-        return { passed: true }; // API失败时不阻止交易
-      }
-
-      // 计算2小时内最低价（所有25根K线的最低点）
-      let price_2h_low = Infinity;
-      for (let i = 0; i < klines.length; i++) {
-        const low = klines[i].low;
-        if (low < price_2h_low) {
-          price_2h_low = low;
+        if (rise_pct > 8) {
+          return {
+            passed: false,
+            reason: `追高风险：从2小时最低点${anomaly.price_2h_low}涨幅${rise_pct.toFixed(2)}%超过8%阈值`
+          };
         }
+
+        logger.info(
+          `[TradingSystem] ${anomaly.symbol} 价格趋势检查通过: ` +
+          `2h最低=${anomaly.price_2h_low}, 当前价=${current_price}, 涨幅=${rise_pct.toFixed(2)}%`
+        );
+      } else {
+        logger.warn(`[TradingSystem] ${anomaly.symbol} 缺少2小时价格数据，跳过趋势检查`);
       }
 
-      // 计算30分钟内最高价（最后6根K线的最高点）
-      let price_30m_high = -Infinity;
-      for (let i = 19; i < klines.length; i++) {  // 最后6根K线：索引19-24
-        const high = klines[i].high;
-        if (high > price_30m_high) {
-          price_30m_high = high;
-        }
-      }
+      // TODO: 30分钟突破检查（待实现）
+      // 需要查询 open_interest_snapshots_YYYYMMDD 表获取30分钟内最高价
+      // if (current_price <= price_30m_high) {
+      //   return {
+      //     passed: false,
+      //     reason: `未突破：入场价${current_price}未高于30分钟最高点${price_30m_high}`
+      //   };
+      // }
 
-      // 计算涨幅（2小时与最低点对比）
-      const rise_from_2h_low_pct = ((current_price - price_2h_low) / price_2h_low) * 100;
-
-      const data = {
-        price_2h_low,
-        price_30m_high,
-        rise_from_2h_low_pct,
-        current_price
-      };
-
-      // 检查1: 2小时涨幅不超过8%（避免追高）
-      if (rise_from_2h_low_pct > 8) {
-        return {
-          passed: false,
-          reason: `追高风险：从2小时最低点${price_2h_low}涨幅${rise_from_2h_low_pct.toFixed(2)}%超过8%阈值`,
-          data
-        };
-      }
-
-      // 检查2: 入场价必须高于30分钟最高点（突破阻力位）
-      if (current_price <= price_30m_high) {
-        return {
-          passed: false,
-          reason: `未突破：入场价${current_price}未高于30分钟最高点${price_30m_high}`,
-          data
-        };
-      }
-
-      logger.info(
-        `[TradingSystem] ${symbol} 价格趋势检查通过: ` +
-        `2h最低=${price_2h_low}, 30m最高=${price_30m_high}, ` +
-        `入场价=${current_price}, 2h涨幅=${rise_from_2h_low_pct.toFixed(2)}%`
-      );
-
-      return { passed: true, data };
+      return { passed: true };
     } catch (error) {
-      logger.error(`[TradingSystem] Error checking price trend for ${symbol}:`, error);
+      logger.error(`[TradingSystem] Error checking price trend for ${anomaly.symbol}:`, error);
       return { passed: true }; // 发生错误时不阻止交易
     }
   }
