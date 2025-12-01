@@ -30,6 +30,7 @@ import {
   SignalDirection,
   CreateSignalProcessingRecordInput
 } from '../types/signal_processing';
+import { HistoricalDataManager } from '../core/data/historical_data_manager';
 
 export class TradingSystem {
   private signal_generator: SignalGenerator;
@@ -399,8 +400,10 @@ export class TradingSystem {
     };
   }> {
     try {
-      // 获取25根5分钟K线（覆盖2小时）
-      const klines = await this.order_executor.get_klines(symbol, '5m', 25);
+      // 使用HistoricalDataManager获取25根5分钟K线（覆盖2小时）
+      // 优先从Redis缓存 → MySQL持久化 → 币安API兜底
+      const historical_manager = HistoricalDataManager.getInstance();
+      const klines = await historical_manager.get_historical_klines(symbol, '5m', undefined, undefined, 25);
 
       if (!klines || klines.length < 25) {
         logger.warn(`[TradingSystem] Failed to get klines for ${symbol}, skip price trend check`);

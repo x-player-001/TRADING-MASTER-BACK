@@ -282,65 +282,6 @@ export class BinanceFuturesAPI {
   }
 
   /**
-   * 获取K线历史数据
-   * @param symbol 交易对
-   * @param interval K线周期（1m, 5m, 15m, 1h, 4h, 1d）
-   * @param start_time 开始时间戳(ms)
-   * @param end_time 结束时间戳(ms)
-   * @param limit 数量限制（默认500，最大1500）
-   */
-  async get_klines(
-    symbol: string,
-    interval: string,
-    start_time?: number,
-    end_time?: number,
-    limit: number = 500
-  ): Promise<{
-    open_time: number;
-    close_time: number;
-    open: number;
-    high: number;
-    low: number;
-    close: number;
-    volume: number;
-    trade_count: number;
-  }[]> {
-    try {
-      const params: any = {
-        symbol: symbol.toUpperCase(),
-        interval,
-        limit: Math.min(limit, 1500) // 币安期货最大限制1500
-      };
-
-      if (start_time) {
-        params.startTime = start_time;
-      }
-
-      if (end_time) {
-        params.endTime = end_time;
-      }
-
-      const response = await this.api_client.get('/fapi/v1/klines', { params });
-
-      // 转换数据格式
-      return response.data.map((kline: any[]) => ({
-        open_time: kline[0],
-        close_time: kline[6],
-        open: parseFloat(kline[1]),
-        high: parseFloat(kline[2]),
-        low: parseFloat(kline[3]),
-        close: parseFloat(kline[4]),
-        volume: parseFloat(kline[5]),
-        trade_count: kline[8]
-      }));
-
-    } catch (error: any) {
-      console.error(`[BinanceFuturesAPI] Failed to get klines for ${symbol}:${interval}`, error.message);
-      throw new Error(`Failed to fetch klines: ${error.message}`);
-    }
-  }
-
-  /**
    * 计算币种优先级
    * 主要币种(BTC, ETH等)优先级更高
    */
