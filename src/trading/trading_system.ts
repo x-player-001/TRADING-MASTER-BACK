@@ -198,6 +198,31 @@ export class TradingSystem {
       };
     }
 
+    // 3.5. 价格趋势检查（2小时涨幅 + 30分钟趋势）
+    if (signal.entry_price) {
+      const trend_check = await this.check_price_trend(signal.symbol, signal.entry_price);
+      if (!trend_check.passed) {
+      logger.info(`[TradingSystem] Signal rejected by price trend check: ${trend_check.reason}`);
+
+      // ⭐ 记录拒绝：价格趋势不符合
+      await this.record_signal_rejection({
+        anomaly_id: anomaly.id,
+        symbol: signal.symbol,
+        signal_direction: signal.direction === 'LONG' ? SignalDirection.LONG : SignalDirection.SHORT,
+        signal_score: signal.score,
+        rejection_reason: trend_check.reason || 'Price trend check failed',
+        rejection_category: RejectionCategory.MARKET_CONDITIONS,
+        signal_received_at
+      });
+
+        return {
+          signal,
+          action: 'SIGNAL_REJECTED',
+          reason: trend_check.reason
+        };
+      }
+    }
+
     // 4. 风险检查
     const open_positions = this.position_tracker.get_open_positions();
     const risk_check = this.risk_manager.can_open_position(
@@ -352,6 +377,78 @@ export class TradingSystem {
       return RejectionCategory.INSUFFICIENT_BALANCE;
     }
     return RejectionCategory.RISK_MANAGEMENT;
+  }
+
+  /**
+   * 检查价格趋势（2小时涨幅和30分钟趋势）
+   * @param symbol 交易对
+   * @param current_price 当前价格（来自信号的开仓价）
+   * @returns 检查结果
+   */
+  private async check_price_trend(
+    symbol: string,
+    current_price: number
+  ): Promise<{
+    passed: boolean;
+    reason?: string;
+    data?: {
+      price_2h_ago: number;
+      price_30m_ago: number;
+      rise_2h_pct: number;
+      rise_30m_pct: number;
+    };
+  }> {
+    try {
+      // 获取25根5分钟K线（覆盖2小时）
+      const klines = await this.order_executor.get_klines(symbol, '5m', 25);
+
+      if (!klines || klines.length < 25) {
+        logger.warn(`[TradingSystem] Failed to get klines for ${symbol}, skip price trend check`);
+        return { passed: true }; // API失败时不阻止交易
+      }
+
+      const price_2h_ago = klines[0].close;      // 索引0 = 2小时前
+      const price_30m_ago = klines[18].close;    // 索引18 = 30分钟前 (25-6-1)
+
+      // 计算涨幅
+      const rise_2h_pct = ((current_price - price_2h_ago) / price_2h_ago) * 100;
+      const rise_30m_pct = ((current_price - price_30m_ago) / price_30m_ago) * 100;
+
+      const data = {
+        price_2h_ago,
+        price_30m_ago,
+        rise_2h_pct,
+        rise_30m_pct
+      };
+
+      // 检查1: 2小时涨幅不超过8%（避免追高）
+      if (rise_2h_pct > 8) {
+        return {
+          passed: false,
+          reason: `追高风险：2小时涨幅${rise_2h_pct.toFixed(2)}%超过8%阈值`,
+          data
+        };
+      }
+
+      // 检查2: 30分钟趋势向上（当前价格必须高于30分钟前）
+      if (current_price <= price_30m_ago) {
+        return {
+          passed: false,
+          reason: `趋势不符：当前价格${current_price}未高于30分钟前${price_30m_ago}`,
+          data
+        };
+      }
+
+      logger.info(
+        `[TradingSystem] ${symbol} 价格趋势检查通过: ` +
+        `2h涨幅=${rise_2h_pct.toFixed(2)}%, 30m涨幅=${rise_30m_pct.toFixed(2)}%`
+      );
+
+      return { passed: true, data };
+    } catch (error) {
+      logger.error(`[TradingSystem] Error checking price trend for ${symbol}:`, error);
+      return { passed: true }; // 发生错误时不阻止交易
+    }
   }
 
   /**
