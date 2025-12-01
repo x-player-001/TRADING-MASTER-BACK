@@ -23,6 +23,13 @@ import { RiskManager } from './risk_manager';
 import { OrderExecutor } from './order_executor';
 import { PositionTracker } from './position_tracker';
 import { OrderRecordRepository } from '../database/order_record_repository';
+import { signal_processing_repository } from '../database/signal_processing_repository';
+import {
+  SignalProcessingResult,
+  RejectionCategory,
+  SignalDirection,
+  CreateSignalProcessingRecordInput
+} from '../types/signal_processing';
 
 export class TradingSystem {
   private signal_generator: SignalGenerator;
@@ -115,6 +122,8 @@ export class TradingSystem {
     action: 'NO_SIGNAL' | 'SIGNAL_REJECTED' | 'RISK_REJECTED' | 'POSITION_OPENED' | 'DISABLED';
     reason?: string;
   }> {
+    const signal_received_at = new Date();
+
     if (!this.is_enabled) {
       return { action: 'DISABLED', reason: 'Trading system is disabled' };
     }
@@ -122,7 +131,17 @@ export class TradingSystem {
     // 1. 生成交易信号（使用带原因的版本）
     const signal_result = this.signal_generator.generate_signal_with_reason(anomaly);
     if (!signal_result.signal) {
-      // 返回具体的拒绝原因
+      // ⭐ 记录拒绝：无有效信号
+      await this.record_signal_rejection({
+        anomaly_id: anomaly.id,
+        symbol: anomaly.symbol,
+        signal_direction: anomaly.signal_direction === 'LONG' ? SignalDirection.LONG : SignalDirection.SHORT,
+        signal_score: anomaly.signal_score,
+        rejection_reason: signal_result.reason || '无有效信号',
+        rejection_category: RejectionCategory.SIGNAL_SCORE_TOO_LOW,
+        signal_received_at
+      });
+
       return {
         action: 'SIGNAL_REJECTED',
         reason: signal_result.reason || '无有效信号'
@@ -136,6 +155,18 @@ export class TradingSystem {
     const allowed_directions = this.config.allowed_directions || ['LONG']; // 默认只做多
     if (!allowed_directions.includes(signal.direction as any)) {
       logger.info(`[TradingSystem] Signal rejected: ${signal.direction} not in allowed directions [${allowed_directions.join(', ')}]`);
+
+      // ⭐ 记录拒绝：方向过滤
+      await this.record_signal_rejection({
+        anomaly_id: anomaly.id,
+        symbol: signal.symbol,
+        signal_direction: signal.direction === 'LONG' ? SignalDirection.LONG : SignalDirection.SHORT,
+        signal_score: signal.score,
+        rejection_reason: `Direction filter: ${signal.direction} not in allowed directions [${allowed_directions.join(', ')}]`,
+        rejection_category: RejectionCategory.MARKET_CONDITIONS,
+        signal_received_at
+      });
+
       return {
         signal,
         action: 'SIGNAL_REJECTED',
@@ -147,6 +178,19 @@ export class TradingSystem {
     const strategy_result = this.strategy_engine.evaluate_signal(signal);
     if (!strategy_result.passed) {
       logger.info(`[TradingSystem] Signal rejected by strategy: ${strategy_result.reason}`);
+
+      // ⭐ 记录拒绝：策略评估未通过
+      const rejection_category = this.categorize_strategy_rejection(strategy_result.reason || '');
+      await this.record_signal_rejection({
+        anomaly_id: anomaly.id,
+        symbol: signal.symbol,
+        signal_direction: signal.direction === 'LONG' ? SignalDirection.LONG : SignalDirection.SHORT,
+        signal_score: signal.score,
+        rejection_reason: strategy_result.reason || 'Strategy evaluation failed',
+        rejection_category,
+        signal_received_at
+      });
+
       return {
         signal,
         action: 'SIGNAL_REJECTED',
@@ -164,6 +208,24 @@ export class TradingSystem {
 
     if (!risk_check.allowed) {
       logger.info(`[TradingSystem] Position rejected by risk manager: ${risk_check.reason}`);
+
+      // ⭐ 记录拒绝：风控拒绝
+      const rejection_category = this.categorize_risk_rejection(risk_check.reason || '');
+      const daily_stats = await this.get_statistics_from_db();
+
+      await this.record_signal_rejection({
+        anomaly_id: anomaly.id,
+        symbol: signal.symbol,
+        signal_direction: signal.direction === 'LONG' ? SignalDirection.LONG : SignalDirection.SHORT,
+        signal_score: signal.score,
+        rejection_reason: risk_check.reason || 'Risk check failed',
+        rejection_category,
+        current_daily_loss: daily_stats.total_pnl < 0 ? Math.abs(daily_stats.total_pnl) : 0,
+        current_open_positions: open_positions.length,
+        available_balance: this.paper_account_balance,
+        signal_received_at
+      });
+
       return {
         signal,
         action: 'RISK_REJECTED',
@@ -181,6 +243,22 @@ export class TradingSystem {
 
       if (position) {
         logger.info(`[TradingSystem] Position opened: ${position.symbol} ${position.side} @ ${position.entry_price}`);
+
+        // ⭐ 记录接受：成功开仓
+        await this.record_signal_acceptance({
+          anomaly_id: anomaly.id,
+          symbol: position.symbol,
+          signal_direction: position.side === PositionSide.LONG ? SignalDirection.LONG : SignalDirection.SHORT,
+          signal_score: signal.score,
+          position_id: position.id ? String(position.id) : undefined,
+          entry_price: position.entry_price,
+          quantity: position.quantity,
+          position_value_usd: position.quantity * position.entry_price,
+          current_open_positions: open_positions.length + 1,
+          available_balance: this.paper_account_balance,
+          signal_received_at
+        });
+
         return {
           signal,
           position,
@@ -189,6 +267,19 @@ export class TradingSystem {
       }
     } catch (error) {
       logger.error('[TradingSystem] Failed to execute trade:', error);
+
+      // ⭐ 记录拒绝：执行错误
+      await this.record_signal_rejection({
+        anomaly_id: anomaly.id,
+        symbol: signal.symbol,
+        signal_direction: signal.direction === 'LONG' ? SignalDirection.LONG : SignalDirection.SHORT,
+        signal_score: signal.score,
+        rejection_reason: error instanceof Error ? error.message : 'Unknown error',
+        rejection_category: RejectionCategory.SYSTEM_ERROR,
+        error_message: error instanceof Error ? error.stack : String(error),
+        signal_received_at
+      });
+
       return {
         signal,
         action: 'RISK_REJECTED',
@@ -197,6 +288,70 @@ export class TradingSystem {
     }
 
     return { action: 'NO_SIGNAL' };
+  }
+
+  /**
+   * 记录信号拒绝
+   */
+  private async record_signal_rejection(data: Omit<CreateSignalProcessingRecordInput, 'processing_result'>): Promise<void> {
+    try {
+      await signal_processing_repository.create_record({
+        ...data,
+        processing_result: SignalProcessingResult.REJECTED,
+        signal_source: 'OI_ANOMALY'
+      });
+    } catch (error) {
+      logger.error('[TradingSystem] Failed to record signal rejection:', error);
+      // 不抛出错误，避免影响主流程
+    }
+  }
+
+  /**
+   * 记录信号接受
+   */
+  private async record_signal_acceptance(data: Omit<CreateSignalProcessingRecordInput, 'processing_result'>): Promise<void> {
+    try {
+      await signal_processing_repository.create_record({
+        ...data,
+        processing_result: SignalProcessingResult.ACCEPTED,
+        signal_source: 'OI_ANOMALY'
+      });
+    } catch (error) {
+      logger.error('[TradingSystem] Failed to record signal acceptance:', error);
+      // 不抛出错误，避免影响主流程
+    }
+  }
+
+  /**
+   * 根据策略拒绝原因分类
+   */
+  private categorize_strategy_rejection(reason: string): RejectionCategory {
+    if (reason.includes('追高') || reason.includes('chase high')) {
+      return RejectionCategory.MARKET_CONDITIONS;
+    }
+    if (reason.includes('评分') || reason.includes('score')) {
+      return RejectionCategory.SIGNAL_SCORE_TOO_LOW;
+    }
+    return RejectionCategory.OTHER;
+  }
+
+  /**
+   * 根据风控拒绝原因分类
+   */
+  private categorize_risk_rejection(reason: string): RejectionCategory {
+    if (reason.includes('亏损') || reason.includes('loss limit')) {
+      return RejectionCategory.DAILY_LOSS_LIMIT;
+    }
+    if (reason.includes('持仓') || reason.includes('position') && reason.includes('limit')) {
+      return RejectionCategory.MAX_POSITIONS_LIMIT;
+    }
+    if (reason.includes('已存在') || reason.includes('exists')) {
+      return RejectionCategory.POSITION_EXISTS;
+    }
+    if (reason.includes('余额') || reason.includes('balance')) {
+      return RejectionCategory.INSUFFICIENT_BALANCE;
+    }
+    return RejectionCategory.RISK_MANAGEMENT;
   }
 
   /**
@@ -1008,6 +1163,19 @@ export class TradingSystem {
 
       if (added > 0 || removed > 0 || updated > 0) {
         logger.info(`[TradingSystem] Position sync completed: added=${added}, removed=${removed}, updated=${updated}`);
+      }
+
+      // ⭐ 同步完成后检查超时平仓
+      // 构建价格Map（使用本地持仓的当前价格，已在上面同步时更新）
+      const open_positions = this.position_tracker.get_open_positions();
+      if (open_positions.length > 0) {
+        const price_map = new Map<string, number>();
+        for (const position of open_positions) {
+          price_map.set(position.symbol, position.current_price);
+        }
+
+        // 执行超时检查和平仓
+        await this.check_and_close_timeout_positions(price_map);
       }
 
       return {

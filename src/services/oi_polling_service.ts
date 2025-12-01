@@ -315,10 +315,9 @@ export class OIPollingService {
       // 6. ✅ 缓存预热：主动查询统计数据并缓存
       await this.preheat_statistics_cache();
 
-      // 7. ⏱️ 更新交易系统持仓价格（检查超时平仓）
-      if (this.trading_system) {
-        await this.update_trading_positions(premium_map);
-      }
+      // 7. ⭐ 传递信号给交易系统（如果有异动）
+      // 交易系统会通过自己的定时任务独立管理持仓（同步、更新、超时检查等）
+      // OI服务只负责监控和信号生成，不直接操作持仓管理
 
       const duration = Date.now() - start_time;
       if (anomalies.length > 0) {
@@ -783,37 +782,20 @@ export class OIPollingService {
   }
 
   /**
-   * 更新交易系统持仓价格（每次轮询时调用）
+   * ⭐ 已移除 update_trading_positions() 方法
+   *
+   * 原因：职责分离 - OI监控服务不应该直接管理交易系统的持仓
+   *
+   * 新架构：
+   * - OI服务：只负责监控OI变化、检测异动、生成信号
+   * - 交易系统：通过自己的定时任务完全自主管理持仓
+   *   └─ sync_positions_from_binance() 每30秒执行
+   *      ├─ 同步币安持仓
+   *      ├─ 更新价格和盈亏
+   *      ├─ 检测部分止盈
+   *      ├─ 检查保本止损
+   *      └─ 检查超时平仓
    */
-  private async update_trading_positions(premium_map: Map<string, any>): Promise<void> {
-    if (!this.trading_system) {
-      return;
-    }
-
-    try {
-      // 获取所有开仓持仓
-      const open_positions = this.trading_system.get_open_positions();
-      if (open_positions.length === 0) {
-        return;
-      }
-
-      // 构建价格Map
-      const price_map = new Map<string, number>();
-      for (const position of open_positions) {
-        const premium = premium_map.get(position.symbol);
-        if (premium && premium.markPrice) {
-          price_map.set(position.symbol, parseFloat(premium.markPrice));
-        }
-      }
-
-      // 更新持仓价格（这会触发超时检查和平仓）
-      await this.trading_system.update_positions(price_map);
-
-      logger.debug(`[OIPolling] Updated ${open_positions.length} positions, checked timeouts`);
-    } catch (error) {
-      logger.error('[OIPolling] Failed to update trading positions:', error);
-    }
-  }
 
   /**
    * 获取或更新币种的每日价格极值
