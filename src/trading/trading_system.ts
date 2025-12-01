@@ -394,9 +394,9 @@ export class TradingSystem {
     reason?: string;
     data?: {
       price_2h_low: number;
-      price_30m_low: number;
+      price_30m_high: number;
       rise_from_2h_low_pct: number;
-      rise_from_30m_low_pct: number;
+      current_price: number;
     };
   }> {
     try {
@@ -419,24 +419,23 @@ export class TradingSystem {
         }
       }
 
-      // 计算30分钟内最低价（最后6根K线的最低点）
-      let price_30m_low = Infinity;
+      // 计算30分钟内最高价（最后6根K线的最高点）
+      let price_30m_high = -Infinity;
       for (let i = 19; i < klines.length; i++) {  // 最后6根K线：索引19-24
-        const low = klines[i].low;
-        if (low < price_30m_low) {
-          price_30m_low = low;
+        const high = klines[i].high;
+        if (high > price_30m_high) {
+          price_30m_high = high;
         }
       }
 
-      // 计算涨幅（与最低点对比）
+      // 计算涨幅（2小时与最低点对比）
       const rise_from_2h_low_pct = ((current_price - price_2h_low) / price_2h_low) * 100;
-      const rise_from_30m_low_pct = ((current_price - price_30m_low) / price_30m_low) * 100;
 
       const data = {
         price_2h_low,
-        price_30m_low,
+        price_30m_high,
         rise_from_2h_low_pct,
-        rise_from_30m_low_pct
+        current_price
       };
 
       // 检查1: 2小时涨幅不超过8%（避免追高）
@@ -448,19 +447,19 @@ export class TradingSystem {
         };
       }
 
-      // 检查2: 30分钟涨幅不超过30%（防止极端追高）
-      if (rise_from_30m_low_pct > 30) {
+      // 检查2: 入场价必须高于30分钟最高点（突破阻力位）
+      if (current_price <= price_30m_high) {
         return {
           passed: false,
-          reason: `追高风险：从30分钟最低点${price_30m_low}涨幅${rise_from_30m_low_pct.toFixed(2)}%超过30%阈值`,
+          reason: `未突破：入场价${current_price}未高于30分钟最高点${price_30m_high}`,
           data
         };
       }
 
       logger.info(
         `[TradingSystem] ${symbol} 价格趋势检查通过: ` +
-        `2h最低=${price_2h_low}, 30m最低=${price_30m_low}, ` +
-        `涨幅: 2h=${rise_from_2h_low_pct.toFixed(2)}%, 30m=${rise_from_30m_low_pct.toFixed(2)}%`
+        `2h最低=${price_2h_low}, 30m最高=${price_30m_high}, ` +
+        `入场价=${current_price}, 2h涨幅=${rise_from_2h_low_pct.toFixed(2)}%`
       );
 
       return { passed: true, data };
