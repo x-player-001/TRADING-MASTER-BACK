@@ -393,10 +393,10 @@ export class TradingSystem {
     passed: boolean;
     reason?: string;
     data?: {
-      price_2h_ago: number;
-      price_30m_ago: number;
-      rise_2h_pct: number;
-      rise_30m_pct: number;
+      price_2h_low: number;
+      price_30m_low: number;
+      rise_from_2h_low_pct: number;
+      rise_from_30m_low_pct: number;
     };
   }> {
     try {
@@ -410,41 +410,57 @@ export class TradingSystem {
         return { passed: true }; // API失败时不阻止交易
       }
 
-      const price_2h_ago = klines[0].close;      // 索引0 = 2小时前
-      const price_30m_ago = klines[18].close;    // 索引18 = 30分钟前 (25-6-1)
+      // 计算2小时内最低价（所有25根K线的最低点）
+      let price_2h_low = Infinity;
+      for (let i = 0; i < klines.length; i++) {
+        const low = klines[i].low;
+        if (low < price_2h_low) {
+          price_2h_low = low;
+        }
+      }
 
-      // 计算涨幅
-      const rise_2h_pct = ((current_price - price_2h_ago) / price_2h_ago) * 100;
-      const rise_30m_pct = ((current_price - price_30m_ago) / price_30m_ago) * 100;
+      // 计算30分钟内最低价（最后6根K线的最低点）
+      let price_30m_low = Infinity;
+      for (let i = 19; i < klines.length; i++) {  // 最后6根K线：索引19-24
+        const low = klines[i].low;
+        if (low < price_30m_low) {
+          price_30m_low = low;
+        }
+      }
+
+      // 计算涨幅（与最低点对比）
+      const rise_from_2h_low_pct = ((current_price - price_2h_low) / price_2h_low) * 100;
+      const rise_from_30m_low_pct = ((current_price - price_30m_low) / price_30m_low) * 100;
 
       const data = {
-        price_2h_ago,
-        price_30m_ago,
-        rise_2h_pct,
-        rise_30m_pct
+        price_2h_low,
+        price_30m_low,
+        rise_from_2h_low_pct,
+        rise_from_30m_low_pct
       };
 
       // 检查1: 2小时涨幅不超过8%（避免追高）
-      if (rise_2h_pct > 8) {
+      if (rise_from_2h_low_pct > 8) {
         return {
           passed: false,
-          reason: `追高风险：2小时涨幅${rise_2h_pct.toFixed(2)}%超过8%阈值`,
+          reason: `追高风险：从2小时最低点${price_2h_low}涨幅${rise_from_2h_low_pct.toFixed(2)}%超过8%阈值`,
           data
         };
       }
 
-      // 检查2: 30分钟趋势向上（当前价格必须高于30分钟前）
-      if (current_price <= price_30m_ago) {
+      // 检查2: 30分钟涨幅不超过30%（防止极端追高）
+      if (rise_from_30m_low_pct > 30) {
         return {
           passed: false,
-          reason: `趋势不符：当前价格${current_price}未高于30分钟前${price_30m_ago}`,
+          reason: `追高风险：从30分钟最低点${price_30m_low}涨幅${rise_from_30m_low_pct.toFixed(2)}%超过30%阈值`,
           data
         };
       }
 
       logger.info(
         `[TradingSystem] ${symbol} 价格趋势检查通过: ` +
-        `2h涨幅=${rise_2h_pct.toFixed(2)}%, 30m涨幅=${rise_30m_pct.toFixed(2)}%`
+        `2h最低=${price_2h_low}, 30m最低=${price_30m_low}, ` +
+        `涨幅: 2h=${rise_from_2h_low_pct.toFixed(2)}%, 30m=${rise_from_30m_low_pct.toFixed(2)}%`
       );
 
       return { passed: true, data };
