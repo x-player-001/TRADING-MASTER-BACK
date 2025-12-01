@@ -43,8 +43,8 @@ export class OIDataManager {
       // 初始化日期分表管理器（创建今天和明天的表）
       await daily_table_manager.initialize();
 
-      // 启动定时清理任务（每天凌晨1点清理旧表）
-      daily_table_manager.start_cleanup_scheduler();
+      // ⚠️ 暂时停用：启动定时清理任务（每天凌晨1点清理旧表）
+      // daily_table_manager.start_cleanup_scheduler();
 
       // 初始化缓存管理器
       await this.oi_cache_manager.initialize();
