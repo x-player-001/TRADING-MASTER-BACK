@@ -193,14 +193,15 @@ async function main() {
       console.log('⚠️ 历史交易回填失败:', err instanceof Error ? err.message : err);
     }
 
-    // ⭐ 定时同步币安持仓（每30秒）
+    // ⭐ 定时同步币安持仓（每10秒）
+    // 包含：持仓同步、价格更新、超时检查、保本止损检测
     setInterval(async () => {
       try {
         await trading_system.sync_positions_from_binance();
       } catch (err) {
         // 静默处理同步错误，避免刷屏
       }
-    }, 30000); // 30秒同步一次
+    }, 10000); // 10秒同步一次
 
     // 状态显示函数
     const print_status = async () => {

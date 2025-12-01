@@ -1090,8 +1090,8 @@ export class TradingSystem {
             ? (bp.unrealizedProfit / current_margin) * 100
             : 0;
 
-          // 检查是否达到保本止损条件（盈利 >= 10% 且未下过保本止损单）
-          if (local.unrealized_pnl_percent >= 10 && !local.breakeven_sl_placed) {
+          // 检查是否达到保本止损条件（盈利 >= 5% 且未下过保本止损单）
+          if (local.unrealized_pnl_percent >= 5 && !local.breakeven_sl_placed) {
             await this.try_place_breakeven_stop_loss(local);
           }
 
@@ -1218,7 +1218,7 @@ export class TradingSystem {
 
   /**
    * 尝试下保本止损单
-   * 当盈利达到6%时，设置止损单确保覆盖手续费后保本
+   * 当盈利达到5%时，设置止损单确保覆盖手续费后保本
    * 止损价 = 成本价 × (1 + 手续费率×2 + 滑点余量)
    * 会先通过币安API检查是否已有止损挂单，避免重复下单
    */
