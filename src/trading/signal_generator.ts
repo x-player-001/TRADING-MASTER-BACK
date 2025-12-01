@@ -183,15 +183,15 @@ export class SignalGenerator {
       }
     }
 
-    if (anomaly.price_from_high_pct !== null && anomaly.price_from_high_pct !== undefined) {
-      const pct = parseFloat(anomaly.price_from_high_pct.toString());
-      if (pct > this.chase_high_threshold) {
-        return {
-          allowed: false,
-          reason: `价格从日内高点已跌${pct.toFixed(1)}% (>${this.chase_high_threshold}%), 避免追跌`
-        };
-      }
-    }
+    // if (anomaly.price_from_high_pct !== null && anomaly.price_from_high_pct !== undefined) {
+    //   const pct = parseFloat(anomaly.price_from_high_pct.toString());
+    //   if (pct > this.chase_high_threshold) {
+    //     return {
+    //       allowed: false,
+    //       reason: `价格从日内高点已跌${pct.toFixed(1)}% (>${this.chase_high_threshold}%), 避免追跌`
+    //     };
+    //   }
+    // }
 
     // ✅ 早期确认信号：允许入场
     // OI刚开始加速（3-10%），价格刚突破（1-8%）
