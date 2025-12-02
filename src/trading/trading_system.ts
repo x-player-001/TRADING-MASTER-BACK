@@ -1166,35 +1166,18 @@ export class TradingSystem {
                 : 0;
 
               if (current_pnl_percent >= 5) {
-                // 直接下单，不通过 try_place_breakeven_stop_loss（避免重复检查）
-                // 计算成本止损价格
-                const fee_compensation_rate = 0.0015; // 0.15%
-                let breakeven_price: number;
+                // check_and_cancel_excess_orders 已经撤销了所有挂单（包括成本止损单）
+                // 重新下成本止损单（使用更新后的剩余仓位数量）
+                logger.info(`[TradingSystem] Re-placing breakeven stop loss after partial close: ${local.symbol} qty=${local.quantity}, pnl=${current_pnl_percent.toFixed(2)}%`);
 
-                if (local.side === PositionSide.LONG) {
-                  breakeven_price = local.entry_price * (1 + fee_compensation_rate);
-                } else {
-                  breakeven_price = local.entry_price * (1 - fee_compensation_rate);
-                }
+                // 临时更新 unrealized_pnl_percent 用于下单判断
+                const temp_pnl = local.unrealized_pnl_percent;
+                local.unrealized_pnl_percent = current_pnl_percent;
 
-                logger.info(`[TradingSystem] Re-placing breakeven stop loss after partial close: ${local.symbol} qty=${local.quantity} @ ${breakeven_price.toFixed(6)}`);
+                await this.try_place_breakeven_stop_loss(local);
 
-                // 强制下单，跳过重复检查（因为check_and_cancel_excess_orders可能刚撤完单）
-                const result = await this.order_executor.place_breakeven_stop_loss(
-                  local.symbol,
-                  local.side,
-                  local.quantity,  // 使用更新后的剩余仓位数量
-                  breakeven_price,
-                  true  // skipExistenceCheck = true，强制重新下单
-                );
-
-                if (result.success) {
-                  local.breakeven_sl_placed = true;
-                  logger.info(`[TradingSystem] ✅ Breakeven stop loss re-placed successfully: orderId=${result.orderId}, qty=${local.quantity}`);
-                  console.log(`\n🛡️ 成本止损已更新: ${local.symbol} @ ${breakeven_price.toFixed(6)} (数量: ${local.quantity}, 盈利: +${current_pnl_percent.toFixed(2)}%)\n`);
-                } else {
-                  logger.error(`[TradingSystem] ❌ Failed to re-place breakeven stop loss: ${result.error}`);
-                }
+                // 恢复（下面会重新计算）
+                local.unrealized_pnl_percent = temp_pnl;
               }
             }
           }

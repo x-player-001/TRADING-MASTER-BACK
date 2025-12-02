@@ -744,9 +744,10 @@ export class OrderExecutor {
 
       // 只计算平仓方向的挂单（LONG持仓的平仓单是SELL，SHORT持仓的平仓单是BUY）
       const close_side = position_side === 'LONG' ? 'SELL' : 'BUY';
-      const close_orders = open_orders.filter(o =>
-        o.side === close_side && o.positionSide === position_side
-      );
+
+      // ⚠️ 注意：单向持仓模式下，挂单的positionSide是BOTH，不是LONG/SHORT
+      // 所以只需要检查side方向即可
+      const close_orders = open_orders.filter(o => o.side === close_side);
 
       // 计算挂单总量（未执行部分）
       const total_pending_qty = close_orders.reduce((sum, o) => sum + o.remainingQty, 0);
@@ -1026,14 +1027,12 @@ export class OrderExecutor {
    * @param side 持仓方向 (LONG/SHORT)
    * @param quantity 数量
    * @param stopPrice 止损触发价格（通常设为成本价）
-   * @param skipExistenceCheck 是否跳过重复检查（部分止盈后强制重新下单时设为true）
    */
   async place_breakeven_stop_loss(
     symbol: string,
     side: PositionSide,
     quantity: number,
-    stopPrice: number,
-    skipExistenceCheck: boolean = false
+    stopPrice: number
   ): Promise<{ success: boolean; orderId?: string; error?: string; alreadyExists?: boolean }> {
     if (this.mode === TradingMode.PAPER) {
       logger.info(`[OrderExecutor] Paper mode: breakeven stop loss simulated for ${symbol}`);
@@ -1045,15 +1044,11 @@ export class OrderExecutor {
     }
 
     try {
-      // ⭐ 检查是否已有止损挂单（除非明确跳过检查）
-      if (!skipExistenceCheck) {
-        const hasExistingStopLoss = await this.has_stop_loss_order(symbol);
-        if (hasExistingStopLoss) {
-          logger.info(`[OrderExecutor] Stop loss order already exists for ${symbol}, skipping`);
-          return { success: true, alreadyExists: true };
-        }
-      } else {
-        logger.info(`[OrderExecutor] Skipping stop loss existence check for ${symbol} (forced re-place after partial close)`);
+      // ⭐ 先检查是否已有止损挂单，避免重复下单
+      const hasExistingStopLoss = await this.has_stop_loss_order(symbol);
+      if (hasExistingStopLoss) {
+        logger.info(`[OrderExecutor] Stop loss order already exists for ${symbol}, skipping`);
+        return { success: true, alreadyExists: true };
       }
 
       // 格式化数量精度
