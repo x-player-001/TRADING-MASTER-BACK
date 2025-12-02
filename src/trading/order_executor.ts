@@ -1026,12 +1026,14 @@ export class OrderExecutor {
    * @param side 持仓方向 (LONG/SHORT)
    * @param quantity 数量
    * @param stopPrice 止损触发价格（通常设为成本价）
+   * @param skipExistenceCheck 是否跳过重复检查（部分止盈后强制重新下单时设为true）
    */
   async place_breakeven_stop_loss(
     symbol: string,
     side: PositionSide,
     quantity: number,
-    stopPrice: number
+    stopPrice: number,
+    skipExistenceCheck: boolean = false
   ): Promise<{ success: boolean; orderId?: string; error?: string; alreadyExists?: boolean }> {
     if (this.mode === TradingMode.PAPER) {
       logger.info(`[OrderExecutor] Paper mode: breakeven stop loss simulated for ${symbol}`);
@@ -1043,11 +1045,15 @@ export class OrderExecutor {
     }
 
     try {
-      // ⭐ 先检查是否已有止损挂单，避免重复下单
-      const hasExistingStopLoss = await this.has_stop_loss_order(symbol);
-      if (hasExistingStopLoss) {
-        logger.info(`[OrderExecutor] Stop loss order already exists for ${symbol}, skipping`);
-        return { success: true, alreadyExists: true };
+      // ⭐ 检查是否已有止损挂单（除非明确跳过检查）
+      if (!skipExistenceCheck) {
+        const hasExistingStopLoss = await this.has_stop_loss_order(symbol);
+        if (hasExistingStopLoss) {
+          logger.info(`[OrderExecutor] Stop loss order already exists for ${symbol}, skipping`);
+          return { success: true, alreadyExists: true };
+        }
+      } else {
+        logger.info(`[OrderExecutor] Skipping stop loss existence check for ${symbol} (forced re-place after partial close)`);
       }
 
       // 格式化数量精度
