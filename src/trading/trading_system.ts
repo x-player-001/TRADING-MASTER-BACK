@@ -623,15 +623,14 @@ export class TradingSystem {
         logger.info(`[TradingSystem] Position ${position.symbol} timeout (${holding_time_minutes.toFixed(1)}min >= ${this.config.max_holding_time_minutes}min), closing @ ${current_price}...`);
 
         // ⭐ 先撤销所有挂单，再平仓（防止竞态：平仓后止盈单触发导致开反向仓）
-        try {
-          const cancelled = await this.order_executor.cancel_all_open_orders(position.symbol);
-          if (cancelled) {
-            logger.info(`[TradingSystem] Cancelled all open orders for ${position.symbol} before timeout close`);
-          } else {
-            logger.warn(`[TradingSystem] Failed to cancel orders for ${position.symbol}, proceeding with close anyway`);
-          }
-        } catch (cancel_err) {
-          logger.warn(`[TradingSystem] Error cancelling orders for ${position.symbol}:`, cancel_err);
+        const cancel_success = await this.order_executor.cancel_all_open_orders(position.symbol, 5);  // 增加到5次重试
+
+        if (cancel_success) {
+          logger.info(`[TradingSystem] ✅ Successfully cancelled all open orders for ${position.symbol} before timeout close`);
+        } else {
+          // ⚠️ 撤单失败但仍继续平仓（因为超时必须平仓），记录严重警告
+          logger.error(`[TradingSystem] ❌ CRITICAL: Failed to cancel orders for ${position.symbol} after 5 retries before timeout close! Risk of opening reverse position!`);
+          console.error(`\n🚨 严重警告: ${position.symbol} 超时平仓前撤单失败！继续平仓但可能开反向仓位！\n`);
         }
 
         // 执行超时平仓
@@ -1150,6 +1149,33 @@ export class TradingSystem {
               bp.positionAmt,  // 剩余仓位数量
               position_side
             );
+
+            // ⭐ 部分止盈后，重新下成本止损单（用新的剩余仓位数量）
+            // 如果之前已经下过成本止损单，需要撤销旧的并重新下单
+            if (local.breakeven_sl_placed) {
+              logger.info(`[TradingSystem] Partial close detected, re-placing breakeven stop loss with updated quantity ${bp.positionAmt}`);
+
+              // 重置标记，允许重新下单
+              local.breakeven_sl_placed = false;
+
+              // 重新下成本止损单（check_and_cancel_excess_orders已经撤销了旧的止损单）
+              // 只有在仍然盈利>=5%时才重新下单
+              const current_margin = local.entry_price * local.quantity / local.leverage;
+              const current_pnl_percent = current_margin > 0
+                ? (bp.unrealizedProfit / current_margin) * 100
+                : 0;
+
+              if (current_pnl_percent >= 5) {
+                // 临时更新 unrealized_pnl_percent 用于下单判断
+                const temp_pnl = local.unrealized_pnl_percent;
+                local.unrealized_pnl_percent = current_pnl_percent;
+
+                await this.try_place_breakeven_stop_loss(local);
+
+                // 恢复（下面会重新计算）
+                local.unrealized_pnl_percent = temp_pnl;
+              }
+            }
           }
 
           // 更新未实现盈亏
@@ -1183,11 +1209,16 @@ export class TradingSystem {
 
           // ⭐ 撤销该币种所有未成交的止盈/止损挂单
           // 场景：成本止损或手动平仓后，之前挂的分批止盈单需要撤销，否则会开反向仓
-          try {
-            await this.order_executor.cancel_all_open_orders(lp.symbol);
-            logger.info(`[TradingSystem] Cancelled all open orders for ${lp.symbol} after position closed`);
-          } catch (cancel_err) {
-            logger.warn(`[TradingSystem] Failed to cancel open orders for ${lp.symbol}:`, cancel_err);
+          const cancel_success = await this.order_executor.cancel_all_open_orders(lp.symbol, 5);  // 增加到5次重试
+
+          if (cancel_success) {
+            logger.info(`[TradingSystem] ✅ Successfully cancelled all open orders for ${lp.symbol} after position closed`);
+          } else {
+            // ⚠️ 撤单失败是严重问题，记录错误并打印警告
+            logger.error(`[TradingSystem] ❌ CRITICAL: Failed to cancel open orders for ${lp.symbol} after 5 retries! Risk of opening reverse position!`);
+            console.error(`\n🚨 严重警告: ${lp.symbol} 仓位已平仓但挂单撤销失败！可能会开反向仓位！\n`);
+
+            // TODO: 可以在这里添加告警通知（钉钉、邮件等）
           }
 
           // ⭐ 从币安查询精确的平仓数据
