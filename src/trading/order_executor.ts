@@ -754,16 +754,60 @@ export class OrderExecutor {
 
       logger.info(`[OrderExecutor] ${symbol} pending orders check: position_qty=${remaining_position_qty.toFixed(6)}, pending_close_qty=${total_pending_qty.toFixed(6)}, orders_count=${close_orders.length}`);
 
-      // 如果挂单总量超过剩余仓位，撤销所有挂单
+      // 如果挂单总量超过剩余仓位，智能撤单
       // 使用小容差避免浮点数精度问题
       if (total_pending_qty > remaining_position_qty + 0.0001) {
-        logger.warn(`[OrderExecutor] ⚠️ Pending orders (${total_pending_qty.toFixed(6)}) exceed remaining position (${remaining_position_qty.toFixed(6)}) for ${symbol}, cancelling all orders to prevent reverse position`);
+        logger.warn(`[OrderExecutor] ⚠️ Pending orders (${total_pending_qty.toFixed(6)}) exceed remaining position (${remaining_position_qty.toFixed(6)}) for ${symbol}`);
 
-        const cancelled = await this.cancel_all_open_orders(symbol);
-        if (cancelled) {
-          console.log(`\n⚠️ 检测到挂单数量(${total_pending_qty.toFixed(4)})超过剩余仓位(${remaining_position_qty.toFixed(4)})，已撤销${symbol}所有挂单\n`);
+        // ⭐ 智能撤单：优先撤销成本止损单，保留止盈单
+        // 成本止损单类型: STOP_MARKET 或 STOP
+        // 止盈单类型: TAKE_PROFIT_MARKET, TRAILING_STOP_MARKET
+        const stop_loss_orders = close_orders.filter(o =>
+          o.type === 'STOP_MARKET' || o.type === 'STOP'
+        );
+        const take_profit_orders = close_orders.filter(o =>
+          o.type === 'TAKE_PROFIT_MARKET' || o.type === 'TRAILING_STOP_MARKET'
+        );
+
+        const stop_loss_qty = stop_loss_orders.reduce((sum, o) => sum + o.remainingQty, 0);
+        const take_profit_qty = take_profit_orders.reduce((sum, o) => sum + o.remainingQty, 0);
+
+        logger.info(`[OrderExecutor] ${symbol} order breakdown: SL_qty=${stop_loss_qty.toFixed(6)} (${stop_loss_orders.length} orders), TP_qty=${take_profit_qty.toFixed(6)} (${take_profit_orders.length} orders)`);
+
+        // 先尝试只撤销成本止损单
+        if (stop_loss_orders.length > 0) {
+          logger.info(`[OrderExecutor] Cancelling ${stop_loss_orders.length} stop loss orders for ${symbol} (qty=${stop_loss_qty.toFixed(6)})`);
+
+          let all_cancelled = true;
+          for (const order of stop_loss_orders) {
+            try {
+              await this.trading_api!.cancel_order(symbol, order.orderId);
+              logger.info(`[OrderExecutor] ✅ Cancelled stop loss order ${order.orderId} (${order.remainingQty})`);
+            } catch (err) {
+              logger.error(`[OrderExecutor] ❌ Failed to cancel stop loss order ${order.orderId}:`, err);
+              all_cancelled = false;
+            }
+          }
+
+          // 撤销成本止损单后，重新检查
+          const remaining_tp_qty = take_profit_qty;
+          if (remaining_tp_qty <= remaining_position_qty + 0.0001) {
+            console.log(`\n⚠️ 检测到成本止损单数量过大(${stop_loss_qty.toFixed(4)})，已撤销成本止损单，保留止盈单(${remaining_tp_qty.toFixed(4)})\n`);
+            return all_cancelled;
+          } else {
+            // 止盈单数量仍然超标，需要全部撤销（这种情况不应该发生）
+            logger.error(`[OrderExecutor] ❌ CRITICAL: Take profit orders (${remaining_tp_qty.toFixed(6)}) still exceed position (${remaining_position_qty.toFixed(6)}) after cancelling SL, cancelling all orders`);
+            const cancelled = await this.cancel_all_open_orders(symbol);
+            console.log(`\n🚨 严重错误: 止盈单数量(${remaining_tp_qty.toFixed(4)})超过剩余仓位(${remaining_position_qty.toFixed(4)})，已撤销所有挂单\n`);
+            return cancelled;
+          }
+        } else {
+          // 没有成本止损单，但挂单总量超标（不应该发生）
+          logger.error(`[OrderExecutor] ❌ CRITICAL: No stop loss orders but total pending exceeds position, cancelling all orders`);
+          const cancelled = await this.cancel_all_open_orders(symbol);
+          console.log(`\n🚨 严重错误: 挂单数量(${total_pending_qty.toFixed(4)})超过剩余仓位(${remaining_position_qty.toFixed(4)})，已撤销所有挂单\n`);
+          return cancelled;
         }
-        return cancelled;
       }
 
       return true;
