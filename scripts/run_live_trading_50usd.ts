@@ -71,7 +71,7 @@ async function main() {
     };
 
     const risk_config: RiskConfig = {
-      max_position_size_percent: 10,          // 10%保证金 = $5
+      max_position_size_percent: 12,          // 10%保证金 = $5
       max_total_positions: 5,                 // 最多5个仓位
       max_positions_per_symbol: 1,            // 单币种最多1个
       default_stop_loss_percent: 100,         // 无固定止损（逐仓自动限损）
@@ -80,9 +80,9 @@ async function main() {
       trailing_stop_callback_rate: 15,        // 回调15%触发
       // ⭐ 分批止盈配置: 30%@+7%, 30%@+13.8%, 40%跟踪止盈(激活+5%, 回调10%)
       take_profit_targets: [
-        { percentage: 30, target_profit_pct: 7 },              // 第1批: 30%仓位 @+7% (PnL≈42%)
+        { percentage: 20, target_profit_pct: 7 },              // 第1批: 30%仓位 @+7% (PnL≈42%)
         { percentage: 30, target_profit_pct: 13.8 },           // 第2批: 30%仓位 @+13.8% (PnL≈83%)
-        { percentage: 40, target_profit_pct: 0, is_trailing: true, trailing_callback_pct: 3, activation_profit_pct: 5 }  // 第3批: 40%仓位 激活+5%后开始跟踪(价格回调3%平仓)
+        { percentage: 50, target_profit_pct: 0, is_trailing: true, trailing_callback_pct: 3, activation_profit_pct: 12 }  // 第3批: 40%仓位 激活+5%后开始跟踪(价格回调3%平仓)
       ],
       daily_loss_limit_percent: 20,           // 每日亏损20%暂停
       consecutive_loss_limit: 999,            // 不限制连续亏损（与回测一致）
