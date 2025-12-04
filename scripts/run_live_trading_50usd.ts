@@ -45,10 +45,7 @@ async function main() {
   const trading_mode = TradingMode.LIVE;  // 🔴 实盘模式
   const initial_balance = 50;             // $50 初始资金
 
-  console.log('\n🔴 警告: 即将使用真实资金交易!');
-  console.log('   请确认已经过充分测试!');
-  console.log('   5秒后继续...\n');
-  await new Promise(resolve => setTimeout(resolve, 5000));
+  console.log('\n🔴 警告: 即将使用真实资金交易!\n');
 
   try {
     // 初始化配置
