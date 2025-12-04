@@ -609,6 +609,14 @@ export class OIPollingService {
           ? this.calculate_price_from_2h_low(anomaly.symbol, current_price)
           : { price_2h_low: undefined, price_from_2h_low_pct: undefined };
 
+        // 🎯 计算2小时价格趋势（避免下跌趋势中开多单）
+        const price_2h_trend = current_price > 0
+          ? this.calculate_price_2h_trend(anomaly.symbol, current_price)
+          : { price_2h_ago: undefined, price_2h_change_pct: undefined };
+
+        // 🎯 计算1小时价格波动率（避免高波动行情入场）
+        const price_1h_volatility = this.calculate_price_1h_volatility(anomaly.symbol);
+
         // 构建临时的异动记录（用于信号评分计算）
         const temp_record: OIAnomalyRecord = {
           symbol: anomaly.symbol,
@@ -640,7 +648,14 @@ export class OIPollingService {
           price_from_high_pct: price_extremes.price_from_high_pct,
           // 添加2小时价格极值数据（更精准的追高判断）
           price_2h_low: price_2h_data.price_2h_low,
-          price_from_2h_low_pct: price_2h_data.price_from_2h_low_pct
+          price_from_2h_low_pct: price_2h_data.price_from_2h_low_pct,
+          // ⭐ 添加2小时价格趋势数据（避免下跌趋势）
+          price_2h_ago: price_2h_trend.price_2h_ago,
+          price_2h_change_pct: price_2h_trend.price_2h_change_pct,
+          // ⭐ 添加1小时波动率数据（避免高波动）
+          price_1h_high: price_1h_volatility.price_1h_high,
+          price_1h_low: price_1h_volatility.price_1h_low,
+          price_1h_volatility_pct: price_1h_volatility.price_1h_volatility_pct
         };
 
         // 🎯 计算信号评分
@@ -938,6 +953,96 @@ export class OIPollingService {
     const price_from_2h_low_pct = ((current_price - price_2h_low) / price_2h_low) * 100;
 
     return { price_2h_low, price_from_2h_low_pct };
+  }
+
+  /**
+   * 获取2小时前的价格（环形队列中最早的价格点）
+   * 用于计算2小时价格趋势（避免在下跌趋势中开多单）
+   */
+  private get_price_2h_ago(symbol: string): number | undefined {
+    const window = this.price_2h_window.get(symbol);
+    if (!window || window.count < this.PRICE_WINDOW_SIZE) {
+      // 数据不足2小时，返回undefined
+      return undefined;
+    }
+
+    // 环形队列中最早的价格点 = 当前写入位置（因为环形队列会覆盖最旧的数据）
+    const oldest_index = window.index;
+    const price_2h_ago = window.prices[oldest_index];
+
+    return price_2h_ago > 0 ? price_2h_ago : undefined;
+  }
+
+  /**
+   * 计算2小时价格变化百分比
+   * 正数 = 上涨，负数 = 下跌
+   */
+  private calculate_price_2h_trend(symbol: string, current_price: number): {
+    price_2h_ago: number | undefined;
+    price_2h_change_pct: number | undefined;
+  } {
+    const price_2h_ago = this.get_price_2h_ago(symbol);
+
+    if (!price_2h_ago || price_2h_ago <= 0) {
+      return { price_2h_ago: undefined, price_2h_change_pct: undefined };
+    }
+
+    const price_2h_change_pct = ((current_price - price_2h_ago) / price_2h_ago) * 100;
+
+    return { price_2h_ago, price_2h_change_pct };
+  }
+
+  /**
+   * 计算1小时内的价格波动率
+   * 波动率 = (1小时内最高价 - 最低价) / 最低价 * 100%
+   */
+  private calculate_price_1h_volatility(symbol: string): {
+    price_1h_high: number | undefined;
+    price_1h_low: number | undefined;
+    price_1h_volatility_pct: number | undefined;
+  } {
+    const window = this.price_2h_window.get(symbol);
+    if (!window || window.count === 0) {
+      return {
+        price_1h_high: undefined,
+        price_1h_low: undefined,
+        price_1h_volatility_pct: undefined
+      };
+    }
+
+    // 计算最近60个价格点（1小时 = 60分钟）
+    const points_1h = Math.min(60, window.count);
+
+    let max_price = -Infinity;
+    let min_price = Infinity;
+
+    // 从最新的数据开始往回取60个点
+    for (let i = 0; i < points_1h; i++) {
+      // 计算实际索引（从当前位置往回数）
+      const idx = (window.index - 1 - i + this.PRICE_WINDOW_SIZE) % this.PRICE_WINDOW_SIZE;
+      const price = window.prices[idx];
+
+      if (price > 0) {
+        if (price > max_price) max_price = price;
+        if (price < min_price) min_price = price;
+      }
+    }
+
+    if (max_price === -Infinity || min_price === Infinity || min_price <= 0) {
+      return {
+        price_1h_high: undefined,
+        price_1h_low: undefined,
+        price_1h_volatility_pct: undefined
+      };
+    }
+
+    const volatility_pct = ((max_price - min_price) / min_price) * 100;
+
+    return {
+      price_1h_high: max_price,
+      price_1h_low: min_price,
+      price_1h_volatility_pct: volatility_pct
+    };
   }
 
   /**

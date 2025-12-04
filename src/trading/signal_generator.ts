@@ -112,6 +112,37 @@ export class SignalGenerator {
       ? Math.abs(parseFloat(anomaly.price_change_percent.toString()))
       : 0;
 
+    // 判断信号方向（OI增加 = 做多信号）
+    const is_long_signal = parseFloat(anomaly.percent_change.toString()) > 0;
+
+    // ⭐ 第零步：检查价格趋势和波动率（优先级最高，避免下跌趋势和高波动）
+
+    // ❌ 1. 检查2小时价格趋势：避免下跌趋势中开多单
+    if (is_long_signal && anomaly.price_2h_change_pct !== null && anomaly.price_2h_change_pct !== undefined) {
+      const price_2h_change = parseFloat(anomaly.price_2h_change_pct.toString());
+
+      // 如果2小时价格变化 < -10%，说明处于下跌趋势，拒绝做多
+      if (price_2h_change < -10) {
+        return {
+          allowed: false,
+          reason: `2小时价格下跌${Math.abs(price_2h_change).toFixed(1)}% (<-10%), 下跌趋势避免做多`
+        };
+      }
+    }
+
+    // ❌ 2. 检查1小时波动率：避免高波动行情入场
+    if (anomaly.price_1h_volatility_pct !== null && anomaly.price_1h_volatility_pct !== undefined) {
+      const volatility = parseFloat(anomaly.price_1h_volatility_pct.toString());
+
+      // 如果1小时波动率 > 20%，说明行情波动剧烈，暂停入场
+      if (volatility > 20) {
+        return {
+          allowed: false,
+          reason: `1小时波动率${volatility.toFixed(1)}% (>20%), 高波动暂停入场`
+        };
+      }
+    }
+
     // ❌ 第一步：检查晚期狂欢信号（无需查询数据库）
     // OI已增长>20% 或 价格已上涨>15%
     if (oi_change > 20) {

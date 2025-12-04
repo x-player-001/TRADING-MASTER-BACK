@@ -92,6 +92,15 @@ export interface OIAnomalyRecord {
   // 2小时价格极值相关字段（更精准的追高判断）
   price_2h_low?: number;                   // 2小时内最低价
   price_from_2h_low_pct?: number;          // 相对2小时低点的涨幅(%)
+
+  // 2小时价格趋势相关字段（避免下跌趋势中开多单）
+  price_2h_ago?: number;                   // 2小时前的价格
+  price_2h_change_pct?: number;            // 2小时价格变化率(%) - 正数上涨，负数下跌
+
+  // 1小时价格波动率相关字段（避免高波动行情入场）
+  price_1h_high?: number;                  // 1小时内最高价
+  price_1h_low?: number;                   // 1小时内最低价
+  price_1h_volatility_pct?: number;        // 1小时波动率(%) = (最高-最低)/最低*100
 }
 
 // OI监控配置
