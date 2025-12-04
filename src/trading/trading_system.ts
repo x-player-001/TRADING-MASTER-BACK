@@ -1065,6 +1065,12 @@ export class TradingSystem {
 
       // 检查币安有但本地没有的持仓（需要添加）
       for (const bp of binance_positions) {
+        // 调试：打印比较详情
+        const matching_local = local_positions.filter(lp => lp.symbol === bp.symbol);
+        if (matching_local.length > 0) {
+          logger.debug(`[TradingSystem] Comparing ${bp.symbol}: binance side='${bp.side}', local sides=[${matching_local.map(lp => `'${lp.side}'`).join(', ')}]`);
+        }
+
         const local = local_positions.find(lp => lp.symbol === bp.symbol && lp.side === bp.side);
 
         if (!local) {

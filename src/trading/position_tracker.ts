@@ -310,6 +310,13 @@ export class PositionTracker {
    * 添加从币安同步的持仓（用于持仓同步）
    */
   add_synced_position(position: PositionRecord): void {
+    // 检查是否已存在相同的持仓（防止重复添加）
+    const existing = this.find_open_position(position.symbol, position.side);
+    if (existing) {
+      logger.warn(`[PositionTracker] Position already exists: ${position.symbol} ${position.side}, skipping duplicate add`);
+      return;
+    }
+
     // 使用字符串ID生成数字ID
     const numeric_id = this.position_id_counter++;
     position.id = numeric_id;
