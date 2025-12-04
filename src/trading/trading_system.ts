@@ -471,7 +471,8 @@ export class TradingSystem {
           percentage: target.percentage,
           target_profit_pct: target.target_profit_pct,
           is_trailing: target.is_trailing,
-          trailing_callback_pct: target.trailing_callback_pct
+          trailing_callback_pct: target.trailing_callback_pct,
+          activation_profit_pct: target.activation_profit_pct
         }))
       };
       logger.info(`[TradingSystem] Using multi-batch take profit: ${tp_config.targets.length} targets`);
