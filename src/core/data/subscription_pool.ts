@@ -116,11 +116,13 @@ export class SubscriptionPool extends EventEmitter {
    * 处理从币安WebSocket接收到的消息
    * @param message - 币安WebSocket消息
    */
+  private message_count: number = 0;
+
   private handle_message(message: BinanceWebSocketMessage): void {
-    // 调试：首次收到消息时记录格式
-    if (!this.first_message_logged) {
-      this.first_message_logged = true;
-      logger.info(`[SubscriptionPool] 首次收到WebSocket消息，格式: ${JSON.stringify(message).slice(0, 200)}...`);
+    this.message_count++;
+    // 调试：记录前5条消息
+    if (this.message_count <= 5) {
+      logger.info(`[SubscriptionPool] 第${this.message_count}条WebSocket消息: ${JSON.stringify(message).slice(0, 300)}`);
     }
 
     // 处理直接事件格式 {"e":"kline","s":"SOLUSDT",...}
@@ -337,14 +339,16 @@ export class SubscriptionPool extends EventEmitter {
     };
 
     try {
-      this.ws!.send(JSON.stringify(subscribe_message));
+      const msg_str = JSON.stringify(subscribe_message);
+      logger.info(`📡 发送订阅请求: ${msg_str}`);
+      this.ws!.send(msg_str);
 
       // 记录已订阅的流
       streams.forEach(stream => {
         this.subscribed_streams.add(stream);
       });
 
-      logger.info(`📡 Subscription request sent for ${streams.length} streams`);
+      logger.info(`📡 Subscription request sent for ${streams.length} streams: ${streams.join(', ')}`);
     } catch (error) {
       logger.error('Failed to subscribe streams', error);
       throw error;
