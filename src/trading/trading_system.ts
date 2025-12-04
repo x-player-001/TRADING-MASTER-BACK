@@ -1359,7 +1359,13 @@ export class TradingSystem {
   private setup_mark_price_listener(): void {
     if (!this.subscription_pool) return;
 
+    let first_update = true;
     this.subscription_pool.on('mark_price_data', async (event: { symbol: string; data: any }) => {
+      // 首次收到事件时记录
+      if (first_update) {
+        first_update = false;
+        logger.info(`[TradingSystem] ✅ 首次收到markPrice事件: ${event.symbol} = ${event.data.mark_price}`);
+      }
       await this.handle_mark_price_update(event.symbol, event.data.mark_price);
     });
 

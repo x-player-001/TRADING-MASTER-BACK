@@ -12,6 +12,7 @@ export class SubscriptionPool extends EventEmitter {
   private reconnect_attempts: number = 0;
   private is_connected: boolean = false;
   private subscribed_streams: Set<string> = new Set();
+  private mark_price_received: boolean = false;
 
   private constructor() {
     super();
@@ -157,6 +158,11 @@ export class SubscriptionPool extends EventEmitter {
       if (message.stream.startsWith('!markPrice@arr')) {
         // data 是数组，包含所有合约的 markPrice
         if (Array.isArray(message.data)) {
+          // 首次收到时记录日志
+          if (!this.mark_price_received) {
+            this.mark_price_received = true;
+            logger.info(`[SubscriptionPool] ✅ markPrice聚合流首次收到数据，共 ${message.data.length} 个币种`);
+          }
           for (const item of message.data) {
             this.emit('mark_price_data', {
               symbol: item.s,
