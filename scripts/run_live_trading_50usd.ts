@@ -246,7 +246,9 @@ async function main() {
           // ANSI颜色：绿色\x1b[32m 红色\x1b[31m 黄色\x1b[33m 青色\x1b[36m 重置\x1b[0m
           const pnl_color = pos.unrealized_pnl >= 0 ? '\x1b[32m' : '\x1b[31m'; // 盈利绿色，亏损红色
           const reset = '\x1b[0m';
-          console.log(`  └─ \x1b[36m${pos.symbol}\x1b[0m: \x1b[33m${pos.side}\x1b[0m @ $${pos.entry_price.toFixed(4)} → $${pos.current_price.toFixed(4)} | PnL: ${pnl_color}${pnl_sign}$${pos.unrealized_pnl.toFixed(2)} (${pnl_sign}${pos.unrealized_pnl_percent.toFixed(2)}%)${reset} | 持仓: ${hold_time}分钟`);
+          // 根据价格大小动态调整小数位数
+          const price_decimals = pos.entry_price < 0.01 ? 6 : pos.entry_price < 1 ? 5 : pos.entry_price < 100 ? 4 : 2;
+          console.log(`  └─ \x1b[36m${pos.symbol}\x1b[0m: \x1b[33m${pos.side}\x1b[0m @ $${pos.entry_price.toFixed(price_decimals)} → $${pos.current_price.toFixed(price_decimals)} | PnL: ${pnl_color}${pnl_sign}$${pos.unrealized_pnl.toFixed(2)} (${pnl_sign}${pos.unrealized_pnl_percent.toFixed(2)}%)${reset} | 持仓: ${hold_time}分钟`);
         });
       }
 
