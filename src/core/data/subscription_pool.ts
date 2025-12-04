@@ -118,11 +118,30 @@ export class SubscriptionPool extends EventEmitter {
    */
   private message_count: number = 0;
 
-  private handle_message(message: BinanceWebSocketMessage): void {
+  private handle_message(message: BinanceWebSocketMessage | any[]): void {
     this.message_count++;
     // 调试：记录前5条消息
     if (this.message_count <= 5) {
       logger.info(`[SubscriptionPool] 第${this.message_count}条WebSocket消息: ${JSON.stringify(message).slice(0, 300)}`);
+    }
+
+    // 处理顶层数组格式 [{"e":"markPriceUpdate",...}, {...}, ...]
+    // 这是 !markPrice@arr@1s 聚合流的返回格式
+    if (Array.isArray(message)) {
+      if (message.length > 0 && message[0].e === 'markPriceUpdate') {
+        // 首次收到时记录日志
+        if (!this.mark_price_received) {
+          this.mark_price_received = true;
+          logger.info(`[SubscriptionPool] ✅ markPrice聚合流首次收到数据，共 ${message.length} 个币种`);
+        }
+        for (const item of message) {
+          this.emit('mark_price_data', {
+            symbol: item.s,
+            data: this.parse_mark_price_data(item)
+          });
+        }
+      }
+      return;
     }
 
     // 处理直接事件格式 {"e":"kline","s":"SOLUSDT",...}
