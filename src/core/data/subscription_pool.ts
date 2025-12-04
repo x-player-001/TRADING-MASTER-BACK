@@ -152,8 +152,9 @@ export class SubscriptionPool extends EventEmitter {
     }
     // 处理流格式 {"stream":"solusdt@kline_15m","data":{...}}
     else if (message.stream && message.data) {
-      // 处理 markPrice 聚合流 {"stream":"!markPrice@arr","data":[{...},{...},...]}
-      if (message.stream === '!markPrice@arr') {
+      // 处理 markPrice 聚合流 {"stream":"!markPrice@arr@1s","data":[{...},{...},...]}
+      // 币安返回的stream名称包含频率后缀，使用startsWith匹配
+      if (message.stream.startsWith('!markPrice@arr')) {
         // data 是数组，包含所有合约的 markPrice
         if (Array.isArray(message.data)) {
           for (const item of message.data) {
