@@ -13,6 +13,7 @@ export class SubscriptionPool extends EventEmitter {
   private is_connected: boolean = false;
   private subscribed_streams: Set<string> = new Set();
   private mark_price_received: boolean = false;
+  private first_message_logged: boolean = false;
 
   private constructor() {
     super();
@@ -116,6 +117,12 @@ export class SubscriptionPool extends EventEmitter {
    * @param message - 币安WebSocket消息
    */
   private handle_message(message: BinanceWebSocketMessage): void {
+    // 调试：首次收到消息时记录格式
+    if (!this.first_message_logged) {
+      this.first_message_logged = true;
+      logger.info(`[SubscriptionPool] 首次收到WebSocket消息，格式: ${JSON.stringify(message).slice(0, 200)}...`);
+    }
+
     // 处理直接事件格式 {"e":"kline","s":"SOLUSDT",...}
     if (message.e) {
       const event_type = message.e;
