@@ -142,6 +142,12 @@ export class SubscriptionPool extends EventEmitter {
           symbol,
           data: message
         });
+      } else if (event_type === 'markPriceUpdate') {
+        // 标记价格更新事件
+        this.emit('mark_price_data', {
+          symbol,
+          data: this.parse_mark_price_data(message)
+        });
       }
     }
     // 处理流格式 {"stream":"solusdt@kline_15m","data":{...}}
@@ -169,6 +175,12 @@ export class SubscriptionPool extends EventEmitter {
         this.emit('trade_data', {
           symbol,
           data: message.data
+        });
+      } else if (stream_type.includes('markPrice')) {
+        // 标记价格流
+        this.emit('mark_price_data', {
+          symbol,
+          data: this.parse_mark_price_data(message.data)
         });
       }
     }
@@ -210,6 +222,21 @@ export class SubscriptionPool extends EventEmitter {
       volume: parseFloat(kline.v),
       trade_count: kline.n,
       is_final: kline.x
+    };
+  }
+
+  /**
+   * 解析币安标记价格数据为标准格式
+   * @param data - 原始markPrice数据
+   */
+  private parse_mark_price_data(data: any): any {
+    return {
+      symbol: data.s,
+      mark_price: parseFloat(data.p),           // 标记价格
+      index_price: parseFloat(data.i),          // 指数价格
+      funding_rate: parseFloat(data.r),         // 资金费率
+      next_funding_time: data.T,                // 下次资金费率时间
+      timestamp: data.E || Date.now()
     };
   }
 

@@ -193,28 +193,25 @@ async function main() {
       console.log('⚠️ 历史交易回填失败:', err instanceof Error ? err.message : err);
     }
 
-    // ⭐ 启动WebSocket仓位监控（实时推送 + 60秒兜底轮询）
-    // 替代原来的10秒定时轮询，提升实时性
-    console.log('🔗 正在启动WebSocket仓位监控...');
+    // ⭐ 启动 markPrice 实时监控（用于成本止损检测）
+    console.log('🔗 正在启动 markPrice 实时监控...');
     try {
-      await trading_system.start_position_monitor(60000); // 60秒兜底轮询
-      const monitor_status = trading_system.get_position_monitor_status();
-      if (monitor_status.websocket_connected) {
-        console.log('✅ WebSocket仓位监控已启动 (实时推送 + 60秒兜底轮询)');
-      } else {
-        console.log('⚠️ WebSocket连接失败，已降级为60秒轮询模式');
-      }
+      await trading_system.start_mark_price_monitor();
+      const monitor_status = trading_system.get_mark_price_monitor_status();
+      console.log(`✅ markPrice 监控已启动 (订阅币种: ${monitor_status.subscribed_symbols.length}个)`);
     } catch (err) {
-      console.log('⚠️ WebSocket监控启动失败，降级为定时轮询');
-      // 降级：使用定时轮询
-      setInterval(async () => {
-        try {
-          await trading_system.sync_positions_from_binance();
-        } catch (err) {
-          // 静默处理同步错误
-        }
-      }, 10000);
+      console.log('⚠️ markPrice 监控启动失败:', err instanceof Error ? err.message : err);
     }
+
+    // ⭐ 定时同步币安持仓（每30秒）
+    // 包含：持仓同步、价格更新、超时检查、成本止损检测（兜底）
+    setInterval(async () => {
+      try {
+        await trading_system.sync_positions_from_binance();
+      } catch (err) {
+        // 静默处理同步错误，避免刷屏
+      }
+    }, 30000); // 30秒同步一次
 
     // 状态显示函数
     const print_status = async () => {
@@ -222,7 +219,7 @@ async function main() {
       const trade_status = trading_system.get_status();
       const statistics = trading_system.get_statistics();
       const open_positions = trading_system.get_open_positions();
-      const monitor_status = trading_system.get_position_monitor_status();
+      const monitor_status = trading_system.get_mark_price_monitor_status();
 
       console.log('\n' + '='.repeat(80));
       console.log(`📊 实时状态 [${new Date().toLocaleString('zh-CN')}]`);
@@ -231,9 +228,9 @@ async function main() {
       // OI监控状态
       console.log(`OI监控: ${oi_status.is_running ? '✅ 运行中' : '❌ 已停止'} | 监控币种: ${oi_status.active_symbols_count}个 | 运行时长: ${Math.floor(oi_status.uptime_ms / 60000)}分钟`);
 
-      // 仓位监控状态
-      const ws_status = monitor_status.websocket_connected ? '✅ WebSocket' : '⚠️ 轮询';
-      console.log(`仓位监控: ${monitor_status.running ? ws_status : '❌ 已停止'}`);
+      // markPrice 监控状态
+      const subscribed_count = monitor_status.subscribed_symbols.length;
+      console.log(`价格监控: ${monitor_status.running ? '✅ 运行中' : '❌ 已停止'} | 订阅币种: ${subscribed_count}个`);
       console.log('-'.repeat(80));
 
       // 交易状态

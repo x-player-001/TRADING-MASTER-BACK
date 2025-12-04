@@ -22,8 +22,8 @@ import { StrategyEngine } from './strategy_engine';
 import { RiskManager } from './risk_manager';
 import { OrderExecutor } from './order_executor';
 import { PositionTracker } from './position_tracker';
-import { PositionMonitor, PositionChangeEvent } from './position_monitor';
 import { OrderRecordRepository } from '../database/order_record_repository';
+import { SubscriptionPool } from '../core/data/subscription_pool';
 import { signal_processing_repository } from '../database/signal_processing_repository';
 import {
   SignalProcessingResult,
@@ -40,8 +40,10 @@ export class TradingSystem {
   private position_tracker: PositionTracker;
   private order_record_repository: OrderRecordRepository;
 
-  // ⭐ WebSocket仓位监控（实时推送）
-  private position_monitor: PositionMonitor | null = null;
+  // ⭐ markPrice 实时订阅（用于成本止损检测）
+  private subscription_pool: SubscriptionPool | null = null;
+  private subscribed_mark_price_symbols: Set<string> = new Set();
+  private mark_price_listener_attached: boolean = false;
 
   private config: TradingSystemConfig;
   private is_enabled: boolean = false;
@@ -525,6 +527,11 @@ export class TradingSystem {
     // 格式：${symbol}_${direction}_${timestamp}，包含方向以区分多空
     const position_id = `${signal.symbol}_${signal.direction}_${Date.now()}`;
     position.position_id = position_id;
+
+    // ⭐ 开仓后订阅 markPrice 流，实时监控成本止损条件
+    this.subscribe_mark_price(signal.symbol).catch(err => {
+      logger.error(`[TradingSystem] Failed to subscribe markPrice for ${signal.symbol}:`, err);
+    });
 
     // 写入数据库（统一从 userTrades 获取数据）
     if (this.config.mode === TradingMode.PAPER) {
@@ -1243,6 +1250,11 @@ export class TradingSystem {
           this.position_tracker.mark_position_closed(lp.id, realized_pnl);
           removed++;
 
+          // ⭐ 平仓后取消 markPrice 订阅
+          this.unsubscribe_mark_price(lp.symbol).catch(err => {
+            logger.error(`[TradingSystem] Failed to unsubscribe markPrice for ${lp.symbol}:`, err);
+          });
+
           // 写入新表 order_records（同步发现的平仓）
           const trading_mode_str = this.config.mode === TradingMode.TESTNET ? 'TESTNET' : 'LIVE';
 
@@ -1304,127 +1316,166 @@ export class TradingSystem {
   }
 
   /**
-   * 启动WebSocket仓位监控
-   * 实时接收仓位变化，替代定时轮询
-   *
-   * @param fallback_polling_interval 兜底轮询间隔（毫秒），默认60秒
+   * 启动 markPrice 实时价格监控
+   * 用于实时检测成本止损条件（盈利>=5%时自动下保本止损单）
    */
-  async start_position_monitor(fallback_polling_interval: number = 60000): Promise<void> {
+  async start_mark_price_monitor(): Promise<void> {
     if (this.config.mode === TradingMode.PAPER) {
-      logger.info('[TradingSystem] Paper mode - position monitor not needed');
+      logger.info('[TradingSystem] Paper mode - mark price monitor not needed');
       return;
     }
 
-    const api_key = process.env.BINANCE_API_KEY;
-    const api_secret = process.env.BINANCE_API_SECRET;
+    // 获取 SubscriptionPool 单例
+    this.subscription_pool = SubscriptionPool.getInstance();
 
-    if (!api_key || !api_secret) {
-      logger.error('[TradingSystem] Missing API credentials for position monitor');
-      return;
+    // 设置 markPrice 事件监听（只设置一次）
+    if (!this.mark_price_listener_attached) {
+      this.setup_mark_price_listener();
+      this.mark_price_listener_attached = true;
     }
 
-    // 获取 trading_api
-    const trading_api = this.order_executor.get_trading_api();
-    if (!trading_api) {
-      logger.error('[TradingSystem] Trading API not initialized');
-      return;
-    }
+    // 检查是否有已有持仓需要订阅
+    await this.subscribe_existing_positions_mark_price();
 
-    // 创建仓位监控器
-    this.position_monitor = new PositionMonitor(api_key, api_secret, trading_api, {
-      fallback_polling_interval,
-      enable_websocket: true,
-      enable_fallback_polling: true
+    logger.info('[TradingSystem] ✅ Mark price monitor started');
+  }
+
+  /**
+   * 设置 markPrice 事件监听器
+   */
+  private setup_mark_price_listener(): void {
+    if (!this.subscription_pool) return;
+
+    this.subscription_pool.on('mark_price_data', async (event: { symbol: string; data: any }) => {
+      await this.handle_mark_price_update(event.symbol, event.data.mark_price);
     });
 
-    // 设置事件监听
-    this.setup_position_monitor_events();
+    logger.info('[TradingSystem] Mark price listener attached');
+  }
 
-    // 启动监控
+  /**
+   * 处理 markPrice 更新
+   * 实时检查是否达到成本止损条件
+   */
+  private async handle_mark_price_update(symbol: string, mark_price: number): Promise<void> {
+    // 查找该币种的持仓
+    const positions = this.position_tracker.get_open_positions();
+    const position = positions.find(p => p.symbol === symbol);
+
+    if (!position) {
+      // 没有持仓，不需要处理（可能刚平仓但还没取消订阅）
+      return;
+    }
+
+    // 已经下过保本止损单，不重复处理
+    if (position.breakeven_sl_placed) {
+      return;
+    }
+
+    // 计算当前盈亏率
+    // 保证金 = entry_price * quantity / leverage
+    const margin = position.entry_price * position.quantity / position.leverage;
+    let pnl: number;
+
+    if (position.side === PositionSide.LONG) {
+      pnl = (mark_price - position.entry_price) * position.quantity;
+    } else {
+      pnl = (position.entry_price - mark_price) * position.quantity;
+    }
+
+    const pnl_percent = margin > 0 ? (pnl / margin) * 100 : 0;
+
+    // 更新本地持仓的当前价格和盈亏
+    position.current_price = mark_price;
+    position.unrealized_pnl = pnl;
+    position.unrealized_pnl_percent = pnl_percent;
+
+    // 检查是否达到保本止损条件（盈利 >= 5%）
+    if (pnl_percent >= 5) {
+      logger.info(`[TradingSystem] 📈 ${symbol} reached +${pnl_percent.toFixed(2)}% via real-time markPrice, placing breakeven stop loss`);
+      await this.try_place_breakeven_stop_loss(position);
+    }
+  }
+
+  /**
+   * 订阅指定币种的 markPrice 流
+   */
+  async subscribe_mark_price(symbol: string): Promise<void> {
+    if (!this.subscription_pool) {
+      logger.warn('[TradingSystem] Subscription pool not initialized');
+      return;
+    }
+
+    // 已经订阅过，跳过
+    if (this.subscribed_mark_price_symbols.has(symbol)) {
+      logger.debug(`[TradingSystem] ${symbol} markPrice already subscribed`);
+      return;
+    }
+
+    const stream = `${symbol.toLowerCase()}@markPrice@1s`;  // 每秒更新
+
     try {
-      await this.position_monitor.start();
-      logger.info('[TradingSystem] ✅ Position monitor started (WebSocket + fallback polling)');
+      await this.subscription_pool.subscribe_streams([stream]);
+      this.subscribed_mark_price_symbols.add(symbol);
+      logger.info(`[TradingSystem] 📡 Subscribed to ${symbol} markPrice stream`);
     } catch (error) {
-      logger.error('[TradingSystem] Failed to start position monitor:', error);
-      // 失败不抛异常，降级到手动轮询
+      logger.error(`[TradingSystem] Failed to subscribe ${symbol} markPrice:`, error);
     }
   }
 
   /**
-   * 停止WebSocket仓位监控
+   * 取消订阅指定币种的 markPrice 流
    */
-  async stop_position_monitor(): Promise<void> {
-    if (this.position_monitor) {
-      await this.position_monitor.stop();
-      this.position_monitor = null;
-      logger.info('[TradingSystem] Position monitor stopped');
+  async unsubscribe_mark_price(symbol: string): Promise<void> {
+    if (!this.subscription_pool) {
+      return;
     }
-  }
 
-  /**
-   * 设置仓位监控事件处理
-   */
-  private setup_position_monitor_events(): void {
-    if (!this.position_monitor) return;
+    // 没有订阅过，跳过
+    if (!this.subscribed_mark_price_symbols.has(symbol)) {
+      return;
+    }
 
-    // 监听部分平仓事件 - 需要更新止损单
-    this.position_monitor.on('partial_close', async (event: PositionChangeEvent) => {
-      logger.info(`[TradingSystem] 🔔 Partial close detected via ${event.source}: ${event.symbol} ${event.previousAmt} → ${event.currentAmt}`);
+    const stream = `${symbol.toLowerCase()}@markPrice@1s`;
 
-      // 触发仓位同步（更新本地状态和止损单）
-      await this.handle_position_change(event);
-    });
-
-    // 监听全部平仓事件
-    this.position_monitor.on('full_close', async (event: PositionChangeEvent) => {
-      logger.info(`[TradingSystem] 🔔 Full close detected via ${event.source}: ${event.symbol}`);
-
-      // 触发仓位同步
-      await this.handle_position_change(event);
-    });
-
-    // 监听仓位变化事件（通用）
-    this.position_monitor.on('position_change', async (event: PositionChangeEvent) => {
-      logger.debug(`[TradingSystem] Position change: ${event.symbol} ${event.changeType} via ${event.source}`);
-    });
-
-    // 监听连接状态
-    this.position_monitor.on('stream_connected', () => {
-      logger.info('[TradingSystem] 🔗 Position WebSocket connected');
-    });
-
-    this.position_monitor.on('stream_disconnected', () => {
-      logger.warn('[TradingSystem] ⚠️ Position WebSocket disconnected');
-    });
-
-    this.position_monitor.on('stream_failed', () => {
-      logger.error('[TradingSystem] ❌ Position WebSocket failed, relying on fallback polling');
-    });
-  }
-
-  /**
-   * 处理仓位变化事件
-   * 当检测到部分平仓或全部平仓时调用
-   */
-  private async handle_position_change(event: PositionChangeEvent): Promise<void> {
     try {
-      // 直接调用同步方法更新状态
-      await this.sync_positions_from_binance();
+      await this.subscription_pool.unsubscribe_streams([stream]);
+      this.subscribed_mark_price_symbols.delete(symbol);
+      logger.info(`[TradingSystem] 📡 Unsubscribed from ${symbol} markPrice stream`);
     } catch (error) {
-      logger.error('[TradingSystem] Failed to handle position change:', error);
+      logger.error(`[TradingSystem] Failed to unsubscribe ${symbol} markPrice:`, error);
     }
   }
 
   /**
-   * 获取仓位监控状态
+   * 为所有已有持仓订阅 markPrice
+   * 程序启动时调用，确保已有持仓能实时监控
    */
-  get_position_monitor_status(): {
+  private async subscribe_existing_positions_mark_price(): Promise<void> {
+    const positions = this.position_tracker.get_open_positions();
+
+    for (const position of positions) {
+      // 只订阅还没下过保本止损的持仓
+      if (!position.breakeven_sl_placed) {
+        await this.subscribe_mark_price(position.symbol);
+      }
+    }
+
+    if (positions.length > 0) {
+      logger.info(`[TradingSystem] Subscribed markPrice for ${positions.length} existing positions`);
+    }
+  }
+
+  /**
+   * 获取 markPrice 监控状态
+   */
+  get_mark_price_monitor_status(): {
     running: boolean;
-    websocket_connected: boolean;
+    subscribed_symbols: string[];
   } {
     return {
-      running: this.position_monitor?.is_monitor_running() || false,
-      websocket_connected: this.position_monitor?.is_websocket_connected() || false
+      running: this.mark_price_listener_attached,
+      subscribed_symbols: Array.from(this.subscribed_mark_price_symbols)
     };
   }
 
