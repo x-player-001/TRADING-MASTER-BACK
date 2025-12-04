@@ -197,8 +197,7 @@ async function main() {
     console.log('🔗 正在启动 markPrice 实时监控...');
     try {
       await trading_system.start_mark_price_monitor();
-      const monitor_status = trading_system.get_mark_price_monitor_status();
-      console.log(`✅ markPrice 监控已启动 (订阅币种: ${monitor_status.subscribed_symbols.length}个)`);
+      console.log('✅ markPrice 监控已启动 (聚合流: 所有合约)');
     } catch (err) {
       console.log('⚠️ markPrice 监控启动失败:', err instanceof Error ? err.message : err);
     }
@@ -229,8 +228,7 @@ async function main() {
       console.log(`OI监控: ${oi_status.is_running ? '✅ 运行中' : '❌ 已停止'} | 监控币种: ${oi_status.active_symbols_count}个 | 运行时长: ${Math.floor(oi_status.uptime_ms / 60000)}分钟`);
 
       // markPrice 监控状态
-      const subscribed_count = monitor_status.subscribed_symbols.length;
-      console.log(`价格监控: ${monitor_status.running ? '✅ 运行中' : '❌ 已停止'} | 订阅币种: ${subscribed_count}个`);
+      console.log(`价格监控: ${monitor_status.running ? '✅ 运行中 (聚合流)' : '❌ 已停止'}`);
       console.log('-'.repeat(80));
 
       // 交易状态

@@ -528,11 +528,6 @@ export class TradingSystem {
     const position_id = `${signal.symbol}_${signal.direction}_${Date.now()}`;
     position.position_id = position_id;
 
-    // ⭐ 开仓后订阅 markPrice 流，实时监控成本止损条件
-    this.subscribe_mark_price(signal.symbol).catch(err => {
-      logger.error(`[TradingSystem] Failed to subscribe markPrice for ${signal.symbol}:`, err);
-    });
-
     // 写入数据库（统一从 userTrades 获取数据）
     if (this.config.mode === TradingMode.PAPER) {
       // 纸面交易：直接用下单返回值写库
@@ -1250,11 +1245,6 @@ export class TradingSystem {
           this.position_tracker.mark_position_closed(lp.id, realized_pnl);
           removed++;
 
-          // ⭐ 平仓后取消 markPrice 订阅
-          this.unsubscribe_mark_price(lp.symbol).catch(err => {
-            logger.error(`[TradingSystem] Failed to unsubscribe markPrice for ${lp.symbol}:`, err);
-          });
-
           // 写入新表 order_records（同步发现的平仓）
           const trading_mode_str = this.config.mode === TradingMode.TESTNET ? 'TESTNET' : 'LIVE';
 
@@ -1317,7 +1307,7 @@ export class TradingSystem {
 
   /**
    * 启动 markPrice 实时价格监控
-   * 用于实时检测成本止损条件（盈利>=5%时自动下保本止损单）
+   * 使用聚合流订阅所有合约的标记价格，用于实时检测成本止损条件
    */
   async start_mark_price_monitor(): Promise<void> {
     if (this.config.mode === TradingMode.PAPER) {
@@ -1334,22 +1324,25 @@ export class TradingSystem {
       this.mark_price_listener_attached = true;
     }
 
+    // 订阅所有合约的 markPrice 聚合流
+    const subscribe_all_mark_price = async () => {
+      try {
+        // !markPrice@arr@1s = 所有合约标记价格，每秒推送一次
+        await this.subscription_pool!.subscribe_streams(['!markPrice@arr@1s']);
+        this.subscribed_mark_price_symbols.add('ALL');  // 标记已订阅聚合流
+        logger.info('[TradingSystem] 📡 Subscribed to all markPrice streams (!markPrice@arr@1s)');
+      } catch (err) {
+        logger.error('[TradingSystem] Failed to subscribe markPrice:', err);
+      }
+    };
+
     // 检查 WebSocket 是否已连接
     const status = this.subscription_pool.get_connection_status();
     if (status.connected) {
-      // 已连接，直接订阅已有持仓
-      await this.subscribe_existing_positions_mark_price();
+      await subscribe_all_mark_price();
     } else {
-      // 未连接，先注册连接成功回调，再主动连接
       logger.info('[TradingSystem] WebSocket not connected, connecting...');
-
-      // 注册连接成功回调
-      this.subscription_pool.once('connected', async () => {
-        logger.info('[TradingSystem] WebSocket connected, subscribing existing positions...');
-        await this.subscribe_existing_positions_mark_price();
-      });
-
-      // 主动连接 WebSocket
+      this.subscription_pool.once('connected', subscribe_all_mark_price);
       try {
         await this.subscription_pool.connect();
       } catch (err) {
@@ -1418,84 +1411,15 @@ export class TradingSystem {
   }
 
   /**
-   * 订阅指定币种的 markPrice 流
-   */
-  async subscribe_mark_price(symbol: string): Promise<void> {
-    if (!this.subscription_pool) {
-      logger.warn('[TradingSystem] Subscription pool not initialized');
-      return;
-    }
-
-    // 已经订阅过，跳过
-    if (this.subscribed_mark_price_symbols.has(symbol)) {
-      logger.debug(`[TradingSystem] ${symbol} markPrice already subscribed`);
-      return;
-    }
-
-    const stream = `${symbol.toLowerCase()}@markPrice@1s`;  // 每秒更新
-
-    try {
-      await this.subscription_pool.subscribe_streams([stream]);
-      this.subscribed_mark_price_symbols.add(symbol);
-      logger.info(`[TradingSystem] 📡 Subscribed to ${symbol} markPrice stream`);
-    } catch (error) {
-      logger.error(`[TradingSystem] Failed to subscribe ${symbol} markPrice:`, error);
-    }
-  }
-
-  /**
-   * 取消订阅指定币种的 markPrice 流
-   */
-  async unsubscribe_mark_price(symbol: string): Promise<void> {
-    if (!this.subscription_pool) {
-      return;
-    }
-
-    // 没有订阅过，跳过
-    if (!this.subscribed_mark_price_symbols.has(symbol)) {
-      return;
-    }
-
-    const stream = `${symbol.toLowerCase()}@markPrice@1s`;
-
-    try {
-      await this.subscription_pool.unsubscribe_streams([stream]);
-      this.subscribed_mark_price_symbols.delete(symbol);
-      logger.info(`[TradingSystem] 📡 Unsubscribed from ${symbol} markPrice stream`);
-    } catch (error) {
-      logger.error(`[TradingSystem] Failed to unsubscribe ${symbol} markPrice:`, error);
-    }
-  }
-
-  /**
-   * 为所有已有持仓订阅 markPrice
-   * 程序启动时调用，确保已有持仓能实时监控
-   */
-  private async subscribe_existing_positions_mark_price(): Promise<void> {
-    const positions = this.position_tracker.get_open_positions();
-
-    for (const position of positions) {
-      // 只订阅还没下过保本止损的持仓
-      if (!position.breakeven_sl_placed) {
-        await this.subscribe_mark_price(position.symbol);
-      }
-    }
-
-    if (positions.length > 0) {
-      logger.info(`[TradingSystem] Subscribed markPrice for ${positions.length} existing positions`);
-    }
-  }
-
-  /**
    * 获取 markPrice 监控状态
    */
   get_mark_price_monitor_status(): {
     running: boolean;
-    subscribed_symbols: string[];
+    subscribed_count: number;
   } {
     return {
       running: this.mark_price_listener_attached,
-      subscribed_symbols: Array.from(this.subscribed_mark_price_symbols)
+      subscribed_count: this.subscribed_mark_price_symbols.has('ALL') ? 1 : 0
     };
   }
 

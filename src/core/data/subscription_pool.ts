@@ -152,6 +152,20 @@ export class SubscriptionPool extends EventEmitter {
     }
     // 处理流格式 {"stream":"solusdt@kline_15m","data":{...}}
     else if (message.stream && message.data) {
+      // 处理 markPrice 聚合流 {"stream":"!markPrice@arr","data":[{...},{...},...]}
+      if (message.stream === '!markPrice@arr') {
+        // data 是数组，包含所有合约的 markPrice
+        if (Array.isArray(message.data)) {
+          for (const item of message.data) {
+            this.emit('mark_price_data', {
+              symbol: item.s,
+              data: this.parse_mark_price_data(item)
+            });
+          }
+        }
+        return;
+      }
+
       const stream_parts = message.stream.split('@');
       const symbol = stream_parts[0].toUpperCase();
       const stream_type = stream_parts[1];
@@ -177,7 +191,7 @@ export class SubscriptionPool extends EventEmitter {
           data: message.data
         });
       } else if (stream_type.includes('markPrice')) {
-        // 标记价格流
+        // 单个币种的标记价格流
         this.emit('mark_price_data', {
           symbol,
           data: this.parse_mark_price_data(message.data)
