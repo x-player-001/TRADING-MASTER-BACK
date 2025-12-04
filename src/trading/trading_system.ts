@@ -1340,12 +1340,21 @@ export class TradingSystem {
       // 已连接，直接订阅已有持仓
       await this.subscribe_existing_positions_mark_price();
     } else {
-      // 未连接，等待连接后再订阅
-      logger.info('[TradingSystem] WebSocket not connected, waiting for connection...');
+      // 未连接，先注册连接成功回调，再主动连接
+      logger.info('[TradingSystem] WebSocket not connected, connecting...');
+
+      // 注册连接成功回调
       this.subscription_pool.once('connected', async () => {
         logger.info('[TradingSystem] WebSocket connected, subscribing existing positions...');
         await this.subscribe_existing_positions_mark_price();
       });
+
+      // 主动连接 WebSocket
+      try {
+        await this.subscription_pool.connect();
+      } catch (err) {
+        logger.error('[TradingSystem] Failed to connect WebSocket:', err);
+      }
     }
 
     logger.info('[TradingSystem] ✅ Mark price monitor started');
