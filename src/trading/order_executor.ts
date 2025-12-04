@@ -1239,4 +1239,12 @@ export class OrderExecutor {
       return null;
     }
   }
+
+  /**
+   * 获取交易API实例
+   * 用于PositionMonitor等需要直接访问API的模块
+   */
+  get_trading_api(): BinanceFuturesTradingAPI | undefined {
+    return this.trading_api;
+  }
 }

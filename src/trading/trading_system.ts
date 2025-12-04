@@ -22,6 +22,7 @@ import { StrategyEngine } from './strategy_engine';
 import { RiskManager } from './risk_manager';
 import { OrderExecutor } from './order_executor';
 import { PositionTracker } from './position_tracker';
+import { PositionMonitor, PositionChangeEvent } from './position_monitor';
 import { OrderRecordRepository } from '../database/order_record_repository';
 import { signal_processing_repository } from '../database/signal_processing_repository';
 import {
@@ -38,6 +39,9 @@ export class TradingSystem {
   private order_executor: OrderExecutor;
   private position_tracker: PositionTracker;
   private order_record_repository: OrderRecordRepository;
+
+  // ⭐ WebSocket仓位监控（实时推送）
+  private position_monitor: PositionMonitor | null = null;
 
   private config: TradingSystemConfig;
   private is_enabled: boolean = false;
@@ -1297,6 +1301,131 @@ export class TradingSystem {
       logger.error('[TradingSystem] Failed to sync positions from Binance:', error);
       return { synced: 0, added: 0, removed: 0, updated: 0 };
     }
+  }
+
+  /**
+   * 启动WebSocket仓位监控
+   * 实时接收仓位变化，替代定时轮询
+   *
+   * @param fallback_polling_interval 兜底轮询间隔（毫秒），默认60秒
+   */
+  async start_position_monitor(fallback_polling_interval: number = 60000): Promise<void> {
+    if (this.config.mode === TradingMode.PAPER) {
+      logger.info('[TradingSystem] Paper mode - position monitor not needed');
+      return;
+    }
+
+    const api_key = process.env.BINANCE_API_KEY;
+    const api_secret = process.env.BINANCE_API_SECRET;
+
+    if (!api_key || !api_secret) {
+      logger.error('[TradingSystem] Missing API credentials for position monitor');
+      return;
+    }
+
+    // 获取 trading_api
+    const trading_api = this.order_executor.get_trading_api();
+    if (!trading_api) {
+      logger.error('[TradingSystem] Trading API not initialized');
+      return;
+    }
+
+    // 创建仓位监控器
+    this.position_monitor = new PositionMonitor(api_key, api_secret, trading_api, {
+      fallback_polling_interval,
+      enable_websocket: true,
+      enable_fallback_polling: true
+    });
+
+    // 设置事件监听
+    this.setup_position_monitor_events();
+
+    // 启动监控
+    try {
+      await this.position_monitor.start();
+      logger.info('[TradingSystem] ✅ Position monitor started (WebSocket + fallback polling)');
+    } catch (error) {
+      logger.error('[TradingSystem] Failed to start position monitor:', error);
+      // 失败不抛异常，降级到手动轮询
+    }
+  }
+
+  /**
+   * 停止WebSocket仓位监控
+   */
+  async stop_position_monitor(): Promise<void> {
+    if (this.position_monitor) {
+      await this.position_monitor.stop();
+      this.position_monitor = null;
+      logger.info('[TradingSystem] Position monitor stopped');
+    }
+  }
+
+  /**
+   * 设置仓位监控事件处理
+   */
+  private setup_position_monitor_events(): void {
+    if (!this.position_monitor) return;
+
+    // 监听部分平仓事件 - 需要更新止损单
+    this.position_monitor.on('partial_close', async (event: PositionChangeEvent) => {
+      logger.info(`[TradingSystem] 🔔 Partial close detected via ${event.source}: ${event.symbol} ${event.previousAmt} → ${event.currentAmt}`);
+
+      // 触发仓位同步（更新本地状态和止损单）
+      await this.handle_position_change(event);
+    });
+
+    // 监听全部平仓事件
+    this.position_monitor.on('full_close', async (event: PositionChangeEvent) => {
+      logger.info(`[TradingSystem] 🔔 Full close detected via ${event.source}: ${event.symbol}`);
+
+      // 触发仓位同步
+      await this.handle_position_change(event);
+    });
+
+    // 监听仓位变化事件（通用）
+    this.position_monitor.on('position_change', async (event: PositionChangeEvent) => {
+      logger.debug(`[TradingSystem] Position change: ${event.symbol} ${event.changeType} via ${event.source}`);
+    });
+
+    // 监听连接状态
+    this.position_monitor.on('stream_connected', () => {
+      logger.info('[TradingSystem] 🔗 Position WebSocket connected');
+    });
+
+    this.position_monitor.on('stream_disconnected', () => {
+      logger.warn('[TradingSystem] ⚠️ Position WebSocket disconnected');
+    });
+
+    this.position_monitor.on('stream_failed', () => {
+      logger.error('[TradingSystem] ❌ Position WebSocket failed, relying on fallback polling');
+    });
+  }
+
+  /**
+   * 处理仓位变化事件
+   * 当检测到部分平仓或全部平仓时调用
+   */
+  private async handle_position_change(event: PositionChangeEvent): Promise<void> {
+    try {
+      // 直接调用同步方法更新状态
+      await this.sync_positions_from_binance();
+    } catch (error) {
+      logger.error('[TradingSystem] Failed to handle position change:', error);
+    }
+  }
+
+  /**
+   * 获取仓位监控状态
+   */
+  get_position_monitor_status(): {
+    running: boolean;
+    websocket_connected: boolean;
+  } {
+    return {
+      running: this.position_monitor?.is_monitor_running() || false,
+      websocket_connected: this.position_monitor?.is_websocket_connected() || false
+    };
   }
 
   /**
