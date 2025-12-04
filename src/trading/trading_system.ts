@@ -1376,12 +1376,7 @@ export class TradingSystem {
     const position = positions.find(p => p.symbol === symbol);
 
     if (!position) {
-      // 没有持仓，不需要处理（可能刚平仓但还没取消订阅）
-      return;
-    }
-
-    // 已经下过保本止损单，不重复处理
-    if (position.breakeven_sl_placed) {
+      // 没有持仓，不需要处理
       return;
     }
 
@@ -1398,13 +1393,13 @@ export class TradingSystem {
 
     const pnl_percent = margin > 0 ? (pnl / margin) * 100 : 0;
 
-    // 更新本地持仓的当前价格和盈亏
+    // 始终更新本地持仓的当前价格和盈亏
     position.current_price = mark_price;
     position.unrealized_pnl = pnl;
     position.unrealized_pnl_percent = pnl_percent;
 
-    // 检查是否达到保本止损条件（盈利 >= 5%）
-    if (pnl_percent >= 5) {
+    // 检查是否达到保本止损条件（盈利 >= 5%），且未下过止损单
+    if (pnl_percent >= 5 && !position.breakeven_sl_placed) {
       logger.info(`[TradingSystem] 📈 ${symbol} reached +${pnl_percent.toFixed(2)}% via real-time markPrice, placing breakeven stop loss`);
       await this.try_place_breakeven_stop_loss(position);
     }
