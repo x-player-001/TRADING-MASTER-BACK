@@ -1334,8 +1334,19 @@ export class TradingSystem {
       this.mark_price_listener_attached = true;
     }
 
-    // 检查是否有已有持仓需要订阅
-    await this.subscribe_existing_positions_mark_price();
+    // 检查 WebSocket 是否已连接
+    const status = this.subscription_pool.get_connection_status();
+    if (status.connected) {
+      // 已连接，直接订阅已有持仓
+      await this.subscribe_existing_positions_mark_price();
+    } else {
+      // 未连接，等待连接后再订阅
+      logger.info('[TradingSystem] WebSocket not connected, waiting for connection...');
+      this.subscription_pool.once('connected', async () => {
+        logger.info('[TradingSystem] WebSocket connected, subscribing existing positions...');
+        await this.subscribe_existing_positions_mark_price();
+      });
+    }
 
     logger.info('[TradingSystem] ✅ Mark price monitor started');
   }
