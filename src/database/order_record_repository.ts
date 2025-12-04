@@ -146,7 +146,7 @@ export class OrderRecordRepository extends BaseRepository {
 
     // 检查是否已存在（避免重复插入）
     const existing = await this.find_by_order_id(record.order_id, record.trading_mode);
-    if (existing) {
+    if (existing && existing.id) {
       logger.info(`[OrderRecordRepository] Order ${record.order_id} already exists, skipping insert`);
       return existing.id;
     }
