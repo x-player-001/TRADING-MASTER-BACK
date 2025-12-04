@@ -85,8 +85,13 @@ export interface WebSocketConfig {
 }
 
 export interface BinanceWebSocketMessage {
-  stream: string;
-  data: any;
+  // 流格式消息 {"stream":"btcusdt@kline_1m","data":{...}}
+  stream?: string;
+  data?: any;
+  // 直接事件格式 {"e":"kline","s":"BTCUSDT",...}
+  e?: string;  // 事件类型
+  s?: string;  // 交易对
+  [key: string]: any;  // 其他字段
 }
 
 export type StreamType = 'ticker' | 'kline' | 'depth' | 'trade';
