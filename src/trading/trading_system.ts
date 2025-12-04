@@ -1065,12 +1065,6 @@ export class TradingSystem {
 
       // 检查币安有但本地没有的持仓（需要添加）
       for (const bp of binance_positions) {
-        // 调试：打印比较详情
-        const matching_local = local_positions.filter(lp => lp.symbol === bp.symbol);
-        if (matching_local.length > 0) {
-          logger.debug(`[TradingSystem] Comparing ${bp.symbol}: binance side='${bp.side}', local sides=[${matching_local.map(lp => `'${lp.side}'`).join(', ')}]`);
-        }
-
         const local = local_positions.find(lp => lp.symbol === bp.symbol && lp.side === bp.side);
 
         if (!local) {
@@ -1365,13 +1359,7 @@ export class TradingSystem {
   private setup_mark_price_listener(): void {
     if (!this.subscription_pool) return;
 
-    let first_update = true;
     this.subscription_pool.on('mark_price_data', async (event: { symbol: string; data: any }) => {
-      // 首次收到事件时记录
-      if (first_update) {
-        first_update = false;
-        logger.info(`[TradingSystem] ✅ 首次收到markPrice事件: ${event.symbol} = ${event.data.mark_price}`);
-      }
       await this.handle_mark_price_update(event.symbol, event.data.mark_price);
     });
 

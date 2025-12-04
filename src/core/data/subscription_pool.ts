@@ -13,7 +13,6 @@ export class SubscriptionPool extends EventEmitter {
   private is_connected: boolean = false;
   private subscribed_streams: Set<string> = new Set();
   private mark_price_received: boolean = false;
-  private first_message_logged: boolean = false;
 
   private constructor() {
     super();
@@ -116,15 +115,7 @@ export class SubscriptionPool extends EventEmitter {
    * 处理从币安WebSocket接收到的消息
    * @param message - 币安WebSocket消息
    */
-  private message_count: number = 0;
-
   private handle_message(message: BinanceWebSocketMessage | any[]): void {
-    this.message_count++;
-    // 调试：记录前5条消息
-    if (this.message_count <= 5) {
-      logger.info(`[SubscriptionPool] 第${this.message_count}条WebSocket消息: ${JSON.stringify(message).slice(0, 300)}`);
-    }
-
     // 处理顶层数组格式 [{"e":"markPriceUpdate",...}, {...}, ...]
     // 这是 !markPrice@arr@1s 聚合流的返回格式
     if (Array.isArray(message)) {
@@ -132,7 +123,7 @@ export class SubscriptionPool extends EventEmitter {
         // 首次收到时记录日志
         if (!this.mark_price_received) {
           this.mark_price_received = true;
-          logger.info(`[SubscriptionPool] ✅ markPrice聚合流首次收到数据，共 ${message.length} 个币种`);
+          logger.info(`[SubscriptionPool] ✅ markPrice聚合流已连接，共 ${message.length} 个币种`);
         }
         for (const item of message) {
           this.emit('mark_price_data', {
@@ -358,16 +349,14 @@ export class SubscriptionPool extends EventEmitter {
     };
 
     try {
-      const msg_str = JSON.stringify(subscribe_message);
-      logger.info(`📡 发送订阅请求: ${msg_str}`);
-      this.ws!.send(msg_str);
+      this.ws!.send(JSON.stringify(subscribe_message));
 
       // 记录已订阅的流
       streams.forEach(stream => {
         this.subscribed_streams.add(stream);
       });
 
-      logger.info(`📡 Subscription request sent for ${streams.length} streams: ${streams.join(', ')}`);
+      logger.info(`📡 Subscribed to ${streams.length} streams: ${streams.join(', ')}`);
     } catch (error) {
       logger.error('Failed to subscribe streams', error);
       throw error;
