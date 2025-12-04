@@ -144,6 +144,13 @@ export class OrderRecordRepository extends BaseRepository {
   async create_order(record: Omit<OrderRecordEntity, 'id' | 'created_at' | 'updated_at'>): Promise<number> {
     await this.ensure_table();
 
+    // 检查是否已存在（避免重复插入）
+    const existing = await this.find_by_order_id(record.order_id, record.trading_mode);
+    if (existing) {
+      logger.info(`[OrderRecordRepository] Order ${record.order_id} already exists, skipping insert`);
+      return existing.id;
+    }
+
     const quote_quantity = record.quote_quantity ?? record.price * record.quantity;
 
     const sql = `
