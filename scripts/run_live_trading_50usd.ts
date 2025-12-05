@@ -77,7 +77,7 @@ async function main() {
       trailing_stop_callback_rate: 15,        // 回调15%触发
       // ⭐ 分批止盈配置: 30%@+7%, 30%@+13.8%, 40%跟踪止盈(激活+5%, 回调10%)
       take_profit_targets: [
-        { percentage: 20, target_profit_pct: 7 },              // 第1批: 30%仓位 @+7% (PnL≈42%)
+        { percentage: 20, target_profit_pct: 6.6 },              // 第1批: 30%仓位 @+7% (PnL≈42%)
         { percentage: 30, target_profit_pct: 13.8 },           // 第2批: 30%仓位 @+13.8% (PnL≈83%)
         { percentage: 50, target_profit_pct: 0, is_trailing: true, trailing_callback_pct: 6, activation_profit_pct: 8 }  // 第3批: 40%仓位 激活+5%后开始跟踪(价格回调3%平仓)
       ],
