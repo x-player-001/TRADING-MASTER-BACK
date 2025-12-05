@@ -958,16 +958,12 @@ export class OIPollingService {
   /**
    * 获取最早的价格点（用于计算价格趋势）
    * 返回环形队列中最早的价格，用于计算价格变化趋势
-   *
-   * 注意：不再要求必须满120个点，只要有足够数据（至少30个点，约30分钟）就计算
-   * 这样启动后更快就能开始趋势过滤
+   * 与 get_price_2h_low() 保持一致，只要有数据就计算
    */
   private get_price_2h_ago(symbol: string): number | undefined {
     const window = this.price_2h_window.get(symbol);
-    const MIN_POINTS_FOR_TREND = 30;  // 至少30个点（约30分钟）才计算趋势
 
-    if (!window || window.count < MIN_POINTS_FOR_TREND) {
-      // 数据不足，返回undefined
+    if (!window || window.count === 0) {
       return undefined;
     }
 

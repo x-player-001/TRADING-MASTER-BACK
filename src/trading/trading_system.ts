@@ -614,7 +614,12 @@ export class TradingSystem {
       const holding_time_ms = now - position.opened_at.getTime();
       const holding_time_minutes = holding_time_ms / (1000 * 60);
 
-      if (holding_time_minutes >= this.config.max_holding_time_minutes) {
+      // 已设置保本止损的持仓，放宽到6小时（360分钟）
+      const effective_max_hold = position.breakeven_sl_placed
+        ? Math.max(this.config.max_holding_time_minutes, 360)
+        : this.config.max_holding_time_minutes;
+
+      if (holding_time_minutes >= effective_max_hold) {
         const current_price = price_map.get(position.symbol);
 
         // 调试日志：为什么没有平仓
@@ -627,7 +632,8 @@ export class TradingSystem {
           continue;
         }
 
-        logger.info(`[TradingSystem] Position ${position.symbol} timeout (${holding_time_minutes.toFixed(1)}min >= ${this.config.max_holding_time_minutes}min), closing @ ${current_price}...`);
+        const breakeven_note = position.breakeven_sl_placed ? ' (保本止损延长至6h)' : '';
+        logger.info(`[TradingSystem] Position ${position.symbol} timeout (${holding_time_minutes.toFixed(1)}min >= ${effective_max_hold}min${breakeven_note}), closing @ ${current_price}...`);
 
         // ⭐ 先撤销所有挂单，再平仓（防止竞态：平仓后止盈单触发导致开反向仓）
         const cancel_success = await this.order_executor.cancel_all_open_orders(position.symbol, 5);  // 增加到5次重试
