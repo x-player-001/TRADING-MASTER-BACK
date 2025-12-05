@@ -617,6 +617,19 @@ export class OIPollingService {
         // 🎯 计算1小时价格波动率（避免高波动行情入场）
         const price_1h_volatility = this.calculate_price_1h_volatility(anomaly.symbol);
 
+        // 🎯 计算30分钟价格突破状态（确保趋势突破入场）
+        // 需要先确定信号方向：OI增加 = LONG, OI减少 = SHORT
+        const oi_change = anomaly.percent_change;
+        const price_change = anomaly.price_change_percent || 0;
+        // OI和价格必须同向才有方向
+        const preliminary_direction: 'LONG' | 'SHORT' | null =
+          (oi_change > 0 && price_change > 0) ? 'LONG' :
+          (oi_change < 0 && price_change < 0) ? 'SHORT' : null;
+
+        const price_breakout = (current_price > 0 && preliminary_direction)
+          ? this.calculate_price_breakout(anomaly.symbol, current_price, preliminary_direction)
+          : { price_30m_high: undefined, price_30m_low: undefined, is_breakout: false, breakout_pct: undefined };
+
         // 构建临时的异动记录（用于信号评分计算）
         const temp_record: OIAnomalyRecord = {
           symbol: anomaly.symbol,
@@ -655,7 +668,12 @@ export class OIPollingService {
           // ⭐ 添加1小时波动率数据（避免高波动）
           price_1h_high: price_1h_volatility.price_1h_high,
           price_1h_low: price_1h_volatility.price_1h_low,
-          price_1h_volatility_pct: price_1h_volatility.price_1h_volatility_pct
+          price_1h_volatility_pct: price_1h_volatility.price_1h_volatility_pct,
+          // ⭐ 添加30分钟价格突破数据（确保趋势突破入场）
+          price_30m_high: price_breakout.price_30m_high,
+          price_30m_low: price_breakout.price_30m_low,
+          is_price_breakout: price_breakout.is_breakout,
+          breakout_pct: price_breakout.breakout_pct
         };
 
         // 🎯 计算信号评分
@@ -1044,6 +1062,88 @@ export class OIPollingService {
       price_1h_high: max_price,
       price_1h_low: min_price,
       price_1h_volatility_pct: volatility_pct
+    };
+  }
+
+  /**
+   * 获取指定分钟内的最高价和最低价
+   * @param symbol 币种
+   * @param minutes 分钟数（最大120）
+   */
+  private get_price_extremes_in_minutes(symbol: string, minutes: number): {
+    high: number | undefined;
+    low: number | undefined;
+  } {
+    const window = this.price_2h_window.get(symbol);
+    if (!window || window.count === 0) {
+      return { high: undefined, low: undefined };
+    }
+
+    // 限制在窗口范围内
+    const points = Math.min(minutes, window.count, this.PRICE_WINDOW_SIZE);
+
+    let max_price = -Infinity;
+    let min_price = Infinity;
+
+    // 从最新的数据开始往回取
+    for (let i = 0; i < points; i++) {
+      const idx = (window.index - 1 - i + this.PRICE_WINDOW_SIZE) % this.PRICE_WINDOW_SIZE;
+      const price = window.prices[idx];
+
+      if (price > 0) {
+        if (price > max_price) max_price = price;
+        if (price < min_price) min_price = price;
+      }
+    }
+
+    return {
+      high: max_price === -Infinity ? undefined : max_price,
+      low: min_price === Infinity ? undefined : min_price
+    };
+  }
+
+  /**
+   * 计算价格突破状态
+   * 检查当前价格是否突破了30分钟内的最高/最低点
+   * @param symbol 币种
+   * @param current_price 当前价格
+   * @param direction 信号方向 (LONG/SHORT)
+   */
+  private calculate_price_breakout(symbol: string, current_price: number, direction: 'LONG' | 'SHORT'): {
+    price_30m_high: number | undefined;
+    price_30m_low: number | undefined;
+    is_breakout: boolean;
+    breakout_pct: number | undefined;
+  } {
+    const extremes = this.get_price_extremes_in_minutes(symbol, 30);
+
+    if (!extremes.high || !extremes.low) {
+      return {
+        price_30m_high: undefined,
+        price_30m_low: undefined,
+        is_breakout: false,
+        breakout_pct: undefined
+      };
+    }
+
+    let is_breakout = false;
+    let breakout_pct: number | undefined;
+
+    if (direction === 'LONG') {
+      // 做多：当前价格要高于30分钟内最高点
+      is_breakout = current_price > extremes.high;
+      breakout_pct = ((current_price - extremes.high) / extremes.high) * 100;
+    } else {
+      // 做空：当前价格要低于30分钟内最低点
+      is_breakout = current_price < extremes.low;
+      breakout_pct = ((extremes.low - current_price) / extremes.low) * 100;
+    }
+
+    return {
+      price_30m_high: extremes.high,
+      price_30m_low: extremes.low,
+      is_breakout,
+      breakout_pct
     };
   }
 

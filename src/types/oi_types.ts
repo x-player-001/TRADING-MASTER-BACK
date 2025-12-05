@@ -101,6 +101,12 @@ export interface OIAnomalyRecord {
   price_1h_high?: number;                  // 1小时内最高价
   price_1h_low?: number;                   // 1小时内最低价
   price_1h_volatility_pct?: number;        // 1小时波动率(%) = (最高-最低)/最低*100
+
+  // 30分钟价格突破相关字段（确认趋势突破）
+  price_30m_high?: number;                 // 30分钟内最高价
+  price_30m_low?: number;                  // 30分钟内最低价
+  is_price_breakout?: boolean;             // 是否价格突破
+  breakout_pct?: number;                   // 突破幅度百分比
 }
 
 // OI监控配置

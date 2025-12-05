@@ -143,6 +143,26 @@ export class SignalGenerator {
       }
     }
 
+    // ❌ 3. 检查30分钟价格突破：确保趋势突破入场
+    if (anomaly.is_price_breakout !== undefined && anomaly.is_price_breakout !== null) {
+      if (!anomaly.is_price_breakout) {
+        // 未突破30分钟高/低点，拒绝入场
+        if (is_long_signal) {
+          const high_30m = anomaly.price_30m_high ? parseFloat(anomaly.price_30m_high.toString()).toFixed(4) : '?';
+          return {
+            allowed: false,
+            reason: `价格未突破30分钟高点(${high_30m}), 等待突破确认`
+          };
+        } else {
+          const low_30m = anomaly.price_30m_low ? parseFloat(anomaly.price_30m_low.toString()).toFixed(4) : '?';
+          return {
+            allowed: false,
+            reason: `价格未跌破30分钟低点(${low_30m}), 等待突破确认`
+          };
+        }
+      }
+    }
+
     // ❌ 第一步：检查晚期狂欢信号（无需查询数据库）
     // OI已增长>20% 或 价格已上涨>15%
     if (oi_change > 20) {
