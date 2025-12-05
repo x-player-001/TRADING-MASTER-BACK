@@ -956,18 +956,24 @@ export class OIPollingService {
   }
 
   /**
-   * 获取2小时前的价格（环形队列中最早的价格点）
-   * 用于计算2小时价格趋势（避免在下跌趋势中开多单）
+   * 获取最早的价格点（用于计算价格趋势）
+   * 返回环形队列中最早的价格，用于计算价格变化趋势
+   *
+   * 注意：不再要求必须满120个点，只要有足够数据（至少30个点，约30分钟）就计算
+   * 这样启动后更快就能开始趋势过滤
    */
   private get_price_2h_ago(symbol: string): number | undefined {
     const window = this.price_2h_window.get(symbol);
-    if (!window || window.count < this.PRICE_WINDOW_SIZE) {
-      // 数据不足2小时，返回undefined
+    const MIN_POINTS_FOR_TREND = 30;  // 至少30个点（约30分钟）才计算趋势
+
+    if (!window || window.count < MIN_POINTS_FOR_TREND) {
+      // 数据不足，返回undefined
       return undefined;
     }
 
-    // 环形队列中最早的价格点 = 当前写入位置（因为环形队列会覆盖最旧的数据）
-    const oldest_index = window.index;
+    // 如果队列已满，最早的点在 index 位置
+    // 如果队列未满，最早的点在 0 位置
+    const oldest_index = window.count >= this.PRICE_WINDOW_SIZE ? window.index : 0;
     const price_2h_ago = window.prices[oldest_index];
 
     return price_2h_ago > 0 ? price_2h_ago : undefined;
