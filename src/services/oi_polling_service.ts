@@ -1066,11 +1066,16 @@ export class OIPollingService {
   }
 
   /**
-   * 获取指定分钟内的最高价和最低价
+   * 获取指定时间范围内的最高价和最低价
    * @param symbol 币种
-   * @param minutes 分钟数（最大120）
+   * @param from_minutes 起始分钟数（往前数，如30表示30分钟前）
+   * @param to_minutes 结束分钟数（往前数，如20表示20分钟前）
+   *
+   * 例如：get_price_extremes_in_range(symbol, 30, 20)
+   * 表示获取"前30分钟到前20分钟"这个时间段的价格极值
+   * 不包含最近20分钟的数据
    */
-  private get_price_extremes_in_minutes(symbol: string, minutes: number): {
+  private get_price_extremes_in_range(symbol: string, from_minutes: number, to_minutes: number): {
     high: number | undefined;
     low: number | undefined;
   } {
@@ -1079,14 +1084,24 @@ export class OIPollingService {
       return { high: undefined, low: undefined };
     }
 
+    // 确保 from > to（from是更早的时间点）
+    const start = Math.max(from_minutes, to_minutes);
+    const end = Math.min(from_minutes, to_minutes);
+
     // 限制在窗口范围内
-    const points = Math.min(minutes, window.count, this.PRICE_WINDOW_SIZE);
+    const actual_start = Math.min(start, window.count, this.PRICE_WINDOW_SIZE);
+    const actual_end = Math.min(end, window.count, this.PRICE_WINDOW_SIZE);
+
+    // 如果数据不足，返回undefined
+    if (actual_start <= actual_end) {
+      return { high: undefined, low: undefined };
+    }
 
     let max_price = -Infinity;
     let min_price = Infinity;
 
-    // 从最新的数据开始往回取
-    for (let i = 0; i < points; i++) {
+    // 从 actual_end 到 actual_start 遍历（不包含最近 actual_end 分钟）
+    for (let i = actual_end; i < actual_start; i++) {
       const idx = (window.index - 1 - i + this.PRICE_WINDOW_SIZE) % this.PRICE_WINDOW_SIZE;
       const price = window.prices[idx];
 
@@ -1104,7 +1119,8 @@ export class OIPollingService {
 
   /**
    * 计算价格突破状态
-   * 检查当前价格是否突破了30分钟内的最高/最低点
+   * 检查当前价格是否突破了"前30分钟到前20分钟"时间段的最高/最低点
+   * 排除最近10分钟的数据，避免短期波动的干扰
    * @param symbol 币种
    * @param current_price 当前价格
    * @param direction 信号方向 (LONG/SHORT)
@@ -1115,7 +1131,8 @@ export class OIPollingService {
     is_breakout: boolean;
     breakout_pct: number | undefined;
   } {
-    const extremes = this.get_price_extremes_in_minutes(symbol, 30);
+    // 获取"前30分钟到前20分钟"的价格极值（排除最近10分钟）
+    const extremes = this.get_price_extremes_in_range(symbol, 30, 10);
 
     if (!extremes.high || !extremes.low) {
       return {
@@ -1130,11 +1147,11 @@ export class OIPollingService {
     let breakout_pct: number | undefined;
 
     if (direction === 'LONG') {
-      // 做多：当前价格要高于30分钟内最高点
+      // 做多：当前价格要高于前30-10分钟的最高点
       is_breakout = current_price > extremes.high;
       breakout_pct = ((current_price - extremes.high) / extremes.high) * 100;
     } else {
-      // 做空：当前价格要低于30分钟内最低点
+      // 做空：当前价格要低于前30-10分钟的最低点
       is_breakout = current_price < extremes.low;
       breakout_pct = ((extremes.low - current_price) / extremes.low) * 100;
     }
