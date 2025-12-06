@@ -102,6 +102,10 @@ export interface OIAnomalyRecord {
   price_1h_low?: number;                   // 1小时内最低价
   price_1h_volatility_pct?: number;        // 1小时波动率(%) = (最高-最低)/最低*100
 
+  // 1分钟价格变化相关字段（避免短期暴涨追涨）
+  price_1m_ago?: number;                   // 1分钟前的价格
+  price_1m_change_pct?: number;            // 1分钟价格变化率(%)
+
   // 30分钟价格突破相关字段（确认趋势突破）
   price_30m_high?: number;                 // 30分钟内最高价
   price_30m_low?: number;                  // 30分钟内最低价

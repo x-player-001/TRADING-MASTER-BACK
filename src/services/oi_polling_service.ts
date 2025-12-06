@@ -617,6 +617,11 @@ export class OIPollingService {
         // 🎯 计算1小时价格波动率（避免高波动行情入场）
         const price_1h_volatility = this.calculate_price_1h_volatility(anomaly.symbol);
 
+        // 🎯 计算1分钟价格变化（避免短期暴涨追涨）
+        const price_1m_change = current_price > 0
+          ? this.calculate_price_1m_change(anomaly.symbol, current_price)
+          : { price_1m_ago: undefined, price_1m_change_pct: undefined };
+
         // 🎯 计算30分钟价格突破状态（确保趋势突破入场）
         // 需要先确定信号方向：OI增加 = LONG, OI减少 = SHORT
         const oi_change = anomaly.percent_change;
@@ -669,6 +674,9 @@ export class OIPollingService {
           price_1h_high: price_1h_volatility.price_1h_high,
           price_1h_low: price_1h_volatility.price_1h_low,
           price_1h_volatility_pct: price_1h_volatility.price_1h_volatility_pct,
+          // ⭐ 添加1分钟价格变化数据（避免短期暴涨追涨）
+          price_1m_ago: price_1m_change.price_1m_ago,
+          price_1m_change_pct: price_1m_change.price_1m_change_pct,
           // ⭐ 添加30分钟价格突破数据（确保趋势突破入场）
           price_30m_high: price_breakout.price_30m_high,
           price_30m_low: price_breakout.price_30m_low,
@@ -991,6 +999,51 @@ export class OIPollingService {
     const price_2h_ago = window.prices[oldest_index];
 
     return price_2h_ago > 0 ? price_2h_ago : undefined;
+  }
+
+  /**
+   * 获取N分钟前的价格
+   * @param symbol 币种
+   * @param minutes_ago 几分钟前（1表示1分钟前）
+   */
+  private get_price_n_minutes_ago(symbol: string, minutes_ago: number): number | undefined {
+    const window = this.price_2h_window.get(symbol);
+
+    if (!window || window.count === 0 || minutes_ago <= 0) {
+      return undefined;
+    }
+
+    // 如果请求的时间超过已有数据，返回undefined
+    if (minutes_ago > window.count) {
+      return undefined;
+    }
+
+    // 计算索引：当前索引往前数 minutes_ago 个位置
+    // window.index 指向下一个要写入的位置，所以最新的价格在 index-1
+    // minutes_ago 分钟前的价格在 index-1-minutes_ago
+    const idx = (window.index - 1 - minutes_ago + this.PRICE_WINDOW_SIZE) % this.PRICE_WINDOW_SIZE;
+    const price = window.prices[idx];
+
+    return price > 0 ? price : undefined;
+  }
+
+  /**
+   * 计算1分钟内的价格变化百分比
+   * 用于检测短期暴涨，避免追涨
+   */
+  private calculate_price_1m_change(symbol: string, current_price: number): {
+    price_1m_ago: number | undefined;
+    price_1m_change_pct: number | undefined;
+  } {
+    const price_1m_ago = this.get_price_n_minutes_ago(symbol, 1);
+
+    if (!price_1m_ago || price_1m_ago <= 0) {
+      return { price_1m_ago: undefined, price_1m_change_pct: undefined };
+    }
+
+    const price_1m_change_pct = ((current_price - price_1m_ago) / price_1m_ago) * 100;
+
+    return { price_1m_ago, price_1m_change_pct };
   }
 
   /**
