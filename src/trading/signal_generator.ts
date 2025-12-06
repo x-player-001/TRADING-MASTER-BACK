@@ -167,17 +167,17 @@ export class SignalGenerator {
     if (anomaly.price_1m_change_pct !== null && anomaly.price_1m_change_pct !== undefined) {
       const price_1m_change = parseFloat(anomaly.price_1m_change_pct.toString());
 
-      // 如果1分钟内价格上涨/下跌超过3%，说明短期暴涨/暴跌，避免追涨杀跌
-      if (is_long_signal && price_1m_change > 3) {
+      // 如果1分钟内价格上涨/下跌超过5%，说明短期暴涨/暴跌，避免追涨杀跌
+      if (is_long_signal && price_1m_change > 5) {
         return {
           allowed: false,
-          reason: `1分钟内价格上涨${price_1m_change.toFixed(1)}% (>3%), 避免追涨`
+          reason: `1分钟内价格上涨${price_1m_change.toFixed(1)}% (>5%), 避免追涨`
         };
       }
-      if (!is_long_signal && price_1m_change < -3) {
+      if (!is_long_signal && price_1m_change < -5) {
         return {
           allowed: false,
-          reason: `1分钟内价格下跌${Math.abs(price_1m_change).toFixed(1)}% (>3%), 避免追跌`
+          reason: `1分钟内价格下跌${Math.abs(price_1m_change).toFixed(1)}% (>5%), 避免追跌`
         };
       }
     }
