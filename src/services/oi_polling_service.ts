@@ -622,7 +622,12 @@ export class OIPollingService {
           ? this.calculate_price_1m_change(anomaly.symbol, current_price)
           : { price_1m_ago: undefined, price_1m_change_pct: undefined };
 
-        // 🎯 计算30分钟价格突破状态（确保趋势突破入场）
+        // 🎯 计算均线趋势（判断趋势方向）
+        const ma_trend_data = current_price > 0
+          ? this.calculate_ma_trend(anomaly.symbol, current_price)
+          : { ma10: undefined, ma30: undefined, ma_trend: undefined };
+
+        // 🎯 计算30分钟价格突破状态（已弃用，改用均线判断，但保留数据记录）
         // 需要先确定信号方向：OI增加 = LONG, OI减少 = SHORT
         const oi_change = anomaly.percent_change;
         const price_change = anomaly.price_change_percent || 0;
@@ -677,11 +682,15 @@ export class OIPollingService {
           // ⭐ 添加1分钟价格变化数据（避免短期暴涨追涨）
           price_1m_ago: price_1m_change.price_1m_ago,
           price_1m_change_pct: price_1m_change.price_1m_change_pct,
-          // ⭐ 添加30分钟价格突破数据（确保趋势突破入场）
+          // ⭐ 添加30分钟价格突破数据（已弃用，改用均线判断，但保留数据记录）
           price_30m_high: price_breakout.price_30m_high,
           price_30m_low: price_breakout.price_30m_low,
           is_price_breakout: price_breakout.is_breakout,
-          breakout_pct: price_breakout.breakout_pct
+          breakout_pct: price_breakout.breakout_pct,
+          // ⭐ 添加均线趋势数据（判断趋势方向）
+          ma10: ma_trend_data.ma10,
+          ma30: ma_trend_data.ma30,
+          ma_trend: ma_trend_data.ma_trend
         };
 
         // 🎯 计算信号评分
@@ -1044,6 +1053,73 @@ export class OIPollingService {
     const price_1m_change_pct = ((current_price - price_1m_ago) / price_1m_ago) * 100;
 
     return { price_1m_ago, price_1m_change_pct };
+  }
+
+  /**
+   * 计算指定周期的移动平均线(MA)
+   * @param symbol 币种
+   * @param period MA周期（分钟数）
+   * @param offset 偏移量（0=当前，3=3分钟前的MA）
+   */
+  private calculate_ma(symbol: string, period: number, offset: number = 0): number | undefined {
+    const window = this.price_2h_window.get(symbol);
+    if (!window || window.count < period + offset) {
+      return undefined;
+    }
+
+    let sum = 0;
+    let valid_count = 0;
+
+    for (let i = 0; i < period; i++) {
+      const idx = (window.index - 1 - offset - i + this.PRICE_WINDOW_SIZE) % this.PRICE_WINDOW_SIZE;
+      const price = window.prices[idx];
+
+      if (price > 0) {
+        sum += price;
+        valid_count++;
+      }
+    }
+
+    if (valid_count < period) {
+      return undefined;
+    }
+
+    return sum / period;
+  }
+
+  /**
+   * 计算均线趋势数据
+   * 用于判断短期和中期趋势方向
+   * @param symbol 币种
+   * @param current_price 当前价格
+   */
+  private calculate_ma_trend(symbol: string, current_price: number): {
+    ma10: number | undefined;
+    ma30: number | undefined;
+    ma_trend: 'UP' | 'DOWN' | 'FLAT' | undefined;
+  } {
+    const ma10 = this.calculate_ma(symbol, 10);
+    const ma30 = this.calculate_ma(symbol, 30);
+
+    if (!ma10 || !ma30) {
+      return { ma10, ma30, ma_trend: undefined };
+    }
+
+    // 判断趋势：
+    // UP = 当前价格 > MA10 且 MA10 > MA30（多头排列）
+    // DOWN = 当前价格 < MA10 且 MA10 < MA30（空头排列）
+    // FLAT = 其他情况
+    let ma_trend: 'UP' | 'DOWN' | 'FLAT';
+
+    if (current_price > ma10 && ma10 > ma30) {
+      ma_trend = 'UP';
+    } else if (current_price < ma10 && ma10 < ma30) {
+      ma_trend = 'DOWN';
+    } else {
+      ma_trend = 'FLAT';
+    }
+
+    return { ma10, ma30, ma_trend };
   }
 
   /**

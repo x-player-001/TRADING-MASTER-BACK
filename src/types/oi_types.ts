@@ -106,11 +106,16 @@ export interface OIAnomalyRecord {
   price_1m_ago?: number;                   // 1分钟前的价格
   price_1m_change_pct?: number;            // 1分钟价格变化率(%)
 
-  // 30分钟价格突破相关字段（确认趋势突破）
+  // 30分钟价格突破相关字段（确认趋势突破）- 已弃用，改用均线判断
   price_30m_high?: number;                 // 30分钟内最高价
   price_30m_low?: number;                  // 30分钟内最低价
   is_price_breakout?: boolean;             // 是否价格突破
   breakout_pct?: number;                   // 突破幅度百分比
+
+  // 均线趋势相关字段（判断趋势方向）
+  ma10?: number;                           // 10分钟均线
+  ma30?: number;                           // 30分钟均线
+  ma_trend?: 'UP' | 'DOWN' | 'FLAT';       // 均线趋势：UP=多头排列, DOWN=空头排列, FLAT=震荡
 }
 
 // OI监控配置

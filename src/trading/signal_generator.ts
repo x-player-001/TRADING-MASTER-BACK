@@ -143,25 +143,48 @@ export class SignalGenerator {
       }
     }
 
-    // ❌ 3. 检查价格突破：确保趋势突破入场（与前30-10分钟的价格极值对比）
-    if (anomaly.is_price_breakout !== undefined && anomaly.is_price_breakout !== null) {
-      if (!anomaly.is_price_breakout) {
-        // 未突破前30-10分钟的高/低点，拒绝入场
-        if (is_long_signal) {
-          const high_30m = anomaly.price_30m_high ? parseFloat(anomaly.price_30m_high.toString()).toFixed(4) : '?';
-          return {
-            allowed: false,
-            reason: `价格未突破前30-10分钟高点(${high_30m}), 等待突破确认`
-          };
-        } else {
-          const low_30m = anomaly.price_30m_low ? parseFloat(anomaly.price_30m_low.toString()).toFixed(4) : '?';
-          return {
-            allowed: false,
-            reason: `价格未跌破前30-10分钟低点(${low_30m}), 等待突破确认`
-          };
-        }
+    // ❌ 3. 检查均线趋势：确保趋势方向正确
+    // 做多要求：MA10 > MA30（多头排列）且价格在MA10之上
+    // 做空要求：MA10 < MA30（空头排列）且价格在MA10之下
+    if (anomaly.ma_trend) {
+      if (is_long_signal && anomaly.ma_trend !== 'UP') {
+        const ma10 = anomaly.ma10 ? parseFloat(anomaly.ma10.toString()).toFixed(4) : '?';
+        const ma30 = anomaly.ma30 ? parseFloat(anomaly.ma30.toString()).toFixed(4) : '?';
+        return {
+          allowed: false,
+          reason: `均线非多头排列(MA10:${ma10}, MA30:${ma30}), 趋势不支持做多`
+        };
+      }
+      if (!is_long_signal && anomaly.ma_trend !== 'DOWN') {
+        const ma10 = anomaly.ma10 ? parseFloat(anomaly.ma10.toString()).toFixed(4) : '?';
+        const ma30 = anomaly.ma30 ? parseFloat(anomaly.ma30.toString()).toFixed(4) : '?';
+        return {
+          allowed: false,
+          reason: `均线非空头排列(MA10:${ma10}, MA30:${ma30}), 趋势不支持做空`
+        };
       }
     }
+
+    // ❌ 3.1 [已弃用] 检查价格突破：确保趋势突破入场（与前30-10分钟的价格极值对比）
+    // 改用均线趋势判断，此逻辑已注释
+    // if (anomaly.is_price_breakout !== undefined && anomaly.is_price_breakout !== null) {
+    //   if (!anomaly.is_price_breakout) {
+    //     // 未突破前30-10分钟的高/低点，拒绝入场
+    //     if (is_long_signal) {
+    //       const high_30m = anomaly.price_30m_high ? parseFloat(anomaly.price_30m_high.toString()).toFixed(4) : '?';
+    //       return {
+    //         allowed: false,
+    //         reason: `价格未突破前30-10分钟高点(${high_30m}), 等待突破确认`
+    //       };
+    //     } else {
+    //       const low_30m = anomaly.price_30m_low ? parseFloat(anomaly.price_30m_low.toString()).toFixed(4) : '?';
+    //       return {
+    //         allowed: false,
+    //         reason: `价格未跌破前30-10分钟低点(${low_30m}), 等待突破确认`
+    //       };
+    //     }
+    //   }
+    // }
 
     // ❌ 4. 检查1分钟价格变化：避免短期暴涨追涨
     if (anomaly.price_1m_change_pct !== null && anomaly.price_1m_change_pct !== undefined) {
