@@ -81,7 +81,7 @@ async function main() {
         { percentage: 30, target_profit_pct: 13.8 },           // 第2批: 30%仓位 @+13.8% (PnL≈83%)
         { percentage: 50, target_profit_pct: 0, is_trailing: true, trailing_callback_pct: 6, activation_profit_pct: 8 }  // 第3批: 40%仓位 激活+5%后开始跟踪(价格回调3%平仓)
       ],
-      daily_loss_limit_percent: 20,           // 每日亏损20%暂停
+      daily_loss_limit_percent: 80,           // 每日亏损20%暂停
       consecutive_loss_limit: 999,            // 不限制连续亏损（与回测一致）
       pause_after_loss_limit: false,          // 不暂停（与回测一致）
       max_leverage: 6,                        // 6倍杠杆
