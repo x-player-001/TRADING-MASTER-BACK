@@ -322,13 +322,14 @@ export class BinanceFuturesTradingAPI {
   }
 
   /**
-   * 下止盈市价单
+   * 下止盈市价单 - 使用 Algo Order API
+   * 2025-12-09 币安将条件单迁移到 Algo Service，必须使用新的 /fapi/v1/algo/order 端点
    * @param symbol 交易对
    * @param side BUY 或 SELL (平仓方向)
    * @param quantity 数量
    * @param stopPrice 触发价格
    * @param positionSide LONG/SHORT
-   * @param reduceOnly 是否只减仓 (默认true)
+   * @param reduceOnly 是否只减仓 (默认true) - 注意：Algo API 不支持 reduceOnly 参数
    */
   async place_take_profit_market_order(
     symbol: string,
@@ -337,34 +338,31 @@ export class BinanceFuturesTradingAPI {
     stopPrice: number,
     positionSide: PositionSide = PositionSide.BOTH,
     reduceOnly: boolean = true
-  ): Promise<OrderResponse> {
+  ): Promise<AlgoOrderResponse> {
     try {
       const timestamp = Date.now();
       const params: Record<string, any> = {
+        algoType: 'CONDITIONAL',
         symbol,
         side,
         type: OrderType.TAKE_PROFIT_MARKET,
         quantity: quantity.toString(),
-        stopPrice: stopPrice.toString(),
+        triggerPrice: stopPrice.toString(),
+        workingType: 'MARK_PRICE',
         timestamp
       };
 
       if (positionSide !== PositionSide.BOTH) {
         params.positionSide = positionSide;
-        // 注意：使用 positionSide (LONG/SHORT) 时，不能同时发送 reduceOnly 参数
-        // 币安会返回错误: Parameter 'reduceonly' sent when not required.
-      } else if (reduceOnly) {
-        // 只有在单向持仓模式 (positionSide=BOTH) 时才能使用 reduceOnly
-        params.reduceOnly = 'true';
       }
 
       const signature = this.sign_request(params);
 
-      const response = await this.api_client.post<OrderResponse>('/fapi/v1/order', null, {
+      const response = await this.api_client.post<AlgoOrderResponse>('/fapi/v1/algo/order', null, {
         params: { ...params, signature }
       });
 
-      logger.info(`[BinanceTradingAPI] Take profit order placed: ${symbol} ${side} ${quantity} @ stopPrice ${stopPrice}`);
+      logger.info(`[BinanceTradingAPI] Take profit algo order placed: ${symbol} ${side} ${quantity} @ triggerPrice ${stopPrice}, algoId=${response.data.algoId}`);
       return response.data;
     } catch (error: any) {
       logger.error(`[BinanceTradingAPI] Failed to place take profit order for ${symbol}:`, error.response?.data || error.message);

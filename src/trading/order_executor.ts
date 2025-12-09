@@ -229,8 +229,8 @@ export class OrderExecutor {
               binance_position_side,
               true
             );
-            tp_order_ids.push(tp_order.orderId);
-            logger.info(`[OrderExecutor] Single TP order placed: ${tp_order.orderId} (100% @ +${last_target.target_profit_pct}%, qty=${quantity})`);
+            tp_order_ids.push(tp_order.algoId);
+            logger.info(`[OrderExecutor] Single TP order placed: algoId=${tp_order.algoId} (100% @ +${last_target.target_profit_pct}%, qty=${quantity})`);
           } catch (error) {
             logger.error(`[OrderExecutor] Failed to place single TP order:`, error);
           }
@@ -304,8 +304,8 @@ export class OrderExecutor {
               binance_position_side,
               true  // reduceOnly
             );
-            tp_order_ids.push(tp_order.orderId);
-            logger.info(`[OrderExecutor] TP order placed: ${tp_order.orderId} (${target.percentage}% @ +${target.target_profit_pct}%, qty=${target_quantity})`);
+            tp_order_ids.push(tp_order.algoId);
+            logger.info(`[OrderExecutor] TP order placed: algoId=${tp_order.algoId} (${target.percentage}% @ +${target.target_profit_pct}%, qty=${target_quantity})`);
           } catch (error) {
             logger.error(`[OrderExecutor] Failed to place TP order:`, error);
           }
