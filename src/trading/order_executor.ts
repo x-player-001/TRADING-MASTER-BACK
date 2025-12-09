@@ -828,8 +828,9 @@ export class OrderExecutor {
       }
 
       // 平仓方向
+      // ⚠️ 单向持仓模式：使用 BOTH，根据 side 判断平仓方向
+      // 平多仓: side=SELL, 平空仓: side=BUY
       const close_side = position_side === 'LONG' ? OrderSide.SELL : OrderSide.BUY;
-      const binance_position_side = position_side === 'LONG' ? BinancePositionSide.LONG : BinancePositionSide.SHORT;
 
       if (use_trailing) {
         // 使用追踪止盈
@@ -841,7 +842,7 @@ export class OrderExecutor {
           close_side,
           formatted_quantity,
           trailing_callback_pct,
-          binance_position_side,
+          BinancePositionSide.BOTH,  // 单向持仓模式
           activation_price
         );
 
@@ -854,7 +855,7 @@ export class OrderExecutor {
           close_side,
           formatted_quantity,
           tp_price,
-          binance_position_side,
+          BinancePositionSide.BOTH,  // 单向持仓模式
           true
         );
 
