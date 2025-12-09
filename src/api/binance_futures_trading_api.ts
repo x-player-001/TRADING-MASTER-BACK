@@ -358,7 +358,7 @@ export class BinanceFuturesTradingAPI {
 
       const signature = this.sign_request(params);
 
-      const response = await this.api_client.post<AlgoOrderResponse>('/fapi/v1/algo/order', null, {
+      const response = await this.api_client.post<AlgoOrderResponse>('/fapi/v1/algoOrder', null, {
         params: { ...params, signature }
       });
 
@@ -405,7 +405,7 @@ export class BinanceFuturesTradingAPI {
 
       const signature = this.sign_request(params);
 
-      const response = await this.api_client.post<AlgoOrderResponse>('/fapi/v1/algo/order', null, {
+      const response = await this.api_client.post<AlgoOrderResponse>('/fapi/v1/algoOrder', null, {
         params: { ...params, signature }
       });
 
@@ -458,7 +458,7 @@ export class BinanceFuturesTradingAPI {
 
       const signature = this.sign_request(params);
 
-      const response = await this.api_client.post<AlgoOrderResponse>('/fapi/v1/algo/order', null, {
+      const response = await this.api_client.post<AlgoOrderResponse>('/fapi/v1/algoOrder', null, {
         params: { ...params, signature }
       });
 
