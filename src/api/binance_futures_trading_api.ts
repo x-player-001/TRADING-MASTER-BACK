@@ -6,6 +6,7 @@
 import axios, { AxiosInstance } from 'axios';
 import * as crypto from 'crypto';
 import { logger } from '../utils/logger';
+import { errorLogRepository, ErrorType } from '../database/error_log_repository';
 
 /**
  * 订单侧方向
@@ -269,8 +270,17 @@ export class BinanceFuturesTradingAPI {
       logger.info(`[BinanceTradingAPI] Market order placed: ${symbol} ${side} ${quantity} @ MARKET`);
       return response.data;
     } catch (error: any) {
+      const error_code = error.response?.data?.code?.toString();
+      const error_msg = error.response?.data?.msg || error.message;
       logger.error(`[BinanceTradingAPI] Failed to place market order for ${symbol}:`, error.response?.data || error.message);
-      throw new Error(`Failed to place market order: ${error.response?.data?.msg || error.message}`);
+      // 记录到数据库
+      errorLogRepository.log_order_error(
+        `Failed to place market order: ${error_msg}`,
+        symbol,
+        { side, quantity, positionSide, error_data: error.response?.data },
+        error_code
+      );
+      throw new Error(`Failed to place market order: ${error_msg}`);
     }
   }
 
@@ -316,8 +326,16 @@ export class BinanceFuturesTradingAPI {
       logger.info(`[BinanceTradingAPI] Limit order placed: ${symbol} ${side} ${quantity} @ ${price}`);
       return response.data;
     } catch (error: any) {
+      const error_code = error.response?.data?.code?.toString();
+      const error_msg = error.response?.data?.msg || error.message;
       logger.error(`[BinanceTradingAPI] Failed to place limit order for ${symbol}:`, error.response?.data || error.message);
-      throw new Error(`Failed to place limit order: ${error.response?.data?.msg || error.message}`);
+      errorLogRepository.log_order_error(
+        `Failed to place limit order: ${error_msg}`,
+        symbol,
+        { side, quantity, price, positionSide, timeInForce, error_data: error.response?.data },
+        error_code
+      );
+      throw new Error(`Failed to place limit order: ${error_msg}`);
     }
   }
 
@@ -365,8 +383,16 @@ export class BinanceFuturesTradingAPI {
       logger.info(`[BinanceTradingAPI] Take profit algo order placed: ${symbol} ${side} ${quantity} @ triggerPrice ${stopPrice}, algoId=${response.data.algoId}`);
       return response.data;
     } catch (error: any) {
+      const error_code = error.response?.data?.code?.toString();
+      const error_msg = error.response?.data?.msg || error.message;
       logger.error(`[BinanceTradingAPI] Failed to place take profit order for ${symbol}:`, error.response?.data || error.message);
-      throw new Error(`Failed to place take profit order: ${error.response?.data?.msg || error.message}`);
+      errorLogRepository.log_order_error(
+        `Failed to place take profit order: ${error_msg}`,
+        symbol,
+        { side, quantity, stopPrice, positionSide, error_data: error.response?.data },
+        error_code
+      );
+      throw new Error(`Failed to place take profit order: ${error_msg}`);
     }
   }
 
@@ -412,8 +438,16 @@ export class BinanceFuturesTradingAPI {
       logger.info(`[BinanceTradingAPI] Stop loss algo order placed: ${symbol} ${side} ${quantity} @ triggerPrice ${stopPrice}, algoId=${response.data.algoId}`);
       return response.data;
     } catch (error: any) {
+      const error_code = error.response?.data?.code?.toString();
+      const error_msg = error.response?.data?.msg || error.message;
       logger.error(`[BinanceTradingAPI] Failed to place stop loss order for ${symbol}:`, error.response?.data || error.message);
-      throw new Error(`Failed to place stop loss order: ${error.response?.data?.msg || error.message}`);
+      errorLogRepository.log_order_error(
+        `Failed to place stop loss order: ${error_msg}`,
+        symbol,
+        { side, quantity, stopPrice, positionSide, error_data: error.response?.data },
+        error_code
+      );
+      throw new Error(`Failed to place stop loss order: ${error_msg}`);
     }
   }
 
@@ -465,8 +499,16 @@ export class BinanceFuturesTradingAPI {
       logger.info(`[BinanceTradingAPI] Trailing stop algo order placed: ${symbol} ${side} ${quantity} callbackRate=${callbackRate}%, algoId=${response.data.algoId}`);
       return response.data;
     } catch (error: any) {
+      const error_code = error.response?.data?.code?.toString();
+      const error_msg = error.response?.data?.msg || error.message;
       logger.error(`[BinanceTradingAPI] Failed to place trailing stop order for ${symbol}:`, error.response?.data || error.message);
-      throw new Error(`Failed to place trailing stop order: ${error.response?.data?.msg || error.message}`);
+      errorLogRepository.log_order_error(
+        `Failed to place trailing stop order: ${error_msg}`,
+        symbol,
+        { side, quantity, callbackRate, positionSide, activationPrice, error_data: error.response?.data },
+        error_code
+      );
+      throw new Error(`Failed to place trailing stop order: ${error_msg}`);
     }
   }
 
@@ -493,8 +535,16 @@ export class BinanceFuturesTradingAPI {
       logger.info(`[BinanceTradingAPI] Order cancelled: ${symbol} orderId=${orderId}`);
       return response.data;
     } catch (error: any) {
+      const error_code = error.response?.data?.code?.toString();
+      const error_msg = error.response?.data?.msg || error.message;
       logger.error(`[BinanceTradingAPI] Failed to cancel order ${orderId} for ${symbol}:`, error.response?.data || error.message);
-      throw new Error(`Failed to cancel order: ${error.response?.data?.msg || error.message}`);
+      errorLogRepository.log_order_error(
+        `Failed to cancel order: ${error_msg}`,
+        symbol,
+        { orderId, error_data: error.response?.data },
+        error_code
+      );
+      throw new Error(`Failed to cancel order: ${error_msg}`);
     }
   }
 
@@ -519,8 +569,16 @@ export class BinanceFuturesTradingAPI {
       logger.info(`[BinanceTradingAPI] All orders cancelled for ${symbol}`);
       return response.data;
     } catch (error: any) {
+      const error_code = error.response?.data?.code?.toString();
+      const error_msg = error.response?.data?.msg || error.message;
       logger.error(`[BinanceTradingAPI] Failed to cancel all orders for ${symbol}:`, error.response?.data || error.message);
-      throw new Error(`Failed to cancel all orders: ${error.response?.data?.msg || error.message}`);
+      errorLogRepository.log_order_error(
+        `Failed to cancel all orders: ${error_msg}`,
+        symbol,
+        { error_data: error.response?.data },
+        error_code
+      );
+      throw new Error(`Failed to cancel all orders: ${error_msg}`);
     }
   }
 
@@ -844,8 +902,16 @@ export class BinanceFuturesTradingAPI {
       logger.info(`[BinanceTradingAPI] Closed all positions for ${symbol} ${positionSide}`);
       return response.data;
     } catch (error: any) {
+      const error_code = error.response?.data?.code?.toString();
+      const error_msg = error.response?.data?.msg || error.message;
       logger.error(`[BinanceTradingAPI] Failed to close all positions for ${symbol}:`, error.response?.data || error.message);
-      throw new Error(`Failed to close all positions: ${error.response?.data?.msg || error.message}`);
+      errorLogRepository.log_order_error(
+        `Failed to close all positions: ${error_msg}`,
+        symbol,
+        { positionSide, error_data: error.response?.data },
+        error_code
+      );
+      throw new Error(`Failed to close all positions: ${error_msg}`);
     }
   }
 }
