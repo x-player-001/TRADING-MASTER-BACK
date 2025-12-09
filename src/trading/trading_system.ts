@@ -1141,6 +1141,29 @@ export class TradingSystem {
 
           // 检查数据库是否有对应记录，如果没有则创建
           await this.ensure_trade_record_for_synced_position(new_position, bp);
+
+          // ⭐ 检查是否有止盈单，没有则补下（防止同步的持仓没有止盈保护）
+          const position_side_str = side === PositionSide.LONG ? 'LONG' : 'SHORT';
+          const has_tp = await this.order_executor.has_take_profit_order(bp.symbol, position_side_str);
+          if (!has_tp) {
+            logger.warn(`[TradingSystem] No take profit order found for ${bp.symbol} ${position_side_str}, placing one...`);
+            const tp_result = await this.order_executor.place_take_profit_for_synced_position(
+              bp.symbol,
+              position_side_str,
+              bp.entryPrice,
+              bp.positionAmt,
+              take_profit_pct * 100,  // 转为百分比
+              false,  // 使用固定止盈而非追踪止盈
+              3  // 追踪回调比例（暂未使用）
+            );
+            if (tp_result.success) {
+              logger.info(`[TradingSystem] ✅ Take profit order placed for ${bp.symbol}: algoId=${tp_result.algoId}`);
+            } else {
+              logger.error(`[TradingSystem] ❌ Failed to place take profit order for ${bp.symbol}: ${tp_result.error}`);
+            }
+          } else {
+            logger.info(`[TradingSystem] ${bp.symbol} already has take profit order`);
+          }
         } else {
           // ⭐ 检测部分止盈：如果币安数量小于本地数量，说明部分平仓了
           const quantity_diff = local.quantity - bp.positionAmt;
@@ -1210,6 +1233,29 @@ export class TradingSystem {
           // 检查是否达到保本止损条件（盈利 >= 5% 且未下过保本止损单）
           if (local.unrealized_pnl_percent >= 5 && !local.breakeven_sl_placed) {
             await this.try_place_breakeven_stop_loss(local);
+          }
+
+          // ⭐ 检查已有持仓是否有止盈单，没有则补下（场景：程序重启后丢失挂单状态）
+          // 只在非部分止盈情况下检查（部分止盈时挂单可能被正常消耗）
+          const position_side_str = local.side === PositionSide.LONG ? 'LONG' : 'SHORT';
+          const has_tp = await this.order_executor.has_take_profit_order(local.symbol, position_side_str);
+          if (!has_tp) {
+            logger.warn(`[TradingSystem] Existing position ${local.symbol} ${position_side_str} has no take profit order, placing one...`);
+            const take_profit_pct = this.config.risk_config.default_take_profit_percent;
+            const tp_result = await this.order_executor.place_take_profit_for_synced_position(
+              local.symbol,
+              position_side_str,
+              local.entry_price,
+              local.quantity,
+              take_profit_pct,
+              false,  // 使用固定止盈
+              3
+            );
+            if (tp_result.success) {
+              logger.info(`[TradingSystem] ✅ Take profit order placed for existing position ${local.symbol}: algoId=${tp_result.algoId}`);
+            } else {
+              logger.error(`[TradingSystem] ❌ Failed to place take profit order for ${local.symbol}: ${tp_result.error}`);
+            }
           }
 
           updated++;

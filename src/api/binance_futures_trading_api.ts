@@ -638,6 +638,35 @@ export class BinanceFuturesTradingAPI {
   }
 
   /**
+   * 查询当前 Open Algo Orders（条件单：止损、止盈、追踪止损）
+   * 2025-12-09 币安将条件单迁移到 Algo Service
+   * @param symbol 交易对 (可选，不传则查询所有)
+   */
+  async get_open_algo_orders(symbol?: string): Promise<AlgoOrderResponse[]> {
+    try {
+      const timestamp = Date.now();
+      const params: Record<string, any> = {
+        timestamp
+      };
+
+      if (symbol) {
+        params.symbol = symbol;
+      }
+
+      const signature = this.sign_request(params);
+
+      const response = await this.api_client.get<{ rows: AlgoOrderResponse[] }>('/fapi/v1/algoOrder/openOrders', {
+        params: { ...params, signature }
+      });
+
+      return response.data.rows || [];
+    } catch (error: any) {
+      logger.error('[BinanceTradingAPI] Failed to get open algo orders:', error.response?.data || error.message);
+      throw new Error(`Failed to get open algo orders: ${error.response?.data?.msg || error.message}`);
+    }
+  }
+
+  /**
    * 查询持仓信息
    * @param symbol 交易对 (可选，不传则查询所有)
    */

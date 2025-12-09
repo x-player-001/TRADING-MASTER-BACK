@@ -719,6 +719,156 @@ export class OrderExecutor {
   }
 
   /**
+   * 获取指定币种的所有 Algo Orders（条件单：止损、止盈、追踪止损）
+   * @returns Algo 订单列表
+   */
+  async get_open_algo_orders(symbol: string): Promise<Array<{
+    algoId: number;
+    orderType: string;
+    side: string;
+    positionSide: string;
+    quantity: number;
+    triggerPrice: number;
+  }>> {
+    if (this.mode === TradingMode.PAPER || !this.trading_api) {
+      return [];
+    }
+
+    try {
+      const orders = await this.trading_api.get_open_algo_orders(symbol);
+      return orders.map(order => ({
+        algoId: order.algoId,
+        orderType: order.orderType,
+        side: order.side,
+        positionSide: order.positionSide,
+        quantity: parseFloat(order.quantity),
+        triggerPrice: parseFloat(order.triggerPrice)
+      }));
+    } catch (error) {
+      logger.error(`[OrderExecutor] Failed to get open algo orders for ${symbol}:`, error);
+      return [];
+    }
+  }
+
+  /**
+   * 检查指定币种是否有止盈单（TAKE_PROFIT_MARKET 或 TRAILING_STOP_MARKET）
+   * @param symbol 交易对
+   * @param position_side 持仓方向 (LONG/SHORT)
+   * @returns true=有止盈单, false=没有止盈单
+   */
+  async has_take_profit_order(symbol: string, position_side: 'LONG' | 'SHORT'): Promise<boolean> {
+    if (this.mode === TradingMode.PAPER) {
+      return true;  // 模拟模式假设有止盈单
+    }
+
+    try {
+      const algo_orders = await this.get_open_algo_orders(symbol);
+
+      // 平仓方向：LONG持仓的止盈单是SELL，SHORT持仓的止盈单是BUY
+      const close_side = position_side === 'LONG' ? 'SELL' : 'BUY';
+
+      // 查找止盈单（TAKE_PROFIT_MARKET 或 TRAILING_STOP_MARKET）
+      const tp_orders = algo_orders.filter(o =>
+        o.side === close_side &&
+        (o.orderType === 'TAKE_PROFIT_MARKET' || o.orderType === 'TRAILING_STOP_MARKET')
+      );
+
+      logger.debug(`[OrderExecutor] ${symbol} ${position_side} has ${tp_orders.length} take profit algo orders`);
+      return tp_orders.length > 0;
+    } catch (error) {
+      logger.error(`[OrderExecutor] Failed to check take profit orders for ${symbol}:`, error);
+      return false;  // 出错时返回 false，让系统尝试补下止盈单
+    }
+  }
+
+  /**
+   * 为同步的持仓下止盈单（单个 TAKE_PROFIT_MARKET 或 TRAILING_STOP_MARKET）
+   * @param symbol 交易对
+   * @param position_side 持仓方向 (LONG/SHORT)
+   * @param entry_price 开仓价格
+   * @param quantity 持仓数量
+   * @param take_profit_pct 止盈百分比（如 5 表示 5%）
+   * @param use_trailing 是否使用追踪止盈
+   * @param trailing_callback_pct 追踪止盈回调百分比（如 3 表示 3%）
+   */
+  async place_take_profit_for_synced_position(
+    symbol: string,
+    position_side: 'LONG' | 'SHORT',
+    entry_price: number,
+    quantity: number,
+    take_profit_pct: number,
+    use_trailing: boolean = false,
+    trailing_callback_pct: number = 3
+  ): Promise<{ success: boolean; algoId?: number; error?: string }> {
+    if (this.mode === TradingMode.PAPER || !this.trading_api) {
+      return { success: true };  // 模拟模式直接返回成功
+    }
+
+    try {
+      // 获取精度信息
+      const precision = await this.get_symbol_precision(symbol);
+
+      // 格式化数量
+      let formatted_quantity = quantity;
+      if (precision) {
+        formatted_quantity = this.format_quantity(quantity, precision.quantity_precision, precision.step_size);
+      }
+
+      if (formatted_quantity <= 0) {
+        return { success: false, error: 'Quantity too small after formatting' };
+      }
+
+      // 计算止盈价格
+      let tp_price = position_side === 'LONG'
+        ? entry_price * (1 + take_profit_pct / 100)
+        : entry_price * (1 - take_profit_pct / 100);
+
+      if (precision) {
+        tp_price = this.format_price(tp_price, precision.price_precision);
+      }
+
+      // 平仓方向
+      const close_side = position_side === 'LONG' ? OrderSide.SELL : OrderSide.BUY;
+      const binance_position_side = position_side === 'LONG' ? BinancePositionSide.LONG : BinancePositionSide.SHORT;
+
+      if (use_trailing) {
+        // 使用追踪止盈
+        // 激活价格设为止盈价格
+        const activation_price = tp_price;
+
+        const tp_order = await this.trading_api.place_trailing_stop_order(
+          symbol,
+          close_side,
+          formatted_quantity,
+          trailing_callback_pct,
+          binance_position_side,
+          activation_price
+        );
+
+        logger.info(`[OrderExecutor] Trailing TP placed for synced position: ${symbol} ${position_side} qty=${formatted_quantity}, activation=${tp_price}, callback=${trailing_callback_pct}%, algoId=${tp_order.algoId}`);
+        return { success: true, algoId: tp_order.algoId };
+      } else {
+        // 使用固定止盈
+        const tp_order = await this.trading_api.place_take_profit_market_order(
+          symbol,
+          close_side,
+          formatted_quantity,
+          tp_price,
+          binance_position_side,
+          true
+        );
+
+        logger.info(`[OrderExecutor] Fixed TP placed for synced position: ${symbol} ${position_side} qty=${formatted_quantity}, price=${tp_price}, algoId=${tp_order.algoId}`);
+        return { success: true, algoId: tp_order.algoId };
+      }
+    } catch (error: any) {
+      const error_msg = error.message || String(error);
+      logger.error(`[OrderExecutor] Failed to place TP for synced position ${symbol}:`, error);
+      return { success: false, error: error_msg };
+    }
+  }
+
+  /**
    * 检查挂单总量是否超过剩余仓位，如超过则撤销所有挂单
    * @param symbol 交易对
    * @param remaining_position_qty 剩余仓位数量
