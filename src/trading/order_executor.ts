@@ -971,11 +971,12 @@ export class OrderExecutor {
   /**
    * 撤销指定币种的所有未成交订单（带重试）
    * 用于：平仓前撤销剩余的止盈止损挂单，防止开反向仓
+   * 注意：同时取消普通订单和 Algo 订单（止盈/止损/追踪止损）
    * @param symbol 交易对
    * @param max_retries 最大重试次数，默认3次
    */
   async cancel_all_open_orders(symbol: string, max_retries: number = 3): Promise<boolean> {
-    logger.info(`[OrderExecutor] Cancelling all open orders for ${symbol}`);
+    logger.info(`[OrderExecutor] Cancelling all open orders (regular + algo) for ${symbol}`);
 
     if (this.mode === TradingMode.PAPER) {
       // 纸面交易：直接返回成功
@@ -987,14 +988,18 @@ export class OrderExecutor {
       return false;
     }
 
-    // 带重试的撤单逻辑
+    let regular_cancelled = false;
+    let algo_cancelled = false;
+
+    // 1. 取消普通订单（带重试）
     for (let attempt = 1; attempt <= max_retries; attempt++) {
       try {
         await this.trading_api.cancel_all_orders(symbol);
-        logger.info(`[OrderExecutor] All open orders cancelled for ${symbol} (attempt ${attempt})`);
-        return true;
+        logger.info(`[OrderExecutor] Regular orders cancelled for ${symbol} (attempt ${attempt})`);
+        regular_cancelled = true;
+        break;
       } catch (error) {
-        logger.error(`[OrderExecutor] Failed to cancel orders for ${symbol} (attempt ${attempt}/${max_retries}):`, error);
+        logger.error(`[OrderExecutor] Failed to cancel regular orders for ${symbol} (attempt ${attempt}/${max_retries}):`, error);
 
         if (attempt < max_retries) {
           // 等待500ms后重试
@@ -1003,8 +1008,23 @@ export class OrderExecutor {
       }
     }
 
-    logger.error(`[OrderExecutor] Failed to cancel orders for ${symbol} after ${max_retries} attempts`);
-    return false;
+    // 2. 取消 Algo 订单（止盈/止损/追踪止损）
+    try {
+      const algo_result = await this.trading_api.cancel_all_algo_orders(symbol);
+      if (algo_result.cancelled > 0 || algo_result.failed === 0) {
+        algo_cancelled = true;
+      }
+      logger.info(`[OrderExecutor] Algo orders cancelled for ${symbol}: ${algo_result.cancelled} success, ${algo_result.failed} failed`);
+    } catch (error) {
+      logger.error(`[OrderExecutor] Failed to cancel algo orders for ${symbol}:`, error);
+    }
+
+    if (!regular_cancelled) {
+      logger.error(`[OrderExecutor] Failed to cancel regular orders for ${symbol} after ${max_retries} attempts`);
+    }
+
+    // 只要任一类型订单取消成功就返回 true
+    return regular_cancelled || algo_cancelled;
   }
 
   /**
