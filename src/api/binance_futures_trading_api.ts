@@ -75,6 +75,27 @@ export interface OrderResponse {
 }
 
 /**
+ * Algo Order 响应 (用于条件单：止损、止盈、追踪止损)
+ * 2025-12-09 币安将条件单迁移到 Algo Service
+ */
+export interface AlgoOrderResponse {
+  algoId: number;
+  clientAlgoId: string;
+  algoType: string;
+  orderType: string;
+  symbol: string;
+  side: string;
+  positionSide: string;
+  quantity: string;
+  price: string;
+  triggerPrice: string;
+  algoStatus: string;
+  createTime: number;
+  updateTime: number;
+  triggerTime?: number;
+}
+
+/**
  * 持仓信息
  */
 export interface PositionInfo {
@@ -352,7 +373,8 @@ export class BinanceFuturesTradingAPI {
   }
 
   /**
-   * 下止损市价单 (STOP_MARKET)
+   * 下止损市价单 (STOP_MARKET) - 使用 Algo Order API
+   * 2025-12-09 币安将条件单迁移到 Algo Service，必须使用新的 /fapi/v1/algo/order 端点
    * @param symbol 交易对
    * @param side BUY 或 SELL (平仓方向)
    * @param quantity 数量
@@ -365,15 +387,17 @@ export class BinanceFuturesTradingAPI {
     quantity: number,
     stopPrice: number,
     positionSide: PositionSide = PositionSide.BOTH
-  ): Promise<OrderResponse> {
+  ): Promise<AlgoOrderResponse> {
     try {
       const timestamp = Date.now();
       const params: Record<string, any> = {
+        algoType: 'CONDITIONAL',
         symbol,
         side,
         type: OrderType.STOP_MARKET,
         quantity: quantity.toString(),
-        stopPrice: stopPrice.toString(),
+        triggerPrice: stopPrice.toString(),
+        workingType: 'MARK_PRICE',
         timestamp
       };
 
@@ -383,11 +407,11 @@ export class BinanceFuturesTradingAPI {
 
       const signature = this.sign_request(params);
 
-      const response = await this.api_client.post<OrderResponse>('/fapi/v1/order', null, {
+      const response = await this.api_client.post<AlgoOrderResponse>('/fapi/v1/algo/order', null, {
         params: { ...params, signature }
       });
 
-      logger.info(`[BinanceTradingAPI] Stop loss order placed: ${symbol} ${side} ${quantity} @ stopPrice ${stopPrice}`);
+      logger.info(`[BinanceTradingAPI] Stop loss algo order placed: ${symbol} ${side} ${quantity} @ triggerPrice ${stopPrice}, algoId=${response.data.algoId}`);
       return response.data;
     } catch (error: any) {
       logger.error(`[BinanceTradingAPI] Failed to place stop loss order for ${symbol}:`, error.response?.data || error.message);
@@ -396,7 +420,8 @@ export class BinanceFuturesTradingAPI {
   }
 
   /**
-   * 下追踪止盈单
+   * 下追踪止盈单 - 使用 Algo Order API
+   * 2025-12-09 币安将条件单迁移到 Algo Service，必须使用新的 /fapi/v1/algo/order 端点
    * @param symbol 交易对
    * @param side BUY 或 SELL (平仓方向)
    * @param quantity 数量
@@ -411,15 +436,17 @@ export class BinanceFuturesTradingAPI {
     callbackRate: number,
     positionSide: PositionSide = PositionSide.BOTH,
     activationPrice?: number
-  ): Promise<OrderResponse> {
+  ): Promise<AlgoOrderResponse> {
     try {
       const timestamp = Date.now();
       const params: Record<string, any> = {
+        algoType: 'CONDITIONAL',
         symbol,
         side,
         type: OrderType.TRAILING_STOP_MARKET,
         quantity: quantity.toString(),
         callbackRate: callbackRate.toString(),
+        workingType: 'MARK_PRICE',
         timestamp
       };
 
@@ -433,11 +460,11 @@ export class BinanceFuturesTradingAPI {
 
       const signature = this.sign_request(params);
 
-      const response = await this.api_client.post<OrderResponse>('/fapi/v1/order', null, {
+      const response = await this.api_client.post<AlgoOrderResponse>('/fapi/v1/algo/order', null, {
         params: { ...params, signature }
       });
 
-      logger.info(`[BinanceTradingAPI] Trailing stop order placed: ${symbol} ${side} ${quantity} callbackRate=${callbackRate}%`);
+      logger.info(`[BinanceTradingAPI] Trailing stop algo order placed: ${symbol} ${side} ${quantity} callbackRate=${callbackRate}%, algoId=${response.data.algoId}`);
       return response.data;
     } catch (error: any) {
       logger.error(`[BinanceTradingAPI] Failed to place trailing stop order for ${symbol}:`, error.response?.data || error.message);

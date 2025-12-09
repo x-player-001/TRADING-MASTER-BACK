@@ -206,8 +206,8 @@ export class OrderExecutor {
               binance_position_side,
               activation_price
             );
-            tp_order_ids.push(tp_order.orderId);
-            logger.info(`[OrderExecutor] Single trailing TP order placed: ${tp_order.orderId} (100% @ activation=${activation_profit_pct}%, callback=${last_target.trailing_callback_pct}%, qty=${quantity})`);
+            tp_order_ids.push(tp_order.algoId);
+            logger.info(`[OrderExecutor] Single trailing TP order placed: algoId=${tp_order.algoId} (100% @ activation=${activation_profit_pct}%, callback=${last_target.trailing_callback_pct}%, qty=${quantity})`);
           } catch (error) {
             logger.error(`[OrderExecutor] Failed to place single trailing TP order:`, error);
           }
@@ -279,8 +279,8 @@ export class OrderExecutor {
               binance_position_side,
               activation_price  // ⭐ 传入激活价格
             );
-            tp_order_ids.push(tp_order.orderId);
-            logger.info(`[OrderExecutor] Trailing TP order placed: ${tp_order.orderId} (${target.percentage}% @ activation=${activation_profit_pct}%, callback=${target.trailing_callback_pct}%, qty=${target_quantity})`);
+            tp_order_ids.push(tp_order.algoId);
+            logger.info(`[OrderExecutor] Trailing TP order placed: algoId=${tp_order.algoId} (${target.percentage}% @ activation=${activation_profit_pct}%, callback=${target.trailing_callback_pct}%, qty=${target_quantity})`);
           } catch (error) {
             logger.error(`[OrderExecutor] Failed to place trailing TP order:`, error);
           }
@@ -1116,8 +1116,8 @@ export class OrderExecutor {
         BinancePositionSide.BOTH  // 单向持仓模式
       );
 
-      logger.info(`[OrderExecutor] Breakeven stop loss placed: ${symbol} ${side} qty=${formattedQuantity} @ ${formattedPrice}`);
-      return { success: true, orderId: result.orderId.toString() };
+      logger.info(`[OrderExecutor] Breakeven stop loss placed: ${symbol} ${side} qty=${formattedQuantity} @ ${formattedPrice}, algoId=${result.algoId}`);
+      return { success: true, orderId: result.algoId.toString() };
 
     } catch (error: any) {
       logger.error(`[OrderExecutor] Failed to place breakeven stop loss for ${symbol}:`, error.message);
