@@ -669,7 +669,7 @@ export class BinanceFuturesTradingAPI {
 
   /**
    * 取消单个 Algo 订单
-   * 端点: DELETE /sapi/v1/algo/futures/order
+   * 端点: DELETE /fapi/v1/algoOrder
    * @param algoId Algo 订单 ID
    */
   async cancel_algo_order(algoId: number): Promise<{ success: boolean; algoId: number }> {
@@ -682,10 +682,8 @@ export class BinanceFuturesTradingAPI {
 
       const signature = this.sign_request(params);
 
-      // 注意：这个端点使用 api.binance.com，不是 fapi.binance.com
-      const response = await axios.delete('https://fapi.binance.com/fapi/v1/algo/order', {
-        params: { ...params, signature },
-        headers: { 'X-MBX-APIKEY': this.api_key }
+      const response = await this.api_client.delete('/fapi/v1/algoOrder', {
+        params: { ...params, signature }
       });
 
       logger.info(`[BinanceTradingAPI] Algo order cancelled: algoId=${algoId}`);
@@ -706,40 +704,36 @@ export class BinanceFuturesTradingAPI {
 
   /**
    * 取消指定币种的所有 Algo 订单（止盈/止损/追踪止损）
+   * 端点: DELETE /fapi/v1/algoOpenOrders
    * @param symbol 交易对
    */
-  async cancel_all_algo_orders(symbol: string): Promise<{ cancelled: number; failed: number }> {
+  async cancel_all_algo_orders(symbol: string): Promise<{ success: boolean }> {
     try {
-      // 1. 获取该币种的所有 Algo 订单
-      const algo_orders = await this.get_open_algo_orders(symbol);
+      const timestamp = Date.now();
+      const params = {
+        symbol,
+        timestamp
+      };
 
-      if (algo_orders.length === 0) {
-        logger.info(`[BinanceTradingAPI] No algo orders to cancel for ${symbol}`);
-        return { cancelled: 0, failed: 0 };
-      }
+      const signature = this.sign_request(params);
 
-      logger.info(`[BinanceTradingAPI] Found ${algo_orders.length} algo orders to cancel for ${symbol}`);
+      await this.api_client.delete('/fapi/v1/algoOpenOrders', {
+        params: { ...params, signature }
+      });
 
-      // 2. 逐个取消
-      let cancelled = 0;
-      let failed = 0;
-
-      for (const order of algo_orders) {
-        const result = await this.cancel_algo_order(order.algoId);
-        if (result.success) {
-          cancelled++;
-        } else {
-          failed++;
-        }
-        // 避免请求过快
-        await new Promise(resolve => setTimeout(resolve, 100));
-      }
-
-      logger.info(`[BinanceTradingAPI] Algo orders cancelled for ${symbol}: ${cancelled} success, ${failed} failed`);
-      return { cancelled, failed };
+      logger.info(`[BinanceTradingAPI] All algo orders cancelled for ${symbol}`);
+      return { success: true };
     } catch (error: any) {
-      logger.error(`[BinanceTradingAPI] Failed to cancel all algo orders for ${symbol}:`, error.message);
-      return { cancelled: 0, failed: 0 };
+      const error_code = error.response?.data?.code?.toString();
+      const error_msg = error.response?.data?.msg || error.message;
+      logger.error(`[BinanceTradingAPI] Failed to cancel all algo orders for ${symbol}:`, error.response?.data || error.message);
+      errorLogRepository.log_order_error(
+        `Failed to cancel all algo orders: ${error_msg}`,
+        symbol,
+        { error_data: error.response?.data },
+        error_code
+      );
+      return { success: false };
     }
   }
 

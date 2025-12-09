@@ -1011,10 +1011,8 @@ export class OrderExecutor {
     // 2. 取消 Algo 订单（止盈/止损/追踪止损）
     try {
       const algo_result = await this.trading_api.cancel_all_algo_orders(symbol);
-      if (algo_result.cancelled > 0 || algo_result.failed === 0) {
-        algo_cancelled = true;
-      }
-      logger.info(`[OrderExecutor] Algo orders cancelled for ${symbol}: ${algo_result.cancelled} success, ${algo_result.failed} failed`);
+      algo_cancelled = algo_result.success;
+      logger.info(`[OrderExecutor] Algo orders cancelled for ${symbol}: success=${algo_result.success}`);
     } catch (error) {
       logger.error(`[OrderExecutor] Failed to cancel algo orders for ${symbol}:`, error);
     }
@@ -1215,6 +1213,7 @@ export class OrderExecutor {
 
   /**
    * 检查某个交易对是否已有止损挂单
+   * 注意：2025-12-09 止损单迁移到 Algo Order API，需要查询 Algo Orders
    * @param symbol 交易对
    * @returns 是否存在止损挂单
    */
@@ -1224,11 +1223,18 @@ export class OrderExecutor {
     }
 
     try {
-      const openOrders = await this.trading_api.get_open_orders(symbol);
-      // 检查是否有 STOP_MARKET 或 STOP 类型的订单
-      const hasStopOrder = openOrders.some(order =>
-        order.type === 'STOP_MARKET' || order.type === 'STOP'
+      // 查询 Algo Orders（止损/止盈单现在都在这里）
+      const algoOrders = await this.trading_api.get_open_algo_orders(symbol);
+
+      // 检查是否有 STOP_MARKET 或 STOP 类型的 Algo 订单
+      const hasStopOrder = algoOrders.some(order =>
+        order.orderType === 'STOP_MARKET' || order.orderType === 'STOP'
       );
+
+      if (hasStopOrder) {
+        logger.debug(`[OrderExecutor] Found existing stop loss algo order for ${symbol}`);
+      }
+
       return hasStopOrder;
     } catch (error) {
       logger.error(`[OrderExecutor] Failed to check stop loss orders for ${symbol}:`, error);
