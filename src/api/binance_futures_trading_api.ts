@@ -347,7 +347,7 @@ export class BinanceFuturesTradingAPI {
    * @param quantity 数量
    * @param stopPrice 触发价格
    * @param positionSide LONG/SHORT
-   * @param reduceOnly 是否只减仓 (默认true) - 注意：Algo API 不支持 reduceOnly 参数
+   * @param reduceOnly 是否只减仓 (默认true) - 防止持仓不足时开反向仓
    */
   async place_take_profit_market_order(
     symbol: string,
@@ -367,6 +367,7 @@ export class BinanceFuturesTradingAPI {
         quantity: quantity.toString(),
         triggerPrice: stopPrice.toString(),
         workingType: 'MARK_PRICE',
+        reduceOnly: reduceOnly.toString(),  // ⭐ 防止开反向仓
         timestamp
       };
 
@@ -404,13 +405,15 @@ export class BinanceFuturesTradingAPI {
    * @param quantity 数量
    * @param stopPrice 触发价格
    * @param positionSide LONG/SHORT/BOTH
+   * @param reduceOnly 是否只减仓 (默认true) - 防止持仓不足时开反向仓
    */
   async place_stop_loss_order(
     symbol: string,
     side: OrderSide,
     quantity: number,
     stopPrice: number,
-    positionSide: PositionSide = PositionSide.BOTH
+    positionSide: PositionSide = PositionSide.BOTH,
+    reduceOnly: boolean = true
   ): Promise<AlgoOrderResponse> {
     try {
       const timestamp = Date.now();
@@ -422,6 +425,7 @@ export class BinanceFuturesTradingAPI {
         quantity: quantity.toString(),
         triggerPrice: stopPrice.toString(),
         workingType: 'MARK_PRICE',
+        reduceOnly: reduceOnly.toString(),  // ⭐ 防止开反向仓
         timestamp
       };
 
@@ -460,6 +464,7 @@ export class BinanceFuturesTradingAPI {
    * @param callbackRate 回调比例 (0.1-10, 1代表1%)
    * @param positionSide LONG/SHORT
    * @param activationPrice 激活价格 (可选)
+   * @param reduceOnly 是否只减仓 (默认true) - 防止持仓不足时开反向仓
    */
   async place_trailing_stop_order(
     symbol: string,
@@ -467,7 +472,8 @@ export class BinanceFuturesTradingAPI {
     quantity: number,
     callbackRate: number,
     positionSide: PositionSide = PositionSide.BOTH,
-    activationPrice?: number
+    activationPrice?: number,
+    reduceOnly: boolean = true
   ): Promise<AlgoOrderResponse> {
     try {
       const timestamp = Date.now();
@@ -479,6 +485,7 @@ export class BinanceFuturesTradingAPI {
         quantity: quantity.toString(),
         callbackRate: callbackRate.toString(),
         workingType: 'MARK_PRICE',
+        reduceOnly: reduceOnly.toString(),  // ⭐ 防止开反向仓
         timestamp
       };
 
