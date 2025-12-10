@@ -714,8 +714,9 @@ export class OIRepository {
          signal_score, signal_confidence, signal_direction, avoid_chase_reason,
          daily_price_low, daily_price_high, price_from_low_pct, price_from_high_pct,
          price_2h_low, price_from_2h_low_pct,
-         price_30m_high, price_30m_low, is_price_breakout, breakout_pct)
-        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+         price_30m_high, price_30m_low, is_price_breakout, breakout_pct,
+         ma10, ma30, ma_trend, ma60, ma120, ma240, ma_trend_long)
+        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
       `;
 
       const [result] = await conn.execute<ResultSetHeader>(sql, [
@@ -754,7 +755,15 @@ export class OIRepository {
         anomaly.price_30m_high ?? null,
         anomaly.price_30m_low ?? null,
         anomaly.is_price_breakout ? 1 : 0,
-        anomaly.breakout_pct ?? null
+        anomaly.breakout_pct ?? null,
+        // 均线趋势字段
+        anomaly.ma10 ?? null,
+        anomaly.ma30 ?? null,
+        anomaly.ma_trend ?? null,
+        anomaly.ma60 ?? null,
+        anomaly.ma120 ?? null,
+        anomaly.ma240 ?? null,
+        anomaly.ma_trend_long ?? null
       ]);
 
       return result.insertId;

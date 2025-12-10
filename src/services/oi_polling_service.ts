@@ -44,13 +44,14 @@ export class OIPollingService {
     last_update: number;    // 最后更新时间戳
   }> = new Map();
 
-  // 2小时价格滑动窗口缓存（环形队列，保存120个价格点=2小时@1分钟间隔）
+  // 4小时价格滑动窗口缓存（环形队列，保存240个价格点=4小时@1分钟间隔）
+  // 扩展到4小时是为了支持 MA240 长期均线计算
   private price_2h_window: Map<string, {
     prices: number[];       // 环形队列存储价格
     index: number;          // 当前写入位置
     count: number;          // 已有数据点数量
   }> = new Map();
-  private readonly PRICE_WINDOW_SIZE = 120;  // 2小时 = 120分钟
+  private readonly PRICE_WINDOW_SIZE = 240;  // 4小时 = 240分钟（扩展支持MA240）
 
   // 默认配置
   private config: OIMonitoringSystemConfig = {
@@ -625,7 +626,7 @@ export class OIPollingService {
         // 🎯 计算均线趋势（判断趋势方向）
         const ma_trend_data = current_price > 0
           ? this.calculate_ma_trend(anomaly.symbol, current_price)
-          : { ma10: undefined, ma30: undefined, ma_trend: undefined };
+          : { ma10: undefined, ma30: undefined, ma_trend: undefined, ma60: undefined, ma120: undefined, ma240: undefined, ma_trend_long: undefined };
 
         // 🎯 计算30分钟价格突破状态（已弃用，改用均线判断，但保留数据记录）
         // 需要先确定信号方向：OI增加 = LONG, OI减少 = SHORT
@@ -690,7 +691,12 @@ export class OIPollingService {
           // ⭐ 添加均线趋势数据（判断趋势方向）
           ma10: ma_trend_data.ma10,
           ma30: ma_trend_data.ma30,
-          ma_trend: ma_trend_data.ma_trend
+          ma_trend: ma_trend_data.ma_trend,
+          // ⭐ 添加长期均线趋势数据（判断长期趋势方向）
+          ma60: ma_trend_data.ma60,
+          ma120: ma_trend_data.ma120,
+          ma240: ma_trend_data.ma240,
+          ma_trend_long: ma_trend_data.ma_trend_long
         };
 
         // 🎯 计算信号评分
@@ -1089,7 +1095,7 @@ export class OIPollingService {
 
   /**
    * 计算均线趋势数据
-   * 用于判断短期和中期趋势方向
+   * 用于判断短期、中期和长期趋势方向
    * @param symbol 币种
    * @param current_price 当前价格
    */
@@ -1097,29 +1103,48 @@ export class OIPollingService {
     ma10: number | undefined;
     ma30: number | undefined;
     ma_trend: 'UP' | 'DOWN' | 'FLAT' | undefined;
+    ma60: number | undefined;
+    ma120: number | undefined;
+    ma240: number | undefined;
+    ma_trend_long: 'UP' | 'DOWN' | 'FLAT' | undefined;
   } {
     const ma10 = this.calculate_ma(symbol, 10);
     const ma30 = this.calculate_ma(symbol, 30);
+    const ma60 = this.calculate_ma(symbol, 60);
+    const ma120 = this.calculate_ma(symbol, 120);
+    const ma240 = this.calculate_ma(symbol, 240);
 
-    if (!ma10 || !ma30) {
-      return { ma10, ma30, ma_trend: undefined };
+    // 短期趋势判断（MA10 vs MA30）
+    let ma_trend: 'UP' | 'DOWN' | 'FLAT' | undefined;
+    if (ma10 && ma30) {
+      // UP = 当前价格 > MA10 且 MA10 > MA30（多头排列）
+      // DOWN = 当前价格 < MA10 且 MA10 < MA30（空头排列）
+      // FLAT = 其他情况
+      if (current_price > ma10 && ma10 > ma30) {
+        ma_trend = 'UP';
+      } else if (current_price < ma10 && ma10 < ma30) {
+        ma_trend = 'DOWN';
+      } else {
+        ma_trend = 'FLAT';
+      }
     }
 
-    // 判断趋势：
-    // UP = 当前价格 > MA10 且 MA10 > MA30（多头排列）
-    // DOWN = 当前价格 < MA10 且 MA10 < MA30（空头排列）
-    // FLAT = 其他情况
-    let ma_trend: 'UP' | 'DOWN' | 'FLAT';
-
-    if (current_price > ma10 && ma10 > ma30) {
-      ma_trend = 'UP';
-    } else if (current_price < ma10 && ma10 < ma30) {
-      ma_trend = 'DOWN';
-    } else {
-      ma_trend = 'FLAT';
+    // 长期趋势判断（MA120 vs MA240）
+    // 这是用户要求的关键过滤：MA120 > MA240 才能做多，MA120 < MA240 才能做空
+    let ma_trend_long: 'UP' | 'DOWN' | 'FLAT' | undefined;
+    if (ma120 && ma240) {
+      const ma_diff_pct = ((ma120 - ma240) / ma240) * 100;
+      // 使用0.5%的阈值来判断趋势，避免过于敏感
+      if (ma_diff_pct > 0.5) {
+        ma_trend_long = 'UP';      // MA120 > MA240: 长期多头
+      } else if (ma_diff_pct < -0.5) {
+        ma_trend_long = 'DOWN';    // MA120 < MA240: 长期空头
+      } else {
+        ma_trend_long = 'FLAT';    // 均线交织，趋势不明
+      }
     }
 
-    return { ma10, ma30, ma_trend };
+    return { ma10, ma30, ma_trend, ma60, ma120, ma240, ma_trend_long };
   }
 
   /**
@@ -1309,18 +1334,18 @@ export class OIPollingService {
   }
 
   /**
-   * 预热2小时价格窗口缓存
-   * 从数据库加载最近2小时的价格数据，填充环形队列
-   * 这样启动后立即就能使用2小时低点判断，不需要等待2小时
+   * 预热4小时价格窗口缓存
+   * 从数据库加载最近4小时的价格数据，填充环形队列
+   * 这样启动后立即就能使用MA240等长期均线判断，不需要等待4小时
    */
   private async preheat_price_2h_window(): Promise<void> {
     try {
-      logger.info('[OIPolling] Preheating 2h price window cache from database...');
+      logger.info('[OIPolling] Preheating 4h price window cache from database...');
       const start_time = Date.now();
 
-      // 查询最近2小时的价格数据（按币种和时间排序）
-      const two_hours_ago = new Date(Date.now() - 2 * 60 * 60 * 1000);
-      const snapshots = await this.oi_repository.get_snapshots_for_price_window(two_hours_ago);
+      // 查询最近4小时的价格数据（按币种和时间排序）- 支持MA240计算
+      const four_hours_ago = new Date(Date.now() - 4 * 60 * 60 * 1000);
+      const snapshots = await this.oi_repository.get_snapshots_for_price_window(four_hours_ago);
 
       if (snapshots.length === 0) {
         logger.warn('[OIPolling] No historical price data found for preheating');

@@ -115,7 +115,13 @@ export interface OIAnomalyRecord {
   // 均线趋势相关字段（判断趋势方向）
   ma10?: number;                           // 10分钟均线
   ma30?: number;                           // 30分钟均线
-  ma_trend?: 'UP' | 'DOWN' | 'FLAT';       // 均线趋势：UP=多头排列, DOWN=空头排列, FLAT=震荡
+  ma_trend?: 'UP' | 'DOWN' | 'FLAT';       // 短期均线趋势：UP=多头排列, DOWN=空头排列, FLAT=震荡
+
+  // 长期均线趋势相关字段（判断长期趋势方向）
+  ma60?: number;                           // 60分钟均线（1小时）
+  ma120?: number;                          // 120分钟均线（2小时）
+  ma240?: number;                          // 240分钟均线（4小时）- 需要价格窗口扩展到4小时
+  ma_trend_long?: 'UP' | 'DOWN' | 'FLAT';  // 长期均线趋势：UP=MA120>MA240, DOWN=MA120<MA240
 }
 
 // OI监控配置

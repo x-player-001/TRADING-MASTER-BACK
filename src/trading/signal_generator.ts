@@ -143,7 +143,7 @@ export class SignalGenerator {
       }
     }
 
-    // ❌ 3. 检查均线趋势：确保趋势方向正确
+    // ❌ 3. 检查短期均线趋势：确保短期趋势方向正确
     // 做多要求：MA10 > MA30（多头排列）且价格在MA10之上
     // 做空要求：MA10 < MA30（空头排列）且价格在MA10之下
     if (anomaly.ma_trend) {
@@ -152,7 +152,7 @@ export class SignalGenerator {
         const ma30 = anomaly.ma30 ? parseFloat(anomaly.ma30.toString()).toFixed(4) : '?';
         return {
           allowed: false,
-          reason: `均线非多头排列(MA10:${ma10}, MA30:${ma30}), 趋势不支持做多`
+          reason: `短期均线非多头排列(MA10:${ma10}, MA30:${ma30}), 趋势不支持做多`
         };
       }
       if (!is_long_signal && anomaly.ma_trend !== 'DOWN') {
@@ -160,7 +160,29 @@ export class SignalGenerator {
         const ma30 = anomaly.ma30 ? parseFloat(anomaly.ma30.toString()).toFixed(4) : '?';
         return {
           allowed: false,
-          reason: `均线非空头排列(MA10:${ma10}, MA30:${ma30}), 趋势不支持做空`
+          reason: `短期均线非空头排列(MA10:${ma10}, MA30:${ma30}), 趋势不支持做空`
+        };
+      }
+    }
+
+    // ❌ 3.5 检查长期均线趋势：确保长期趋势方向正确（核心过滤）
+    // 这是用户要求的关键过滤：做多必须 MA120 > MA240，做空必须 MA120 < MA240
+    // 避免在长期下跌趋势中做多（如 MUBARAKUSDT 的情况）
+    if (anomaly.ma_trend_long) {
+      if (is_long_signal && anomaly.ma_trend_long === 'DOWN') {
+        const ma120 = anomaly.ma120 ? parseFloat(anomaly.ma120.toString()).toFixed(6) : '?';
+        const ma240 = anomaly.ma240 ? parseFloat(anomaly.ma240.toString()).toFixed(6) : '?';
+        return {
+          allowed: false,
+          reason: `长期均线空头排列(MA120:${ma120} < MA240:${ma240}), 长期趋势不支持做多`
+        };
+      }
+      if (!is_long_signal && anomaly.ma_trend_long === 'UP') {
+        const ma120 = anomaly.ma120 ? parseFloat(anomaly.ma120.toString()).toFixed(6) : '?';
+        const ma240 = anomaly.ma240 ? parseFloat(anomaly.ma240.toString()).toFixed(6) : '?';
+        return {
+          allowed: false,
+          reason: `长期均线多头排列(MA120:${ma120} > MA240:${ma240}), 长期趋势不支持做空`
         };
       }
     }
