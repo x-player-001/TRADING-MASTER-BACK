@@ -127,7 +127,9 @@ export class Kline5mRepository {
     }
 
     // 按表批量写入
-    for (const [table_name, klines] of by_date) {
+    logger.info(`[Kline5m] Writing to ${by_date.size} tables`);
+    for (const [table_name, klines] of by_date.entries()) {
+      logger.info(`[Kline5m] Processing table ${table_name} with ${klines.length} klines`);
       try {
         await this.batch_insert(table_name, klines);
       } catch (error) {
@@ -144,10 +146,14 @@ export class Kline5mRepository {
   private async batch_insert(table_name: string, klines: Kline5mData[]): Promise<void> {
     if (klines.length === 0) return;
 
+    logger.info(`[Kline5m] batch_insert called for ${table_name}`);
+
     const connection = await DatabaseConfig.get_mysql_connection();
 
     // 确保表存在
+    logger.info(`[Kline5m] Ensuring table ${table_name} exists...`);
     await this.ensure_table_exists(table_name);
+    logger.info(`[Kline5m] Table ${table_name} ready`);
 
     // 构建批量插入 SQL
     const placeholders = klines.map(() => '(?, ?, ?, ?, ?, ?, ?, ?)').join(', ');
