@@ -47,9 +47,14 @@ export class Kline5mRepository {
 
   /**
    * 确保表存在（自动创建）
+   * @param table_name 表名
+   * @param connection 可选，复用已有连接（避免连接池耗尽）
    */
-  async ensure_table_exists(table_name: string): Promise<void> {
-    const connection = await DatabaseConfig.get_mysql_connection();
+  async ensure_table_exists(table_name: string, connection?: any): Promise<void> {
+    const should_release = !connection;
+    if (!connection) {
+      connection = await DatabaseConfig.get_mysql_connection();
+    }
 
     const create_sql = `
       CREATE TABLE IF NOT EXISTS ${table_name} (
@@ -78,7 +83,9 @@ export class Kline5mRepository {
         throw error;
       }
     } finally {
-      connection.release();
+      if (should_release) {
+        connection.release();
+      }
     }
   }
 
@@ -153,9 +160,9 @@ export class Kline5mRepository {
     const connection = await DatabaseConfig.get_mysql_connection();
 
     try {
-      // 确保表存在
+      // 确保表存在（复用当前连接，避免连接池耗尽）
       logger.info(`[Kline5m] Ensuring table ${table_name} exists...`);
-      await this.ensure_table_exists(table_name);
+      await this.ensure_table_exists(table_name, connection);
       logger.info(`[Kline5m] Table ${table_name} ready`);
 
       // 构建批量插入 SQL
