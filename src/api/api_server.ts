@@ -14,6 +14,7 @@ import { TradingRoutes } from './routes/trading_routes';
 import { BacktestRoutes } from './routes/backtest_routes';
 import { MonitoringManager } from '@/core/monitoring/monitoring_manager';
 import quantitative_routes from './routes/quantitative_routes';
+import { BreakoutRoutes } from './routes/breakout_routes';
 
 /**
  * HTTP API服务器
@@ -32,6 +33,7 @@ export class APIServer {
   private structure_routes: StructureRoutes;
   private trading_routes: TradingRoutes;
   private backtest_routes: BacktestRoutes;
+  private breakout_routes: BreakoutRoutes;
   private monitoring_manager: MonitoringManager;
 
   constructor(oi_data_manager: OIDataManager, port: number = 3000) {
@@ -47,6 +49,7 @@ export class APIServer {
     this.structure_routes = new StructureRoutes();
     this.trading_routes = new TradingRoutes(this.oi_data_manager.get_oi_polling_service());
     this.backtest_routes = new BacktestRoutes();
+    this.breakout_routes = new BreakoutRoutes();
     this.monitoring_manager = MonitoringManager.getInstance();
     this.setup_middleware();
     this.setup_routes();
@@ -129,6 +132,7 @@ export class APIServer {
           quant: '/api/quant/*',
           trading: '/api/trading/*',
           backtest: '/api/backtest/*',
+          breakout: '/api/breakout/*',
           status: '/api/status'
         },
         timestamp: new Date().toISOString()
@@ -167,6 +171,9 @@ export class APIServer {
 
     // 回测路由
     this.app.use('/api/backtest', this.backtest_routes.router);
+
+    // K线突破信号路由
+    this.app.use('/api/breakout', this.breakout_routes.get_router());
 
     // 系统状态
     this.app.get('/api/status', async (req: Request, res: Response) => {

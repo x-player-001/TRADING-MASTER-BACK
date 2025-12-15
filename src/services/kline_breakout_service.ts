@@ -373,6 +373,11 @@ export class KlineBreakoutService extends EventEmitter {
         kline_high: signal.kline.high,
         kline_low: signal.kline.low,
         kline_close: signal.kline.close,
+        zone_start_time: new Date(signal.zone.start_time),
+        zone_end_time: new Date(signal.zone.end_time),
+        zone_kline_count: signal.zone.kline_count,
+        center_price: signal.zone.center_price,
+        atr: signal.zone.atr,
         signal_time: new Date()
       };
 
@@ -392,7 +397,7 @@ export class KlineBreakoutService extends EventEmitter {
       // 日志输出
       const arrow = signal.direction === 'UP' ? '🚀' : '📉';
       logger.info(`${arrow} [BREAKOUT] ${signal.symbol} ${signal.direction} | Price: ${signal.breakout_price.toFixed(6)} | Breakout: +${signal.breakout_pct.toFixed(2)}% | Volume: ${signal.volume_ratio.toFixed(1)}x`);
-      logger.info(`   Zone: ${signal.zone.lower_bound.toFixed(6)} - ${signal.zone.upper_bound.toFixed(6)} (${signal.zone.volume_pct.toFixed(1)}% vol)`);
+      logger.info(`   Zone: ${signal.zone.lower_bound.toFixed(6)} - ${signal.zone.upper_bound.toFixed(6)} | ATR: ${signal.zone.atr.toFixed(6)} | Klines: ${signal.zone.kline_count}`);
 
     } catch (error) {
       logger.error('[KlineBreakout] Failed to save signal:', error);

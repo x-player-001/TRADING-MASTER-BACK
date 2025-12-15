@@ -1,10 +1,11 @@
 /**
- * 密集区间检测算法
+ * 密集区间检测算法 v2
  *
- * 使用成交量分桶法识别价格密集成交区间：
- * 1. 将价格区间分成 N 个桶（bucket）
- * 2. 将每根K线的成交量按价格位置分配到对应桶
- * 3. 成交量最大的连续桶区域 = 密集区间
+ * 使用 ATR（平均真实波幅）+ 价格聚类法识别密集成交区间：
+ * 1. 计算 ATR 作为波动率基准
+ * 2. 基于收盘价进行 K-means 风格的价格聚类
+ * 3. 找出价格停留时间最长的聚类 = 密集区间
+ * 4. 用 ATR 动态调整区间宽度
  */
 
 import { logger } from '@/utils/logger';
@@ -28,6 +29,10 @@ export interface ConsolidationZone {
   total_volume: number;     // 区间总成交量
   volume_pct: number;       // 占总成交量百分比
   price_range_pct: number;  // 区间宽度占总价格范围百分比
+  start_time: number;       // 区间开始时间（第一根K线）
+  end_time: number;         // 区间结束时间（最后一根K线）
+  kline_count: number;      // 区间内K线数量
+  atr: number;              // ATR值（波动率参考）
 }
 
 // 突破信号
@@ -44,20 +49,31 @@ export interface BreakoutSignal {
 
 // 配置
 export interface ConsolidationConfig {
-  bucket_count: number;           // 分桶数量，默认20
-  min_consecutive_buckets: number; // 最小连续桶数量，默认3
-  min_volume_pct: number;         // 密集区最小成交量占比，默认30%
-  volume_ratio_threshold: number; // 放量阈值，默认1.5
-  min_breakout_pct: number;       // 最小突破幅度，默认0.3%
+  atr_period: number;             // ATR计算周期，默认14
+  atr_multiplier: number;         // ATR倍数用于确定区间宽度，默认1.5
+  min_cluster_size: number;       // 最小聚类K线数量，默认10
+  min_time_in_zone_pct: number;   // 价格在区间内停留的最小时间比例，默认40%
+  volume_ratio_threshold: number; // 放量阈值，默认2.0
+  min_breakout_pct: number;       // 最小突破幅度（相对ATR），默认0.5
 }
 
 const DEFAULT_CONFIG: ConsolidationConfig = {
-  bucket_count: 20,
-  min_consecutive_buckets: 3,
-  min_volume_pct: 50,             // 提高到50%：密集区至少要包含一半成交量
-  volume_ratio_threshold: 2.5,   // 提高到2.5倍：需要更明显的放量
-  min_breakout_pct: 1.0          // 提高到1%：过滤掉正常波动
+  atr_period: 14,
+  atr_multiplier: 1.5,
+  min_cluster_size: 10,
+  min_time_in_zone_pct: 40,       // 至少40%的K线在区间内
+  volume_ratio_threshold: 2.0,    // 放量2倍
+  min_breakout_pct: 0.5           // 突破幅度至少0.5个ATR
 };
+
+// 价格聚类结构
+interface PriceCluster {
+  center: number;           // 聚类中心价格
+  klines: KlineData[];      // 属于该聚类的K线
+  total_volume: number;     // 聚类总成交量
+  start_time: number;       // 最早K线时间
+  end_time: number;         // 最晚K线时间
+}
 
 export class ConsolidationDetector {
   private config: ConsolidationConfig;
@@ -67,15 +83,49 @@ export class ConsolidationDetector {
   }
 
   /**
-   * 检测密集区间
+   * 计算 ATR（平均真实波幅）
+   * @param klines K线数据数组
+   */
+  calculate_atr(klines: KlineData[]): number {
+    if (klines.length < 2) return 0;
+
+    const period = Math.min(this.config.atr_period, klines.length - 1);
+    const true_ranges: number[] = [];
+
+    for (let i = 1; i < klines.length; i++) {
+      const current = klines[i];
+      const prev = klines[i - 1];
+
+      // True Range = max(high - low, |high - prev_close|, |low - prev_close|)
+      const tr = Math.max(
+        current.high - current.low,
+        Math.abs(current.high - prev.close),
+        Math.abs(current.low - prev.close)
+      );
+      true_ranges.push(tr);
+    }
+
+    // 计算最近 period 个 TR 的平均值
+    const recent_trs = true_ranges.slice(-period);
+    const atr = recent_trs.reduce((sum, tr) => sum + tr, 0) / recent_trs.length;
+
+    return atr;
+  }
+
+  /**
+   * 基于价格聚类检测密集区间
    * @param klines K线数据数组（按时间升序）
    */
   detect_consolidation_zone(klines: KlineData[]): ConsolidationZone | null {
-    if (klines.length < 10) {
+    if (klines.length < this.config.min_cluster_size) {
       return null;
     }
 
-    // 1. 计算价格范围
+    // 1. 计算 ATR
+    const atr = this.calculate_atr(klines);
+    if (atr <= 0) return null;
+
+    // 2. 计算价格范围
     let min_price = Infinity;
     let max_price = -Infinity;
     let total_volume = 0;
@@ -90,63 +140,158 @@ export class ConsolidationDetector {
       return null;
     }
 
-    const price_range = max_price - min_price;
-    const bucket_size = price_range / this.config.bucket_count;
+    // 3. 使用 ATR 确定聚类半径
+    const cluster_radius = atr * this.config.atr_multiplier;
 
-    // 2. 创建成交量分桶
-    const buckets: number[] = new Array(this.config.bucket_count).fill(0);
+    // 4. 基于收盘价进行简化的聚类
+    // 策略：滑动窗口找出价格最密集的区间
+    const clusters = this.find_price_clusters(klines, cluster_radius);
 
-    for (const kline of klines) {
-      // 将K线成交量分配到对应价格桶
-      // 简化处理：使用K线的VWAP近似值（开盘+收盘+最高+最低）/4
-      const vwap = (kline.open + kline.close + kline.high + kline.low) / 4;
-      const bucket_index = Math.min(
-        Math.floor((vwap - min_price) / bucket_size),
-        this.config.bucket_count - 1
-      );
-
-      if (bucket_index >= 0 && bucket_index < this.config.bucket_count) {
-        buckets[bucket_index] += kline.volume;
-      }
-    }
-
-    // 3. 找到成交量最大的连续桶区域
-    let best_start = 0;
-    let best_volume = 0;
-    const consecutive = this.config.min_consecutive_buckets;
-
-    for (let i = 0; i <= this.config.bucket_count - consecutive; i++) {
-      let window_volume = 0;
-      for (let j = i; j < i + consecutive; j++) {
-        window_volume += buckets[j];
-      }
-
-      if (window_volume > best_volume) {
-        best_volume = window_volume;
-        best_start = i;
-      }
-    }
-
-    // 4. 计算密集区边界
-    const lower_bound = min_price + best_start * bucket_size;
-    const upper_bound = min_price + (best_start + consecutive) * bucket_size;
-    const center_price = (lower_bound + upper_bound) / 2;
-    const volume_pct = (best_volume / total_volume) * 100;
-    const price_range_pct = ((upper_bound - lower_bound) / min_price) * 100;
-
-    // 检查是否满足最小成交量占比要求
-    if (volume_pct < this.config.min_volume_pct) {
+    if (clusters.length === 0) {
       return null;
     }
+
+    // 5. 找出K线数量最多的聚类（价格停留时间最长）
+    let best_cluster: PriceCluster | null = null;
+    let max_kline_count = 0;
+
+    for (const cluster of clusters) {
+      if (cluster.klines.length > max_kline_count) {
+        max_kline_count = cluster.klines.length;
+        best_cluster = cluster;
+      }
+    }
+
+    if (!best_cluster || best_cluster.klines.length < this.config.min_cluster_size) {
+      return null;
+    }
+
+    // 6. 检查时间占比
+    const time_in_zone_pct = (best_cluster.klines.length / klines.length) * 100;
+    if (time_in_zone_pct < this.config.min_time_in_zone_pct) {
+      return null;
+    }
+
+    // 7. 计算密集区边界（中心 ± ATR * 倍数）
+    const center_price = best_cluster.center;
+    const half_width = cluster_radius;
+    const upper_bound = center_price + half_width;
+    const lower_bound = center_price - half_width;
+
+    // 8. 计算区间内的实际成交量
+    const zone_volume = best_cluster.total_volume;
+    const volume_pct = (zone_volume / total_volume) * 100;
+    const price_range_pct = ((upper_bound - lower_bound) / center_price) * 100;
 
     return {
       upper_bound,
       lower_bound,
       center_price,
-      total_volume: best_volume,
+      total_volume: zone_volume,
       volume_pct,
-      price_range_pct
+      price_range_pct,
+      start_time: best_cluster.start_time,
+      end_time: best_cluster.end_time,
+      kline_count: best_cluster.klines.length,
+      atr
     };
+  }
+
+  /**
+   * 基于价格聚类查找密集区
+   * 使用滑动窗口的方式，找出收盘价最集中的区域
+   */
+  private find_price_clusters(klines: KlineData[], radius: number): PriceCluster[] {
+    if (klines.length === 0) return [];
+
+    // 提取所有收盘价并排序
+    const prices = klines.map(k => k.close).sort((a, b) => a - b);
+    const clusters: PriceCluster[] = [];
+
+    // 使用滑动窗口找出价格密集区
+    // 窗口大小 = 2 * radius
+    const window_size = radius * 2;
+
+    // 遍历所有可能的聚类中心
+    let i = 0;
+    while (i < prices.length) {
+      const center = prices[i];
+      const lower = center - radius;
+      const upper = center + radius;
+
+      // 找出所有在此区间内的K线
+      const cluster_klines: KlineData[] = [];
+      let cluster_volume = 0;
+      let start_time = Infinity;
+      let end_time = -Infinity;
+
+      for (const kline of klines) {
+        // 使用收盘价判断是否在区间内
+        if (kline.close >= lower && kline.close <= upper) {
+          cluster_klines.push(kline);
+          cluster_volume += kline.volume;
+          start_time = Math.min(start_time, kline.open_time);
+          end_time = Math.max(end_time, kline.close_time);
+        }
+      }
+
+      if (cluster_klines.length >= this.config.min_cluster_size) {
+        // 重新计算聚类中心（使用加权平均）
+        const weighted_sum = cluster_klines.reduce((sum, k) => sum + k.close * k.volume, 0);
+        const total_weight = cluster_klines.reduce((sum, k) => sum + k.volume, 0);
+        const refined_center = total_weight > 0 ? weighted_sum / total_weight : center;
+
+        clusters.push({
+          center: refined_center,
+          klines: cluster_klines,
+          total_volume: cluster_volume,
+          start_time,
+          end_time
+        });
+      }
+
+      // 跳到下一个不同的价格区间
+      // 找到超出当前窗口的下一个价格
+      let j = i + 1;
+      while (j < prices.length && prices[j] <= upper) {
+        j++;
+      }
+      i = j > i ? j : i + 1;
+    }
+
+    // 合并重叠的聚类
+    return this.merge_overlapping_clusters(clusters, radius);
+  }
+
+  /**
+   * 合并重叠的聚类
+   */
+  private merge_overlapping_clusters(clusters: PriceCluster[], radius: number): PriceCluster[] {
+    if (clusters.length <= 1) return clusters;
+
+    // 按聚类中心排序
+    clusters.sort((a, b) => a.center - b.center);
+
+    const merged: PriceCluster[] = [];
+    let current = clusters[0];
+
+    for (let i = 1; i < clusters.length; i++) {
+      const next = clusters[i];
+
+      // 检查是否重叠（中心距离 < 2 * radius）
+      if (next.center - current.center < radius * 2) {
+        // 合并：保留K线数量更多的聚类
+        if (next.klines.length > current.klines.length) {
+          current = next;
+        }
+      } else {
+        merged.push(current);
+        current = next;
+      }
+    }
+    merged.push(current);
+
+    return merged;
   }
 
   /**
@@ -158,15 +303,15 @@ export class ConsolidationDetector {
    * 核心逻辑：只有"刚刚突破"才触发信号
    * - 前一根K线必须在密集区内（或刚触及边界）
    * - 当前K线必须突破到密集区外
-   * - 这样避免价格已经在区外运行时重复触发信号
+   * - 突破幅度必须超过 min_breakout_pct * ATR
    */
   detect_breakout(
     symbol: string,
     klines: KlineData[],
     current_kline: KlineData
   ): BreakoutSignal | null {
-    // 需要至少有前一根K线来判断"刚刚突破"
-    if (klines.length < 10) {
+    // 需要至少有足够K线来判断"刚刚突破"
+    if (klines.length < this.config.min_cluster_size) {
       return null;
     }
 
@@ -193,15 +338,22 @@ export class ConsolidationDetector {
     const close = current_kline.close;
     const open = current_kline.open;
 
+    // 使用 ATR 计算最小突破距离
+    const min_breakout_distance = zone.atr * this.config.min_breakout_pct;
+
     // 向上突破条件：
     // - 前一根K线收盘价在密集区上沿以下（还在区内或刚触及）
     // - 当前K线收盘价突破上沿
     // - 当前K线是阳线
-    const prev_was_inside_or_at_upper = prev_close <= zone.upper_bound * 1.005; // 允许0.5%的容差
-    if (close > zone.upper_bound && close > open && prev_was_inside_or_at_upper) {
-      const breakout_pct = ((close - zone.upper_bound) / zone.upper_bound) * 100;
+    // - 突破距离 >= min_breakout_distance
+    const tolerance = zone.atr * 0.1; // 使用 10% ATR 作为容差
+    const prev_was_inside_or_at_upper = prev_close <= zone.upper_bound + tolerance;
 
-      if (breakout_pct >= this.config.min_breakout_pct) {
+    if (close > zone.upper_bound && close > open && prev_was_inside_or_at_upper) {
+      const breakout_distance = close - zone.upper_bound;
+      const breakout_pct = (breakout_distance / zone.center_price) * 100;
+
+      if (breakout_distance >= min_breakout_distance) {
         return {
           symbol,
           direction: 'UP',
@@ -219,11 +371,14 @@ export class ConsolidationDetector {
     // - 前一根K线收盘价在密集区下沿以上（还在区内或刚触及）
     // - 当前K线收盘价跌破下沿
     // - 当前K线是阴线
-    const prev_was_inside_or_at_lower = prev_close >= zone.lower_bound * 0.995; // 允许0.5%的容差
-    if (close < zone.lower_bound && close < open && prev_was_inside_or_at_lower) {
-      const breakout_pct = ((zone.lower_bound - close) / zone.lower_bound) * 100;
+    // - 突破距离 >= min_breakout_distance
+    const prev_was_inside_or_at_lower = prev_close >= zone.lower_bound - tolerance;
 
-      if (breakout_pct >= this.config.min_breakout_pct) {
+    if (close < zone.lower_bound && close < open && prev_was_inside_or_at_lower) {
+      const breakout_distance = zone.lower_bound - close;
+      const breakout_pct = (breakout_distance / zone.center_price) * 100;
+
+      if (breakout_distance >= min_breakout_distance) {
         return {
           symbol,
           direction: 'DOWN',
