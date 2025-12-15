@@ -85,9 +85,17 @@ async function main() {
   }
 
   // 定期打印状态
-  setInterval(() => {
+  setInterval(async () => {
     const status = service.get_status();
     const uptime = Math.round((Date.now() - status.stats.start_time) / 60000);
+
+    // 获取数据库统计
+    let db_stats = { today_count: 0, today_symbols: 0, buffer_size: 0 };
+    try {
+      db_stats = await service.get_kline_db_statistics();
+    } catch {
+      // 忽略错误
+    }
 
     console.log('\n📊 [状态报告]');
     console.log(`   运行时间: ${uptime} 分钟`);
@@ -95,6 +103,7 @@ async function main() {
     console.log(`   监控币种: ${status.symbols_count}`);
     console.log(`   缓存币种: ${status.cached_symbols}`);
     console.log(`   K线接收: ${status.stats.total_klines_received}`);
+    console.log(`   K线入库: ${db_stats.today_count} (${db_stats.today_symbols}币种, 缓冲${db_stats.buffer_size})`);
     console.log(`   突破信号: ${status.stats.total_signals} (UP: ${status.stats.up_signals}, DOWN: ${status.stats.down_signals})`);
   }, CONFIG.status_interval_ms);
 

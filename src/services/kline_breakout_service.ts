@@ -13,6 +13,7 @@ import axios from 'axios';
 import { EventEmitter } from 'events';
 import { ConsolidationDetector, KlineData, BreakoutSignal } from '@/analysis/consolidation_detector';
 import { KlineBreakoutRepository, KlineBreakoutSignal } from '@/database/kline_breakout_repository';
+import { Kline5mRepository, Kline5mData } from '@/database/kline_5m_repository';
 import { logger } from '@/utils/logger';
 
 // 服务配置
@@ -63,6 +64,7 @@ export class KlineBreakoutService extends EventEmitter {
   // 组件
   private detector: ConsolidationDetector;
   private repository: KlineBreakoutRepository;
+  private kline_repository: Kline5mRepository;
 
   // 统计
   private stats = {
@@ -78,6 +80,7 @@ export class KlineBreakoutService extends EventEmitter {
     this.config = { ...DEFAULT_CONFIG, ...config };
     this.detector = new ConsolidationDetector();
     this.repository = new KlineBreakoutRepository();
+    this.kline_repository = new Kline5mRepository();
   }
 
   /**
@@ -110,6 +113,10 @@ export class KlineBreakoutService extends EventEmitter {
       if (conn.reconnect_timer) clearTimeout(conn.reconnect_timer);
       if (conn.ws) conn.ws.close();
     }
+
+    // 停止 K 线 repository 定时器并刷新缓冲区
+    this.kline_repository.stop_flush_timer();
+    await this.kline_repository.flush();
 
     this.connections = [];
     this.kline_cache.clear();
@@ -236,15 +243,41 @@ export class KlineBreakoutService extends EventEmitter {
         // 更新缓存（无论是否完结）
         this.update_kline_cache(symbol, k);
 
-        // 只在 K 线完结时检测突破
+        // 只在 K 线完结时检测突破并保存到数据库
         if (is_final) {
           this.stats.total_klines_received++;
+
+          // 保存完结的 K 线到数据库（异步，不阻塞）
+          this.save_kline_to_db(symbol, k);
+
+          // 检测突破
           this.check_breakout(symbol);
         }
       }
     } catch (error) {
       // 静默忽略解析错误
     }
+  }
+
+  /**
+   * 保存 K 线到数据库（异步）
+   */
+  private save_kline_to_db(symbol: string, k: any): void {
+    const kline_data: Kline5mData = {
+      symbol,
+      open_time: k.t,
+      close_time: k.T,
+      open: parseFloat(k.o),
+      high: parseFloat(k.h),
+      low: parseFloat(k.l),
+      close: parseFloat(k.c),
+      volume: parseFloat(k.v)
+    };
+
+    // 异步添加到写入缓冲区，不阻塞
+    this.kline_repository.add_kline(kline_data).catch(err => {
+      logger.error(`[KlineBreakout] Failed to save kline for ${symbol}:`, err);
+    });
   }
 
   /**
@@ -507,5 +540,23 @@ export class KlineBreakoutService extends EventEmitter {
    */
   async get_statistics(hours: number = 24): Promise<any> {
     return this.repository.get_statistics(hours);
+  }
+
+  /**
+   * 获取 K 线数据库统计
+   */
+  async get_kline_db_statistics(): Promise<{
+    today_count: number;
+    today_symbols: number;
+    buffer_size: number;
+  }> {
+    return this.kline_repository.get_statistics();
+  }
+
+  /**
+   * 清理旧的 K 线表（保留最近N天）
+   */
+  async cleanup_old_kline_tables(days_to_keep: number = 7): Promise<number> {
+    return this.kline_repository.cleanup_old_tables(days_to_keep);
   }
 }
