@@ -54,9 +54,9 @@ export interface ConsolidationConfig {
 const DEFAULT_CONFIG: ConsolidationConfig = {
   bucket_count: 20,
   min_consecutive_buckets: 3,
-  min_volume_pct: 30,
-  volume_ratio_threshold: 1.5,
-  min_breakout_pct: 0.3
+  min_volume_pct: 50,             // 提高到50%：密集区至少要包含一半成交量
+  volume_ratio_threshold: 2.5,   // 提高到2.5倍：需要更明显的放量
+  min_breakout_pct: 1.0          // 提高到1%：过滤掉正常波动
 };
 
 export class ConsolidationDetector {
