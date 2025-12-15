@@ -152,35 +152,53 @@ export class ConsolidationDetector {
   /**
    * 检测突破信号
    * @param symbol 交易对
-   * @param klines 历史K线（用于计算密集区）
+   * @param klines 历史K线（用于计算密集区，不包含当前K线）
    * @param current_kline 当前完结的K线
+   *
+   * 核心逻辑：只有"刚刚突破"才触发信号
+   * - 前一根K线必须在密集区内（或刚触及边界）
+   * - 当前K线必须突破到密集区外
+   * - 这样避免价格已经在区外运行时重复触发信号
    */
   detect_breakout(
     symbol: string,
     klines: KlineData[],
     current_kline: KlineData
   ): BreakoutSignal | null {
+    // 需要至少有前一根K线来判断"刚刚突破"
+    if (klines.length < 10) {
+      return null;
+    }
+
     // 1. 检测密集区间（不包含当前K线）
     const zone = this.detect_consolidation_zone(klines);
     if (!zone) {
       return null;
     }
 
-    // 2. 计算平均成交量
+    // 2. 获取前一根K线（用于判断是否"刚刚突破"）
+    const prev_kline = klines[klines.length - 1];
+    const prev_close = prev_kline.close;
+
+    // 3. 计算平均成交量
     const avg_volume = klines.reduce((sum, k) => sum + k.volume, 0) / klines.length;
     const volume_ratio = current_kline.volume / avg_volume;
 
-    // 3. 检测是否放量
+    // 4. 检测是否放量
     if (volume_ratio < this.config.volume_ratio_threshold) {
       return null; // 未放量，不算有效突破
     }
 
-    // 4. 检测突破方向
+    // 5. 检测突破方向
     const close = current_kline.close;
     const open = current_kline.open;
 
-    // 向上突破: 收盘价突破上沿 + 阳线
-    if (close > zone.upper_bound && close > open) {
+    // 向上突破条件：
+    // - 前一根K线收盘价在密集区上沿以下（还在区内或刚触及）
+    // - 当前K线收盘价突破上沿
+    // - 当前K线是阳线
+    const prev_was_inside_or_at_upper = prev_close <= zone.upper_bound * 1.005; // 允许0.5%的容差
+    if (close > zone.upper_bound && close > open && prev_was_inside_or_at_upper) {
       const breakout_pct = ((close - zone.upper_bound) / zone.upper_bound) * 100;
 
       if (breakout_pct >= this.config.min_breakout_pct) {
@@ -197,8 +215,12 @@ export class ConsolidationDetector {
       }
     }
 
-    // 向下突破: 收盘价跌破下沿 + 阴线
-    if (close < zone.lower_bound && close < open) {
+    // 向下突破条件：
+    // - 前一根K线收盘价在密集区下沿以上（还在区内或刚触及）
+    // - 当前K线收盘价跌破下沿
+    // - 当前K线是阴线
+    const prev_was_inside_or_at_lower = prev_close >= zone.lower_bound * 0.995; // 允许0.5%的容差
+    if (close < zone.lower_bound && close < open && prev_was_inside_or_at_lower) {
       const breakout_pct = ((zone.lower_bound - close) / zone.lower_bound) * 100;
 
       if (breakout_pct >= this.config.min_breakout_pct) {
