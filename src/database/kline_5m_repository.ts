@@ -112,6 +112,8 @@ export class Kline5mRepository {
     const klines_to_write = [...this.write_buffer];
     this.write_buffer = [];
 
+    logger.info(`[Kline5m] Flushing ${klines_to_write.length} klines to database...`);
+
     // 按日期分组
     const by_date = new Map<string, Kline5mData[]>();
     for (const kline of klines_to_write) {
@@ -165,7 +167,7 @@ export class Kline5mRepository {
       const [result] = await connection.execute(sql, values);
       const affected = (result as any).affectedRows;
       if (affected > 0) {
-        logger.debug(`[Kline5m] Inserted ${affected} rows to ${table_name}`);
+        logger.info(`[Kline5m] Inserted ${affected} rows to ${table_name}`);
       }
     } catch (error) {
       logger.error(`[Kline5m] Batch insert failed:`, error);
@@ -177,8 +179,12 @@ export class Kline5mRepository {
    * 启动定时刷新
    */
   private start_flush_timer(): void {
+    logger.info(`[Kline5m] Starting flush timer (interval: ${this.FLUSH_INTERVAL_MS}ms)`);
     this.flush_timer = setInterval(async () => {
       try {
+        if (this.write_buffer.length > 0) {
+          logger.info(`[Kline5m] Timer triggered, buffer size: ${this.write_buffer.length}`);
+        }
         await this.flush();
       } catch (error) {
         logger.error('[Kline5m] Flush timer error:', error);
