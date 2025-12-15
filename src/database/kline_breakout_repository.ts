@@ -62,6 +62,8 @@ export class KlineBreakoutRepository {
     } catch (error) {
       logger.error('[KlineBreakout] Failed to save signal:', error);
       throw error;
+    } finally {
+      connection.release();
     }
   }
 
@@ -83,6 +85,8 @@ export class KlineBreakoutRepository {
     } catch (error) {
       logger.error('[KlineBreakout] Failed to get recent signals:', error);
       throw error;
+    } finally {
+      connection.release();
     }
   }
 
@@ -105,6 +109,8 @@ export class KlineBreakoutRepository {
     } catch (error) {
       logger.error(`[KlineBreakout] Failed to get signals for ${symbol}:`, error);
       throw error;
+    } finally {
+      connection.release();
     }
   }
 
@@ -127,6 +133,8 @@ export class KlineBreakoutRepository {
     } catch (error) {
       logger.error(`[KlineBreakout] Failed to check recent signal:`, error);
       return false;
+    } finally {
+      connection.release();
     }
   }
 
@@ -174,6 +182,8 @@ export class KlineBreakoutRepository {
     } catch (error) {
       logger.error('[KlineBreakout] Failed to get statistics:', error);
       throw error;
+    } finally {
+      connection.release();
     }
   }
 }
