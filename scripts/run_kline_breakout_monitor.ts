@@ -25,6 +25,7 @@ import * as dotenv from 'dotenv';
 dotenv.config({ override: true });
 
 import { KlineBreakoutService } from '../src/services/kline_breakout_service';
+import { ConfigManager } from '../src/core/config/config_manager';
 import { logger } from '../src/utils/logger';
 
 // ==================== 配置 ====================
@@ -59,6 +60,11 @@ async function main() {
   console.log(`   - 监控方向: ${CONFIG.allowed_directions.join(', ')}`);
   console.log(`   - 信号冷却: ${CONFIG.signal_cooldown_minutes} 分钟`);
   console.log('═'.repeat(80));
+
+  // 初始化配置管理器（数据库连接必需）
+  const config_manager = ConfigManager.getInstance();
+  config_manager.initialize();
+  console.log('\n✅ 配置管理器已初始化');
 
   // 创建服务
   const service = new KlineBreakoutService({
