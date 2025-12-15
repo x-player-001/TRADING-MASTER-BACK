@@ -77,6 +77,8 @@ export class Kline5mRepository {
       if (!error.message?.includes('already exists')) {
         throw error;
       }
+    } finally {
+      connection.release();
     }
   }
 
@@ -150,26 +152,26 @@ export class Kline5mRepository {
 
     const connection = await DatabaseConfig.get_mysql_connection();
 
-    // 确保表存在
-    logger.info(`[Kline5m] Ensuring table ${table_name} exists...`);
-    await this.ensure_table_exists(table_name);
-    logger.info(`[Kline5m] Table ${table_name} ready`);
-
-    // 构建批量插入 SQL
-    const placeholders = klines.map(() => '(?, ?, ?, ?, ?, ?, ?, ?)').join(', ');
-    const values: any[] = [];
-
-    for (const k of klines) {
-      values.push(k.symbol, k.open_time, k.close_time, k.open, k.high, k.low, k.close, k.volume);
-    }
-
-    const sql = `
-      INSERT IGNORE INTO ${table_name}
-      (symbol, open_time, close_time, open, high, low, close, volume)
-      VALUES ${placeholders}
-    `;
-
     try {
+      // 确保表存在
+      logger.info(`[Kline5m] Ensuring table ${table_name} exists...`);
+      await this.ensure_table_exists(table_name);
+      logger.info(`[Kline5m] Table ${table_name} ready`);
+
+      // 构建批量插入 SQL
+      const placeholders = klines.map(() => '(?, ?, ?, ?, ?, ?, ?, ?)').join(', ');
+      const values: any[] = [];
+
+      for (const k of klines) {
+        values.push(k.symbol, k.open_time, k.close_time, k.open, k.high, k.low, k.close, k.volume);
+      }
+
+      const sql = `
+        INSERT IGNORE INTO ${table_name}
+        (symbol, open_time, close_time, open, high, low, close, volume)
+        VALUES ${placeholders}
+      `;
+
       const [result] = await connection.execute(sql, values);
       const affected = (result as any).affectedRows;
       if (affected > 0) {
@@ -178,6 +180,9 @@ export class Kline5mRepository {
     } catch (error) {
       logger.error(`[Kline5m] Batch insert failed:`, error);
       throw error;
+    } finally {
+      // 重要：释放连接回连接池
+      connection.release();
     }
   }
 
@@ -216,8 +221,8 @@ export class Kline5mRepository {
     const today = this.get_table_name();
     const yesterday = this.get_table_name(new Date(Date.now() - 24 * 60 * 60 * 1000));
 
-    // 先查今天的表
     try {
+      // 先查今天的表
       const sql = `
         SELECT * FROM ${today}
         WHERE symbol = ?
@@ -252,6 +257,8 @@ export class Kline5mRepository {
         return [];
       }
       throw error;
+    } finally {
+      connection.release();
     }
   }
 
@@ -265,37 +272,41 @@ export class Kline5mRepository {
   ): Promise<Kline5mData[]> {
     const connection = await DatabaseConfig.get_mysql_connection();
 
-    // 计算涉及的日期
-    const start_date = new Date(start_time);
-    const end_date = new Date(end_time);
-    const tables: string[] = [];
+    try {
+      // 计算涉及的日期
+      const start_date = new Date(start_time);
+      const end_date = new Date(end_time);
+      const tables: string[] = [];
 
-    let current = new Date(start_date);
-    while (current <= end_date) {
-      tables.push(this.get_table_name(current));
-      current.setDate(current.getDate() + 1);
-    }
+      let current = new Date(start_date);
+      while (current <= end_date) {
+        tables.push(this.get_table_name(current));
+        current.setDate(current.getDate() + 1);
+      }
 
-    const results: Kline5mData[] = [];
+      const results: Kline5mData[] = [];
 
-    for (const table of tables) {
-      try {
-        const sql = `
-          SELECT * FROM ${table}
-          WHERE symbol = ? AND open_time >= ? AND open_time <= ?
-          ORDER BY open_time
-        `;
-        const [rows] = await connection.execute(sql, [symbol, start_time, end_time]);
-        results.push(...(rows as Kline5mData[]));
-      } catch (error: any) {
-        // 表不存在则跳过
-        if (error.code !== 'ER_NO_SUCH_TABLE') {
-          throw error;
+      for (const table of tables) {
+        try {
+          const sql = `
+            SELECT * FROM ${table}
+            WHERE symbol = ? AND open_time >= ? AND open_time <= ?
+            ORDER BY open_time
+          `;
+          const [rows] = await connection.execute(sql, [symbol, start_time, end_time]);
+          results.push(...(rows as Kline5mData[]));
+        } catch (error: any) {
+          // 表不存在则跳过
+          if (error.code !== 'ER_NO_SUCH_TABLE') {
+            throw error;
+          }
         }
       }
-    }
 
-    return results.sort((a, b) => a.open_time - b.open_time);
+      return results.sort((a, b) => a.open_time - b.open_time);
+    } finally {
+      connection.release();
+    }
   }
 
   /**
@@ -304,33 +315,37 @@ export class Kline5mRepository {
   async cleanup_old_tables(days_to_keep: number = 7): Promise<number> {
     const connection = await DatabaseConfig.get_mysql_connection();
 
-    // 获取所有 kline_5m_ 开头的表
-    const [tables] = await connection.execute(`
-      SELECT TABLE_NAME FROM information_schema.TABLES
-      WHERE TABLE_SCHEMA = DATABASE() AND TABLE_NAME LIKE 'kline_5m_%'
-    `);
+    try {
+      // 获取所有 kline_5m_ 开头的表
+      const [tables] = await connection.execute(`
+        SELECT TABLE_NAME FROM information_schema.TABLES
+        WHERE TABLE_SCHEMA = DATABASE() AND TABLE_NAME LIKE 'kline_5m_%'
+      `);
 
-    const cutoff_date = new Date();
-    cutoff_date.setDate(cutoff_date.getDate() - days_to_keep);
-    const cutoff_str = this.get_table_name(cutoff_date).replace('kline_5m_', '');
+      const cutoff_date = new Date();
+      cutoff_date.setDate(cutoff_date.getDate() - days_to_keep);
+      const cutoff_str = this.get_table_name(cutoff_date).replace('kline_5m_', '');
 
-    let dropped = 0;
-    for (const row of tables as any[]) {
-      const table_name = row.TABLE_NAME;
-      const date_str = table_name.replace('kline_5m_', '');
+      let dropped = 0;
+      for (const row of tables as any[]) {
+        const table_name = row.TABLE_NAME;
+        const date_str = table_name.replace('kline_5m_', '');
 
-      if (date_str < cutoff_str) {
-        try {
-          await connection.execute(`DROP TABLE IF EXISTS ${table_name}`);
-          logger.info(`[Kline5m] Dropped old table: ${table_name}`);
-          dropped++;
-        } catch (error) {
-          logger.error(`[Kline5m] Failed to drop table ${table_name}:`, error);
+        if (date_str < cutoff_str) {
+          try {
+            await connection.execute(`DROP TABLE IF EXISTS ${table_name}`);
+            logger.info(`[Kline5m] Dropped old table: ${table_name}`);
+            dropped++;
+          } catch (error) {
+            logger.error(`[Kline5m] Failed to drop table ${table_name}:`, error);
+          }
         }
       }
-    }
 
-    return dropped;
+      return dropped;
+    } finally {
+      connection.release();
+    }
   }
 
   /**
@@ -365,6 +380,8 @@ export class Kline5mRepository {
         };
       }
       throw error;
+    } finally {
+      connection.release();
     }
   }
 }
