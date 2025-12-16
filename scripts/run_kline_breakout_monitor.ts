@@ -29,6 +29,16 @@ import { KlineBreakoutService } from '../src/services/kline_breakout_service';
 import { ConfigManager } from '../src/core/config/config_manager';
 import { logger } from '../src/utils/logger';
 
+/**
+ * 格式化时间戳为北京时间 (UTC+8)
+ */
+function format_beijing_time(ts: number): string {
+  const date = new Date(ts);
+  const beijing_hours = (date.getUTCHours() + 8) % 24;
+  const minutes = date.getUTCMinutes().toString().padStart(2, '0');
+  return `${beijing_hours.toString().padStart(2, '0')}:${minutes}`;
+}
+
 // ==================== 配置 ====================
 const CONFIG = {
   // K线缓存数量（用于区间检测，建议100根约8小时数据）
@@ -160,8 +170,8 @@ async function main() {
               const best_range = detail.ranges.reduce((a, b) =>
                 a.score.total_score > b.score.total_score ? a : b
               );
-              const start_time = new Date(best_range.start_time).toISOString().slice(11, 16);
-              const end_time = new Date(best_range.end_time).toISOString().slice(11, 16);
+              const start_time = format_beijing_time(best_range.start_time);
+              const end_time = format_beijing_time(best_range.end_time);
               const current_price = detail.current_price;
               const dist_up = ((best_range.extended_high - current_price) / current_price * 100).toFixed(3);
               const dist_down = ((current_price - best_range.extended_low) / current_price * 100).toFixed(3);

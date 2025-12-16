@@ -386,7 +386,14 @@ export class KlineBreakoutService extends EventEmitter {
       // 检测突破信号
       const breakout = this.detector.detect_breakout(range, current_kline, prev_klines);
 
-      if (breakout && breakout.is_confirmed) {
+      // 实时检测时无法等待后续K线确认，只要幅度和成交量达标就触发
+      // is_confirmed 需要 bars_confirmed，但实时模式下 next_klines 为空，bars_confirmed 永远为 false
+      // 改为检查 amplitude_confirmed && volume_confirmed
+      const is_valid_breakout = breakout && breakout.confirmation &&
+        breakout.confirmation.amplitude_confirmed &&
+        breakout.confirmation.volume_confirmed;
+
+      if (is_valid_breakout) {
         // 检查方向是否允许
         if (!this.config.allowed_directions.includes(breakout.direction)) {
           continue;
