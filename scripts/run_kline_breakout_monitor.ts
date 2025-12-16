@@ -141,6 +141,25 @@ async function main() {
     console.log(`   K线接收: ${status.stats.total_klines_received}`);
     console.log(`   K线入库: ${db_stats.today_count} (${db_stats.today_symbols}币种, 缓冲${db_stats.buffer_size})`);
     console.log(`   突破信号: ${status.stats.total_signals} (UP: ${status.stats.up_signals}, DOWN: ${status.stats.down_signals})`);
+
+    // 每5分钟打印一次区间检测摘要
+    if (uptime % 5 === 0 && uptime > 0) {
+      try {
+        const range_summary = service.debug_get_range_summary();
+        console.log('\n🔍 [区间检测摘要]');
+        console.log(`   检测币种: ${range_summary.total_symbols}`);
+        console.log(`   有区间的币种: ${range_summary.symbols_with_ranges}`);
+        console.log(`   总区间数: ${range_summary.total_ranges}`);
+        if (range_summary.top_symbols.length > 0) {
+          console.log('   Top 5 高分区间:');
+          for (const item of range_summary.top_symbols.slice(0, 5)) {
+            console.log(`     - ${item.symbol}: ${item.range_count}个区间, 最高分${item.best_score}`);
+          }
+        }
+      } catch (err) {
+        // 忽略错误
+      }
+    }
   }, CONFIG.status_interval_ms);
 
   // 优雅退出

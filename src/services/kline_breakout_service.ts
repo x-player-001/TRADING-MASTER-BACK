@@ -629,4 +629,84 @@ export class KlineBreakoutService extends EventEmitter {
   async cleanup_old_kline_tables(days_to_keep: number = 7): Promise<number> {
     return this.kline_repository.cleanup_old_tables(days_to_keep);
   }
+
+  /**
+   * 调试：获取指定币种的区间检测结果
+   */
+  debug_get_ranges(symbol: string): {
+    kline_count: number;
+    ranges: OverlapRange[];
+    range_cache: OverlapRange[] | undefined;
+  } | null {
+    const cache = this.kline_cache.get(symbol);
+    if (!cache || cache.length < 30) {
+      return null;
+    }
+
+    const historical_klines = cache.slice(0, -1);
+    const ranges = this.detector.detect_ranges(historical_klines);
+
+    return {
+      kline_count: cache.length,
+      ranges,
+      range_cache: this.range_cache.get(symbol)
+    };
+  }
+
+  /**
+   * 调试：获取区间检测统计摘要
+   */
+  debug_get_range_summary(): {
+    total_symbols: number;
+    symbols_with_ranges: number;
+    total_ranges: number;
+    top_symbols: { symbol: string; range_count: number; best_score: number }[];
+  } {
+    let symbols_with_ranges = 0;
+    let total_ranges = 0;
+    const symbol_stats: { symbol: string; range_count: number; best_score: number }[] = [];
+
+    for (const [symbol, cache] of this.kline_cache.entries()) {
+      if (cache.length < 30) continue;
+
+      const historical_klines = cache.slice(0, -1);
+      const ranges = this.detector.detect_ranges(historical_klines);
+
+      if (ranges.length > 0) {
+        symbols_with_ranges++;
+        total_ranges += ranges.length;
+        const best_score = Math.max(...ranges.map(r => r.score.total_score));
+        symbol_stats.push({ symbol, range_count: ranges.length, best_score });
+      }
+    }
+
+    // 按最高分排序，取前10
+    symbol_stats.sort((a, b) => b.best_score - a.best_score);
+    const top_symbols = symbol_stats.slice(0, 10);
+
+    return {
+      total_symbols: this.kline_cache.size,
+      symbols_with_ranges,
+      total_ranges,
+      top_symbols
+    };
+  }
+
+  /**
+   * 调试：打印指定币种的区间详情
+   */
+  debug_print_ranges(symbol: string): void {
+    const result = this.debug_get_ranges(symbol);
+    if (!result) {
+      logger.info(`[DEBUG] ${symbol}: 缓存不足 (需要至少30根K线)`);
+      return;
+    }
+
+    logger.info(`[DEBUG] ${symbol}: 缓存 ${result.kline_count} 根K线, 检测到 ${result.ranges.length} 个区间`);
+
+    for (let i = 0; i < result.ranges.length; i++) {
+      const range = result.ranges[i];
+      logger.info(`  [区间${i + 1}] ${this.detector.format_range(range)}`);
+    }
+  }
 }
