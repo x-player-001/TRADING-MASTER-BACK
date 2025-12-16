@@ -383,6 +383,17 @@ export class KlineBreakoutService extends EventEmitter {
 
     // 2. 对每个区间检测突破
     for (const range of ranges) {
+      // ===== 关键检查：区间必须是"刚结束"的 =====
+      // 区间 end_time 必须在最近 3 根 K 线内，确保是"刚刚突破"
+      // 5分钟K线，3根 = 15分钟
+      const max_gap_ms = 3 * 5 * 60 * 1000; // 15分钟
+      const time_since_range_end = current_kline.open_time - range.end_time;
+
+      if (time_since_range_end > max_gap_ms) {
+        // 区间结束太久了，跳过（这是旧区间，不是刚突破）
+        continue;
+      }
+
       // 检测突破信号
       const breakout = this.detector.detect_breakout(range, current_kline, prev_klines);
 
