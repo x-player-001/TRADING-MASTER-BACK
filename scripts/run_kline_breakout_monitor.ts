@@ -1,20 +1,21 @@
 /**
- * K线密集区突破监控启动脚本
+ * K线重叠区间突破监控启动脚本 (v2)
  *
  * 功能说明:
  * - WebSocket 订阅所有合约的 5m K线
- * - K线完结时分析是否突破密集成交区间
+ * - K线完结时分析是否突破盘整区间
  * - 突破信号保存到数据库
  *
- * 密集区算法:
- * - 使用成交量分桶法
- * - 分析最近 50 根 5m K线（约4小时）
- * - 成交量最集中的价格区间 = 密集区
+ * 区间检测算法 (OverlapRangeDetector):
+ * - 基于 K线重叠度识别盘整区间（而非收盘价聚类）
+ * - 滑动窗口扫描，自动检测多个时间尺度的区间
+ * - 趋势过滤：使用线性回归 R² 排除趋势区段
+ * - 评分体系：重叠度(30分) + 边界触碰(25分) + 持续时间(20分) + 成交量(15分) + 形态(10分)
  *
- * 突破条件:
- * - 收盘价突破密集区上/下沿
- * - 阳线/阴线确认方向
- * - 成交量 > 平均成交量 × 1.5（放量）
+ * 突破确认 (多维度):
+ * - 幅度确认：突破幅度 >= 区间宽度的30%
+ * - 成交量确认：突破K线成交量 >= 平均成交量 × 1.5
+ * - 连续K线确认：后续K线收盘维持在突破方向
  *
  * 运行命令:
  * npx ts-node -r tsconfig-paths/register scripts/run_kline_breakout_monitor.ts
@@ -30,8 +31,8 @@ import { logger } from '../src/utils/logger';
 
 // ==================== 配置 ====================
 const CONFIG = {
-  // K线缓存数量（用于计算密集区）
-  kline_cache_size: 50,
+  // K线缓存数量（用于区间检测，建议100根约8小时数据）
+  kline_cache_size: 100,
 
   // 信号冷却时间（分钟）
   signal_cooldown_minutes: 30,
@@ -43,20 +44,48 @@ const CONFIG = {
   allowed_directions: ['UP', 'DOWN'] as ('UP' | 'DOWN')[],
 
   // 状态打印间隔（毫秒）
-  status_interval_ms: 60000  // 每分钟打印一次状态
+  status_interval_ms: 60000,  // 每分钟打印一次状态
+
+  // 区间检测配置
+  detector_config: {
+    // 窗口设置
+    min_window_size: 12,    // 最小窗口 12 根 K线（1小时）
+    max_window_size: 60,    // 最大窗口 60 根 K线（5小时）
+
+    // 最低分数阈值（0-100）
+    min_total_score: 50,
+
+    // 趋势过滤配置（过滤掉趋势区段，避免误报）
+    trend_filter: {
+      enabled: true,
+      min_r_squared: 0.45,          // R² >= 0.45 认为有趋势
+      min_price_change_pct: 0.5,    // 价格变化 >= 0.5% 认为有趋势
+      min_slope_per_bar_pct: 0.01   // 每根K线斜率 >= 0.01%
+    },
+
+    // 区间分割配置（按价格跳空分割）
+    segment_split: {
+      enabled: true,
+      price_gap_pct: 0.5,   // 价格跳空 >= 0.5% 时分割
+      time_gap_bars: 6      // 时间间隔 >= 6 根 K线时分割
+    }
+  }
 };
 
 // ==================== 主函数 ====================
 async function main() {
   console.log('═'.repeat(80));
-  console.log('                    K线密集区突破监控系统');
+  console.log('              K线重叠区间突破监控系统 (v2)');
   console.log('═'.repeat(80));
 
   console.log('\n📋 配置说明:');
   console.log(`   - K线周期: 5m`);
-  console.log(`   - 密集区计算: 最近 ${CONFIG.kline_cache_size} 根K线（约${Math.round(CONFIG.kline_cache_size * 5 / 60)}小时）`);
-  console.log(`   - 算法: 成交量分桶法（20个价格桶，连续3桶为密集区）`);
-  console.log(`   - 放量阈值: 1.5x 平均成交量`);
+  console.log(`   - 缓存数据: 最近 ${CONFIG.kline_cache_size} 根K线（约${Math.round(CONFIG.kline_cache_size * 5 / 60)}小时）`);
+  console.log(`   - 算法: K线重叠度检测 + 趋势过滤 (OverlapRangeDetector v2)`);
+  console.log(`   - 窗口范围: ${CONFIG.detector_config.min_window_size}-${CONFIG.detector_config.max_window_size} 根K线`);
+  console.log(`   - 最低区间分数: ${CONFIG.detector_config.min_total_score} 分`);
+  console.log(`   - 趋势过滤: R² >= ${CONFIG.detector_config.trend_filter.min_r_squared}`);
+  console.log(`   - 突破确认: 幅度 + 成交量(1.5x) + 连续K线`);
   console.log(`   - 监控方向: ${CONFIG.allowed_directions.join(', ')}`);
   console.log(`   - 信号冷却: ${CONFIG.signal_cooldown_minutes} 分钟`);
   console.log('═'.repeat(80));
@@ -70,7 +99,8 @@ async function main() {
   const service = new KlineBreakoutService({
     kline_cache_size: CONFIG.kline_cache_size,
     signal_cooldown_minutes: CONFIG.signal_cooldown_minutes,
-    allowed_directions: CONFIG.allowed_directions
+    allowed_directions: CONFIG.allowed_directions,
+    detector_config: CONFIG.detector_config
   });
 
   // 监听突破信号

@@ -1,17 +1,29 @@
 /**
- * K线密集区突破监控服务
+ * K线重叠区间突破监控服务 (v2)
  *
  * 功能:
  * 1. WebSocket 订阅所有合约的 5m K线
- * 2. 内存缓存每个币种最近 50 根 K线
- * 3. K线完结时检测密集区突破
+ * 2. 内存缓存每个币种最近 N 根 K线
+ * 3. K线完结时检测重叠区间突破
  * 4. 保存突破信号到数据库
+ *
+ * 算法升级 (v2):
+ * - 使用 OverlapRangeDetector 替代 ConsolidationDetector
+ * - 基于 K线重叠度识别盘整区间（而非收盘价聚类）
+ * - 添加趋势过滤，避免在趋势中误报区间
+ * - 多维度突破确认（幅度、成交量、持续性）
  */
 
 import WebSocket from 'ws';
 import axios from 'axios';
 import { EventEmitter } from 'events';
-import { ConsolidationDetector, KlineData, BreakoutSignal } from '@/analysis/consolidation_detector';
+import {
+  OverlapRangeDetector,
+  OverlapRangeConfig,
+  KlineData,
+  OverlapRange,
+  OverlapBreakout
+} from '@/analysis/overlap_range_detector';
 import { KlineBreakoutRepository, KlineBreakoutSignal } from '@/database/kline_breakout_repository';
 import { Kline5mRepository, Kline5mData } from '@/database/kline_5m_repository';
 import { logger } from '@/utils/logger';
@@ -25,13 +37,16 @@ export interface KlineBreakoutServiceConfig {
   ping_interval_ms: number;
 
   // K线缓存配置
-  kline_cache_size: number;            // 缓存K线数量，默认50
+  kline_cache_size: number;            // 缓存K线数量，默认100
 
   // 信号配置
   signal_cooldown_minutes: number;     // 同方向信号冷却时间
 
   // 只做多还是双向
   allowed_directions: ('UP' | 'DOWN')[];
+
+  // 区间检测配置
+  detector_config: Partial<OverlapRangeConfig>;
 }
 
 const DEFAULT_CONFIG: KlineBreakoutServiceConfig = {
@@ -39,9 +54,25 @@ const DEFAULT_CONFIG: KlineBreakoutServiceConfig = {
   max_streams_per_connection: 150,
   reconnect_interval_ms: 5000,
   ping_interval_ms: 30000,
-  kline_cache_size: 50,
+  kline_cache_size: 100,               // 增加到100根，约8小时数据
   signal_cooldown_minutes: 30,
-  allowed_directions: ['UP', 'DOWN']
+  allowed_directions: ['UP', 'DOWN'],
+  detector_config: {
+    min_window_size: 12,
+    max_window_size: 60,
+    min_total_score: 50,
+    trend_filter: {
+      enabled: true,
+      min_r_squared: 0.45,
+      min_price_change_pct: 0.5,
+      min_slope_per_bar_pct: 0.01
+    },
+    segment_split: {
+      enabled: true,
+      price_gap_pct: 0.5,
+      time_gap_bars: 6
+    }
+  }
 };
 
 // WebSocket 连接状态
@@ -61,8 +92,11 @@ export class KlineBreakoutService extends EventEmitter {
   // K线缓存: symbol -> KlineData[]
   private kline_cache: Map<string, KlineData[]> = new Map();
 
+  // 区间缓存: symbol -> OverlapRange[] (每个币种检测到的活跃区间)
+  private range_cache: Map<string, OverlapRange[]> = new Map();
+
   // 组件
-  private detector: ConsolidationDetector;
+  private detector: OverlapRangeDetector;
   private repository: KlineBreakoutRepository;
   private kline_repository: Kline5mRepository;
 
@@ -78,7 +112,10 @@ export class KlineBreakoutService extends EventEmitter {
   constructor(config?: Partial<KlineBreakoutServiceConfig>) {
     super();
     this.config = { ...DEFAULT_CONFIG, ...config };
-    this.detector = new ConsolidationDetector();
+    if (config?.detector_config) {
+      this.config.detector_config = { ...DEFAULT_CONFIG.detector_config, ...config.detector_config };
+    }
+    this.detector = new OverlapRangeDetector(this.config.detector_config);
     this.repository = new KlineBreakoutRepository();
     this.kline_repository = new Kline5mRepository();
   }
@@ -317,67 +354,90 @@ export class KlineBreakoutService extends EventEmitter {
   }
 
   /**
-   * 检测突破
+   * 检测突破 (v2 - 使用 OverlapRangeDetector)
    */
   private async check_breakout(symbol: string): Promise<void> {
     const cache = this.kline_cache.get(symbol);
-    if (!cache || cache.length < 20) {
-      return; // 数据不足
+    if (!cache || cache.length < 30) {
+      return; // 数据不足，至少需要30根K线
     }
 
-    // 历史 K 线（不含最新一根）
+    // 历史 K 线（不含最新一根，用于检测区间）
     const historical_klines = cache.slice(0, -1);
     // 最新完结的 K 线
     const current_kline = cache[cache.length - 1];
+    // 前几根K线用于突破确认
+    const prev_klines = cache.slice(-20, -1);
 
-    // 检测突破
-    const signal = this.detector.detect_breakout(symbol, historical_klines, current_kline);
+    // 1. 检测盘整区间
+    const ranges = this.detector.detect_ranges(historical_klines);
 
-    if (signal) {
-      // 检查方向是否允许
-      if (!this.config.allowed_directions.includes(signal.direction)) {
-        return;
+    if (ranges.length === 0) {
+      // 没有检测到区间，清除缓存
+      this.range_cache.delete(symbol);
+      return;
+    }
+
+    // 更新区间缓存
+    this.range_cache.set(symbol, ranges);
+
+    // 2. 对每个区间检测突破
+    for (const range of ranges) {
+      // 检测突破信号
+      const breakout = this.detector.detect_breakout(range, current_kline, prev_klines);
+
+      if (breakout && breakout.is_confirmed) {
+        // 检查方向是否允许
+        if (!this.config.allowed_directions.includes(breakout.direction)) {
+          continue;
+        }
+
+        // 检查冷却时间
+        const has_recent = await this.repository.has_recent_signal(
+          symbol,
+          breakout.direction,
+          this.config.signal_cooldown_minutes
+        );
+
+        if (has_recent) {
+          continue; // 冷却中
+        }
+
+        // 保存信号
+        await this.save_signal(symbol, breakout);
+
+        // 每个方向只触发一次信号
+        break;
       }
-
-      // 检查冷却时间
-      const has_recent = await this.repository.has_recent_signal(
-        symbol,
-        signal.direction,
-        this.config.signal_cooldown_minutes
-      );
-
-      if (has_recent) {
-        return; // 冷却中
-      }
-
-      // 保存信号
-      await this.save_signal(signal);
     }
   }
 
   /**
-   * 保存突破信号
+   * 保存突破信号 (v2 - 使用 OverlapBreakout)
    */
-  private async save_signal(signal: BreakoutSignal): Promise<void> {
+  private async save_signal(symbol: string, breakout: OverlapBreakout): Promise<void> {
     try {
+      const range = breakout.range;
+
+      // 映射 OverlapBreakout 到数据库结构
       const db_signal: Omit<KlineBreakoutSignal, 'id' | 'created_at'> = {
-        symbol: signal.symbol,
-        direction: signal.direction,
-        breakout_price: signal.breakout_price,
-        upper_bound: signal.zone.upper_bound,
-        lower_bound: signal.zone.lower_bound,
-        breakout_pct: signal.breakout_pct,
-        volume: signal.volume,
-        volume_ratio: signal.volume_ratio,
-        kline_open: signal.kline.open,
-        kline_high: signal.kline.high,
-        kline_low: signal.kline.low,
-        kline_close: signal.kline.close,
-        zone_start_time: new Date(signal.zone.start_time),
-        zone_end_time: new Date(signal.zone.end_time),
-        zone_kline_count: signal.zone.kline_count,
-        center_price: signal.zone.center_price,
-        atr: signal.zone.atr,
+        symbol,
+        direction: breakout.direction,
+        breakout_price: breakout.breakout_price,
+        upper_bound: range.upper_bound,
+        lower_bound: range.lower_bound,
+        breakout_pct: breakout.breakout_pct,
+        volume: range.volume_profile.avg_volume,  // 使用区间平均成交量
+        volume_ratio: breakout.volume_ratio,
+        kline_open: breakout.breakout_price,  // 突破时的价格作为参考
+        kline_high: range.extended_high,
+        kline_low: range.extended_low,
+        kline_close: breakout.breakout_price,
+        zone_start_time: new Date(range.start_time),
+        zone_end_time: new Date(range.end_time),
+        zone_kline_count: range.kline_count,
+        center_price: range.center_price,
+        atr: range.range_width_pct / 100 * range.center_price,  // 用区间宽度估算ATR
         signal_time: new Date()
       };
 
@@ -385,19 +445,24 @@ export class KlineBreakoutService extends EventEmitter {
 
       // 更新统计
       this.stats.total_signals++;
-      if (signal.direction === 'UP') {
+      if (breakout.direction === 'UP') {
         this.stats.up_signals++;
       } else {
         this.stats.down_signals++;
       }
 
-      // 发出事件
-      this.emit('breakout_signal', signal);
+      // 发出事件 (包含完整信息)
+      this.emit('breakout_signal', { symbol, breakout });
 
       // 日志输出
-      const arrow = signal.direction === 'UP' ? '🚀' : '📉';
-      logger.info(`${arrow} [BREAKOUT] ${signal.symbol} ${signal.direction} | Price: ${signal.breakout_price.toFixed(6)} | Breakout: +${signal.breakout_pct.toFixed(2)}% | Volume: ${signal.volume_ratio.toFixed(1)}x`);
-      logger.info(`   Zone: ${signal.zone.lower_bound.toFixed(6)} - ${signal.zone.upper_bound.toFixed(6)} | ATR: ${signal.zone.atr.toFixed(6)} | Klines: ${signal.zone.kline_count}`);
+      const arrow = breakout.direction === 'UP' ? '🚀' : '📉';
+      const score = range.score.total_score;
+      const confirm_info = breakout.confirmation
+        ? `Confirm: ${breakout.confirmation.confirmation_score}分`
+        : '';
+
+      logger.info(`${arrow} [BREAKOUT] ${symbol} ${breakout.direction} | Price: ${breakout.breakout_price.toFixed(6)} | Breakout: +${breakout.breakout_pct.toFixed(2)}% | Volume: ${breakout.volume_ratio.toFixed(1)}x`);
+      logger.info(`   Zone: ${range.lower_bound.toFixed(6)} - ${range.upper_bound.toFixed(6)} | Score: ${score} | Klines: ${range.kline_count} | ${confirm_info}`);
 
     } catch (error) {
       logger.error('[KlineBreakout] Failed to save signal:', error);
