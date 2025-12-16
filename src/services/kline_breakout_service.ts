@@ -470,50 +470,138 @@ export class KlineBreakoutService extends EventEmitter {
   }
 
   /**
-   * 预热 K 线缓存（从 REST API 获取历史数据）
+   * 预热 K 线缓存（优先从数据库查询，不足时从 API 拉取）
    */
   private async preheat_kline_cache(): Promise<void> {
-    logger.info('[KlineBreakout] Preheating kline cache from REST API...');
+    logger.info('[KlineBreakout] Preheating kline cache...');
+    logger.info(`[KlineBreakout] Target: ${this.config.kline_cache_size} klines per symbol`);
 
-    const batch_size = 10;
-    let preheated = 0;
+    const batch_size = 20;
+    let from_db = 0;
+    let from_api = 0;
+    let failed = 0;
 
     for (let i = 0; i < this.all_symbols.length; i += batch_size) {
       const batch = this.all_symbols.slice(i, i + batch_size);
-      const promises = batch.map(symbol => this.fetch_historical_klines(symbol));
+      const promises = batch.map(symbol => this.preheat_symbol(symbol));
 
-      try {
-        await Promise.all(promises);
-        preheated += batch.length;
-
-        if (preheated % 100 === 0) {
-          logger.info(`[KlineBreakout] Preheated ${preheated}/${this.all_symbols.length} symbols`);
-        }
-      } catch (error) {
-        // 继续处理其他币种
+      const results = await Promise.all(promises);
+      for (const result of results) {
+        if (result === 'db') from_db++;
+        else if (result === 'api') from_api++;
+        else failed++;
       }
 
-      // 避免速率限制
-      await new Promise(resolve => setTimeout(resolve, 200));
+      const total = from_db + from_api + failed;
+      if (total % 100 === 0) {
+        logger.info(`[KlineBreakout] Progress: ${total}/${this.all_symbols.length} (DB: ${from_db}, API: ${from_api}, Failed: ${failed})`);
+      }
+
+      // API 拉取时避免速率限制
+      if (results.includes('api')) {
+        await new Promise(resolve => setTimeout(resolve, 100));
+      }
     }
 
-    logger.info(`[KlineBreakout] Cache preheating completed: ${preheated} symbols`);
+    logger.info(`[KlineBreakout] Cache preheating completed:`);
+    logger.info(`  - From database: ${from_db} symbols`);
+    logger.info(`  - From API: ${from_api} symbols`);
+    logger.info(`  - Failed: ${failed} symbols`);
   }
 
   /**
-   * 获取单个币种的历史 K 线
+   * 预热单个币种的 K 线数据
+   * @returns 'db' | 'api' | 'failed'
    */
-  private async fetch_historical_klines(symbol: string): Promise<void> {
+  private async preheat_symbol(symbol: string): Promise<'db' | 'api' | 'failed'> {
+    const required = this.config.kline_cache_size;
+
+    try {
+      // 1. 先从数据库查询
+      const db_klines = await this.load_klines_from_db(symbol, required);
+
+      if (db_klines.length >= required * 0.8) {
+        // 数据库数据足够（>=80%），直接使用
+        this.kline_cache.set(symbol, db_klines.slice(-required));
+        return 'db';
+      }
+
+      // 2. 数据库数据不足，从 API 拉取
+      const api_klines = await this.fetch_klines_from_api(symbol, required);
+
+      if (api_klines.length > 0) {
+        // 合并数据库和 API 数据，去重
+        const merged = this.merge_klines(db_klines, api_klines);
+        this.kline_cache.set(symbol, merged.slice(-required));
+
+        // 异步保存新拉取的数据到数据库
+        const new_klines = api_klines.filter(k =>
+          !db_klines.some(dk => dk.open_time === k.open_time)
+        );
+        if (new_klines.length > 0) {
+          this.save_klines_to_db(symbol, new_klines);
+        }
+
+        return 'api';
+      }
+
+      // 3. API 也失败了，使用数据库已有数据
+      if (db_klines.length > 0) {
+        this.kline_cache.set(symbol, db_klines);
+        return 'db';
+      }
+
+      return 'failed';
+    } catch (error) {
+      return 'failed';
+    }
+  }
+
+  /**
+   * 从数据库加载 K 线数据（跨表查询）
+   */
+  private async load_klines_from_db(symbol: string, limit: number): Promise<KlineData[]> {
+    try {
+      // 计算需要查询的时间范围（预留一定余量）
+      const now = Date.now();
+      const start_time = now - (limit + 10) * 5 * 60 * 1000; // 每根K线5分钟
+
+      const db_rows = await this.kline_repository.get_klines_by_time_range(
+        symbol,
+        start_time,
+        now
+      );
+
+      // 转换为 KlineData 格式
+      return db_rows.map(row => ({
+        open_time: typeof row.open_time === 'number' ? row.open_time : Number(row.open_time),
+        close_time: typeof row.close_time === 'number' ? row.close_time : Number(row.close_time),
+        open: typeof row.open === 'number' ? row.open : parseFloat(String(row.open)),
+        high: typeof row.high === 'number' ? row.high : parseFloat(String(row.high)),
+        low: typeof row.low === 'number' ? row.low : parseFloat(String(row.low)),
+        close: typeof row.close === 'number' ? row.close : parseFloat(String(row.close)),
+        volume: typeof row.volume === 'number' ? row.volume : parseFloat(String(row.volume))
+      }));
+    } catch (error) {
+      // 数据库查询失败，返回空数组
+      return [];
+    }
+  }
+
+  /**
+   * 从 API 拉取 K 线数据
+   */
+  private async fetch_klines_from_api(symbol: string, limit: number): Promise<KlineData[]> {
     try {
       const response = await axios.get('https://fapi.binance.com/fapi/v1/klines', {
         params: {
           symbol,
           interval: '5m',
-          limit: this.config.kline_cache_size
+          limit
         }
       });
 
-      const klines: KlineData[] = response.data.map((k: any[]) => ({
+      return response.data.map((k: any[]) => ({
         open_time: k[0],
         close_time: k[6],
         open: parseFloat(k[1]),
@@ -522,11 +610,50 @@ export class KlineBreakoutService extends EventEmitter {
         close: parseFloat(k[4]),
         volume: parseFloat(k[5])
       }));
-
-      this.kline_cache.set(symbol, klines);
     } catch (error) {
-      // 静默失败，后续会通过 WebSocket 补充
+      return [];
     }
+  }
+
+  /**
+   * 合并 K 线数据（去重，按时间排序）
+   */
+  private merge_klines(db_klines: KlineData[], api_klines: KlineData[]): KlineData[] {
+    const map = new Map<number, KlineData>();
+
+    // 先添加数据库数据
+    for (const k of db_klines) {
+      map.set(k.open_time, k);
+    }
+
+    // API 数据覆盖（更新）
+    for (const k of api_klines) {
+      map.set(k.open_time, k);
+    }
+
+    // 按时间排序
+    return Array.from(map.values()).sort((a, b) => a.open_time - b.open_time);
+  }
+
+  /**
+   * 异步保存 K 线到数据库
+   */
+  private save_klines_to_db(symbol: string, klines: KlineData[]): void {
+    const db_klines = klines.map(k => ({
+      symbol,
+      open_time: k.open_time,
+      close_time: k.close_time,
+      open: k.open,
+      high: k.high,
+      low: k.low,
+      close: k.close,
+      volume: k.volume
+    }));
+
+    // 异步添加到写入缓冲区
+    this.kline_repository.add_klines(db_klines).catch(err => {
+      logger.error(`[KlineBreakout] Failed to save klines for ${symbol}:`, err);
+    });
   }
 
   /**
