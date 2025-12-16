@@ -193,10 +193,17 @@ export class KlineBreakoutRepository {
 
       const [rows] = await connection.execute(sql, [symbol, direction, minutes]);
       const count = (rows as any)[0].count;
+
+      // 调试日志
+      if (count > 0) {
+        logger.debug(`[KlineBreakout] Cooldown active: ${symbol} ${direction} has ${count} signal(s) in last ${minutes} min`);
+      }
+
       return count > 0;
     } catch (error) {
       logger.error(`[KlineBreakout] Failed to check recent signal:`, error);
-      return false;
+      // 出错时返回 true，宁可漏发也不要重复发
+      return true;
     } finally {
       connection.release();
     }

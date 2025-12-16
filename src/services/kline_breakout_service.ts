@@ -418,8 +418,11 @@ export class KlineBreakoutService extends EventEmitter {
         );
 
         if (has_recent) {
+          logger.debug(`[KlineBreakout] ${symbol} ${breakout.direction} skipped: cooldown active`);
           continue; // 冷却中
         }
+
+        logger.info(`[KlineBreakout] ${symbol} ${breakout.direction} cooldown check passed, saving signal...`);
 
         // 保存信号
         await this.save_signal(symbol, breakout);
