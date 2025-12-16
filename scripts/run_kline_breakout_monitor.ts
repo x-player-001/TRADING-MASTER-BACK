@@ -150,14 +150,42 @@ async function main() {
         console.log(`   检测币种: ${range_summary.total_symbols}`);
         console.log(`   有区间的币种: ${range_summary.symbols_with_ranges}`);
         console.log(`   总区间数: ${range_summary.total_ranges}`);
+
+        // 打印 Top 5 区间的详细信息
         if (range_summary.top_symbols.length > 0) {
-          console.log('   Top 5 高分区间:');
+          console.log('\n   📋 Top 5 高分区间详情:');
           for (const item of range_summary.top_symbols.slice(0, 5)) {
-            console.log(`     - ${item.symbol}: ${item.range_count}个区间, 最高分${item.best_score}`);
+            const detail = service.debug_get_ranges(item.symbol);
+            if (detail && detail.ranges.length > 0) {
+              const best_range = detail.ranges.reduce((a, b) =>
+                a.score.total_score > b.score.total_score ? a : b
+              );
+              const start_time = new Date(best_range.start_time).toISOString().slice(11, 16);
+              const end_time = new Date(best_range.end_time).toISOString().slice(11, 16);
+              const current_price = detail.current_price;
+              const dist_up = ((best_range.extended_high - current_price) / current_price * 100).toFixed(3);
+              const dist_down = ((current_price - best_range.extended_low) / current_price * 100).toFixed(3);
+
+              // 判断当前价格位置
+              let position = '区间内';
+              if (current_price > best_range.extended_high) {
+                position = `已突破上沿 +${((current_price - best_range.extended_high) / best_range.extended_high * 100).toFixed(3)}%`;
+              } else if (current_price < best_range.extended_low) {
+                position = `已跌破下沿 -${((best_range.extended_low - current_price) / best_range.extended_low * 100).toFixed(3)}%`;
+              }
+
+              console.log(`\n   ▸ ${item.symbol} (得分: ${item.best_score})`);
+              console.log(`     时间: ${start_time} - ${end_time} (${best_range.kline_count}根K线)`);
+              console.log(`     区间: ${best_range.lower_bound.toFixed(6)} - ${best_range.upper_bound.toFixed(6)} (宽度${best_range.range_width_pct.toFixed(2)}%)`);
+              console.log(`     扩展边界: ${best_range.extended_low.toFixed(6)} - ${best_range.extended_high.toFixed(6)}`);
+              console.log(`     覆盖度: ${(best_range.kline_coverage * 100).toFixed(1)}% | 触碰: 上${best_range.boundary_touches.upper_touches}次 下${best_range.boundary_touches.lower_touches}次`);
+              console.log(`     当前价: ${current_price.toFixed(6)} | 位置: ${position}`);
+              console.log(`     距上沿: ${dist_up}% | 距下沿: ${dist_down}%`);
+            }
           }
         }
       } catch (err) {
-        // 忽略错误
+        console.error('   区间检测摘要出错:', err);
       }
     }
   }, CONFIG.status_interval_ms);

@@ -635,6 +635,7 @@ export class KlineBreakoutService extends EventEmitter {
    */
   debug_get_ranges(symbol: string): {
     kline_count: number;
+    current_price: number;
     ranges: OverlapRange[];
     range_cache: OverlapRange[] | undefined;
   } | null {
@@ -645,9 +646,11 @@ export class KlineBreakoutService extends EventEmitter {
 
     const historical_klines = cache.slice(0, -1);
     const ranges = this.detector.detect_ranges(historical_klines);
+    const current_price = cache[cache.length - 1].close;
 
     return {
       kline_count: cache.length,
+      current_price,
       ranges,
       range_cache: this.range_cache.get(symbol)
     };
