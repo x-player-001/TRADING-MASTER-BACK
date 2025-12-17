@@ -185,6 +185,20 @@ export class KlineBreakoutRepository {
     const connection = await DatabaseConfig.get_mysql_connection();
 
     try {
+      // 调试：查看 MySQL NOW() 和最近信号时间
+      const debug_sql = `
+        SELECT
+          NOW() as mysql_now,
+          (SELECT MAX(signal_time) FROM kline_breakout_signals WHERE symbol = ? AND direction = ?) as last_signal_time,
+          (SELECT TIMESTAMPDIFF(MINUTE, MAX(signal_time), NOW()) FROM kline_breakout_signals WHERE symbol = ? AND direction = ?) as minutes_ago
+      `;
+      const [debug_rows] = await connection.execute(debug_sql, [symbol, direction, symbol, direction]);
+      const debug_info = (debug_rows as any)[0];
+
+      if (debug_info.last_signal_time) {
+        logger.info(`[KlineBreakout] Cooldown check: ${symbol} ${direction} | MySQL NOW: ${debug_info.mysql_now} | Last signal: ${debug_info.last_signal_time} | ${debug_info.minutes_ago} min ago`);
+      }
+
       const sql = `
         SELECT COUNT(*) as count FROM kline_breakout_signals
         WHERE symbol = ? AND direction = ?
@@ -194,9 +208,10 @@ export class KlineBreakoutRepository {
       const [rows] = await connection.execute(sql, [symbol, direction, minutes]);
       const count = (rows as any)[0].count;
 
-      // 调试日志
       if (count > 0) {
-        logger.debug(`[KlineBreakout] Cooldown active: ${symbol} ${direction} has ${count} signal(s) in last ${minutes} min`);
+        logger.info(`[KlineBreakout] Cooldown ACTIVE: ${symbol} ${direction} has ${count} signal(s) in last ${minutes} min`);
+      } else {
+        logger.info(`[KlineBreakout] Cooldown PASSED: ${symbol} ${direction} no signals in last ${minutes} min`);
       }
 
       return count > 0;
