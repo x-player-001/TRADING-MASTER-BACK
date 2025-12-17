@@ -60,7 +60,8 @@ interface PositionStopLossState {
   quantity: number;
   current_stop_price: number;
   stop_level: 'INITIAL' | 'BREAKEVEN' | 'TRAILING';
-  algo_id: number | null;        // 当前止损单的 algoId
+  algo_id: number | null;              // 止损单的 algoId
+  trailing_algo_id: number | null;     // 追踪止盈单的 algoId（与止损单共存）
   last_update: number;
 }
 
@@ -203,6 +204,7 @@ async function place_initial_stop_loss(
       current_stop_price: stop_price,
       stop_level: 'INITIAL',
       algo_id: result.algoId,
+      trailing_algo_id: null,
       last_update: Date.now()
     });
 
@@ -280,33 +282,30 @@ async function upgrade_to_breakeven_stop(symbol: string): Promise<boolean> {
 }
 
 /**
- * 升级到追踪止盈（价格上涨2%后）
- * 止损上移到 +2% 处，并启用追踪止盈（回调3%触发）
+ * 添加追踪止盈（价格上涨2%后）
+ * 保留成本止损单，额外下追踪止盈单，两者共存
+ * - 成本止损：保底不亏（触发价 = 入场价 + 0.15%）
+ * - 追踪止盈：锁定更多利润（激活后回调3%平仓）
  */
 async function upgrade_to_trailing_stop(symbol: string): Promise<boolean> {
   if (!trading_api) return false;
 
   const state = position_sl_states.get(symbol);
   if (!state) {
-    logger.warn(`[Strategy] No position state for ${symbol}, cannot upgrade to trailing`);
+    logger.warn(`[Strategy] No position state for ${symbol}, cannot add trailing stop`);
     return false;
   }
 
-  // 如果已经是 TRAILING 级别，不需要再升级
-  if (state.stop_level === 'TRAILING') {
-    logger.debug(`[Strategy] ${symbol} already at TRAILING level, skipping`);
+  // 如果已经下过追踪止盈单，不需要再下
+  if (state.trailing_algo_id !== null) {
+    logger.debug(`[Strategy] ${symbol} already has trailing stop, skipping`);
     return true;
   }
 
   try {
-    // 1. 先撤销现有止损单
-    const cancelled = await cancel_stop_loss_if_exists(symbol);
-    if (!cancelled) {
-      logger.error(`[Strategy] Failed to cancel existing stop loss for ${symbol} before trailing upgrade`);
-      return false;
-    }
+    // 不撤销成本止损单，直接下追踪止盈单
 
-    // 2. 计算追踪止盈的激活价格: 入场价 * (1 + 2%)
+    // 1. 计算追踪止盈的激活价格: 入场价 * (1 + 2%)
     const precision = await get_symbol_precision(symbol);
     let activation_price = state.entry_price * (1 + STRATEGY_CONFIG.trailing_trigger_pct / 100);
     let formatted_qty = state.quantity;
@@ -316,7 +315,7 @@ async function upgrade_to_trailing_stop(symbol: string): Promise<boolean> {
       formatted_qty = format_quantity(state.quantity, precision.quantity_precision, precision.step_size);
     }
 
-    // 3. 下追踪止盈单
+    // 2. 下追踪止盈单（与成本止损单共存）
     const result = await trading_api.place_trailing_stop_order(
       symbol,
       OrderSide.SELL,  // 多头平仓用 SELL
@@ -326,19 +325,19 @@ async function upgrade_to_trailing_stop(symbol: string): Promise<boolean> {
       activation_price
     );
 
-    // 4. 更新状态
-    state.current_stop_price = activation_price;
+    // 3. 更新状态（保留原有 algo_id，新增 trailing_algo_id）
     state.stop_level = 'TRAILING';
-    state.algo_id = result.algoId;
+    state.trailing_algo_id = result.algoId;
     state.last_update = Date.now();
 
-    logger.info(`[Strategy] Upgraded to trailing stop: ${symbol} activation=${activation_price} (+${STRATEGY_CONFIG.trailing_trigger_pct}%), callback=${STRATEGY_CONFIG.trailing_callback_pct}%, algoId=${result.algoId}`);
-    console.log(`\n📈 追踪止盈已启用: ${symbol} 激活价=${activation_price} (+${STRATEGY_CONFIG.trailing_trigger_pct}%), 回调${STRATEGY_CONFIG.trailing_callback_pct}%止盈\n`);
+    logger.info(`[Strategy] Added trailing stop (coexist with breakeven SL): ${symbol} activation=${activation_price} (+${STRATEGY_CONFIG.trailing_trigger_pct}%), callback=${STRATEGY_CONFIG.trailing_callback_pct}%, algoId=${result.algoId}`);
+    console.log(`\n📈 追踪止盈已添加: ${symbol} 激活价=${activation_price} (+${STRATEGY_CONFIG.trailing_trigger_pct}%), 回调${STRATEGY_CONFIG.trailing_callback_pct}%止盈`);
+    console.log(`   ⚠️ 成本止损仍有效 (algoId=${state.algo_id})，两者共存，先触发者平仓\n`);
 
     return true;
 
   } catch (error: any) {
-    logger.error(`[Strategy] Failed to upgrade to trailing stop for ${symbol}:`, error.message);
+    logger.error(`[Strategy] Failed to add trailing stop for ${symbol}:`, error.message);
     return false;
   }
 }
@@ -589,9 +588,18 @@ async function main() {
 
           // 止损状态
           const sl_state = position_sl_states.get(pos.symbol);
-          const sl_info = sl_state
-            ? `| 止损: ${sl_state.stop_level} @ ${sl_state.current_stop_price.toFixed(decimals)}`
-            : '| 止损: 未设置';
+          let sl_info = '| 止损: 未设置';
+          if (sl_state) {
+            const has_sl = sl_state.algo_id !== null;
+            const has_trailing = sl_state.trailing_algo_id !== null;
+            if (has_sl && has_trailing) {
+              sl_info = `| SL: ${sl_state.stop_level} + 追踪`;
+            } else if (has_sl) {
+              sl_info = `| SL: ${sl_state.stop_level} @ ${sl_state.current_stop_price.toFixed(decimals)}`;
+            } else if (has_trailing) {
+              sl_info = `| 追踪止盈`;
+            }
+          }
 
           console.log(`  └─ \x1b[36m${pos.symbol}\x1b[0m: @ $${pos.entry_price.toFixed(decimals)} → $${pos.current_price.toFixed(decimals)} | PnL: ${pnl_color}${pnl_sign}$${pos.unrealized_pnl.toFixed(2)} (${pnl_sign}${pos.unrealized_pnl_percent.toFixed(2)}%)${reset} | 持仓: ${hold_time}分钟 ${sl_info}`);
         }
