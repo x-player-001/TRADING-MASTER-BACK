@@ -1249,34 +1249,49 @@ export class OverlapRangeDetector {
   }
 
   /**
-   * 移除被完全包含的低分区间
+   * 移除被完全包含的区间（价格维度）
+   * 当一个区间的价格范围完全在另一个区间内时，只保留其中一个
    */
   private remove_contained_ranges(ranges: OverlapRange[]): OverlapRange[] {
     const result: OverlapRange[] = [];
+    const removed = new Set<number>();
 
     for (let i = 0; i < ranges.length; i++) {
-      const current = ranges[i];
-      let is_contained = false;
+      if (removed.has(i)) continue;
 
-      for (let j = 0; j < ranges.length; j++) {
-        if (i === j) continue;
+      const current = ranges[i];
+
+      for (let j = i + 1; j < ranges.length; j++) {
+        if (removed.has(j)) continue;
 
         const other = ranges[j];
 
-        // 检查 current 是否被 other 在时间和价格上完全包含
-        const time_contained = current.start_time >= other.start_time &&
-                               current.end_time <= other.end_time;
-        const price_contained = current.lower_bound >= other.lower_bound * 0.998 &&
-                                current.upper_bound <= other.upper_bound * 1.002;
+        // 检查价格包含关系（任一方向）
+        // current 包含 other
+        const current_contains_other =
+          current.lower_bound <= other.lower_bound * 1.002 &&
+          current.upper_bound >= other.upper_bound * 0.998;
 
-        if (time_contained && price_contained && other.score.total_score >= current.score.total_score) {
-          is_contained = true;
-          break;
+        // other 包含 current
+        const other_contains_current =
+          other.lower_bound <= current.lower_bound * 1.002 &&
+          other.upper_bound >= current.upper_bound * 0.998;
+
+        if (current_contains_other || other_contains_current) {
+          // 有包含关系，保留分数更高的那个
+          if (current.score.total_score >= other.score.total_score) {
+            removed.add(j);
+          } else {
+            removed.add(i);
+            break;  // current 被移除，跳出内层循环
+          }
         }
       }
+    }
 
-      if (!is_contained) {
-        result.push(current);
+    for (let i = 0; i < ranges.length; i++) {
+      if (!removed.has(i)) {
+        result.push(ranges[i]);
       }
     }
 
