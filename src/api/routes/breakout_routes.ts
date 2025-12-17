@@ -232,6 +232,7 @@ export class BreakoutRoutes {
         upper_bound: parseFloat(signal.upper_bound as any),
         lower_bound: parseFloat(signal.lower_bound as any),
         center_price: signal.center_price ? parseFloat(signal.center_price as any) : null,
+        zone_score: signal.zone_score ?? null,
         start_time: signal.zone_start_time,
         end_time: signal.zone_end_time,
         kline_count: signal.zone_kline_count,

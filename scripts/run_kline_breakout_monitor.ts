@@ -41,8 +41,8 @@ function format_beijing_time(ts: number): string {
 
 // ==================== 配置 ====================
 const CONFIG = {
-  // K线缓存数量（用于区间检测，建议100根约8小时数据）
-  kline_cache_size: 100,
+  // K线缓存数量（用于区间检测，200根约16.5小时数据）
+  kline_cache_size: 200,
 
   // 信号冷却时间（分钟）
   signal_cooldown_minutes: 30,
@@ -59,8 +59,8 @@ const CONFIG = {
   // 区间检测配置
   detector_config: {
     // 窗口设置
-    min_window_size: 12,    // 最小窗口 12 根 K线（1小时）
-    max_window_size: 60,    // 最大窗口 60 根 K线（5小时）
+    min_window_size: 30,    // 最小窗口 30 根 K线（2.5小时）
+    max_window_size: 200,   // 最大窗口 200 根 K线（约16.5小时）
 
     // 最低分数阈值（0-100）
     min_total_score: 50,
