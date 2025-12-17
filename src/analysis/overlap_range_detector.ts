@@ -49,10 +49,10 @@ export interface VolumeProfile {
 export interface ScoreBreakdown {
   overlap_score: number;      // 重叠度得分 (0-30)
   touch_score: number;        // 触碰得分 (0-25)
-  duration_score: number;     // 持续时间得分 (0-20)
+  duration_score: number;     // 持续时间得分 (0-30)
   volume_score: number;       // 成交量得分 (0-15)
   shape_score: number;        // 形态得分 (0-10)
-  total_score: number;        // 总分 (0-100)
+  total_score: number;        // 总分 (0-100，超过100按100计)
 }
 
 // 重叠区间结果
@@ -1140,21 +1140,23 @@ export class OverlapRangeDetector {
     const touch_balance_score = params.boundary_touches.balance_ratio * 10;
     const touch_score = touch_count_score + touch_balance_score;
 
-    // ========== 3. 持续时间得分 (0-20分) ==========
-    // K线数量: 最高12分 (15根起步，每多5根+2分，上限40根)
-    // 时间跨度: 最高8分 (60分钟起步，每多30分钟+2分)
+    // ========== 3. 持续时间得分 (0-30分) ==========
+    // K线数量: 最高20分 (30根起步，每多10根+2分，上限100根)
+    // 时间跨度: 最高10分 (150分钟起步，每多60分钟+2分)
     let kline_score = 0;
-    if (params.kline_count >= 15) {
-      kline_score = Math.min(12, 4 + (params.kline_count - 15) / 5 * 2);
-    } else if (params.kline_count >= 12) {
-      kline_score = 2;
+    if (params.kline_count >= 30) {
+      kline_score = Math.min(20, 6 + (params.kline_count - 30) / 10 * 2);
+    } else if (params.kline_count >= 20) {
+      kline_score = 3;
+    } else {
+      kline_score = 0;  // 不足20根不得分
     }
 
     let time_score = 0;
-    if (params.duration_minutes >= 60) {
-      time_score = Math.min(8, 2 + (params.duration_minutes - 60) / 30 * 2);
-    } else if (params.duration_minutes >= 30) {
-      time_score = 1;
+    if (params.duration_minutes >= 150) {
+      time_score = Math.min(10, 4 + (params.duration_minutes - 150) / 60 * 2);
+    } else if (params.duration_minutes >= 100) {
+      time_score = 2;
     }
 
     const duration_score = kline_score + time_score;

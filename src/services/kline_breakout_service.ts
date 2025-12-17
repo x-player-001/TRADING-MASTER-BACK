@@ -95,6 +95,10 @@ export class KlineBreakoutService extends EventEmitter {
   // 区间缓存: symbol -> OverlapRange[] (每个币种检测到的活跃区间)
   private range_cache: Map<string, OverlapRange[]> = new Map();
 
+  // 信号去重锁: symbol -> 最近信号的 { direction, price, time }
+  // 用于防止同一 K 线周期内的重复信号
+  private signal_lock: Map<string, { direction: 'UP' | 'DOWN'; price: number; time: number }> = new Map();
+
   // 组件
   private detector: OverlapRangeDetector;
   private repository: KlineBreakoutRepository;
@@ -120,6 +124,9 @@ export class KlineBreakoutService extends EventEmitter {
     this.kline_repository = new Kline5mRepository();
   }
 
+  // 锁清理定时器
+  private lock_cleanup_timer: NodeJS.Timeout | null = null;
+
   /**
    * 启动服务
    */
@@ -136,6 +143,9 @@ export class KlineBreakoutService extends EventEmitter {
     // 3. 启动 REST API 历史数据预热（异步）
     this.preheat_kline_cache();
 
+    // 4. 启动锁清理定时器（每5分钟清理过期锁）
+    this.start_lock_cleanup();
+
     logger.info('[KlineBreakout] Service started');
   }
 
@@ -144,6 +154,12 @@ export class KlineBreakoutService extends EventEmitter {
    */
   async stop(): Promise<void> {
     logger.info('[KlineBreakout] Stopping service...');
+
+    // 停止锁清理定时器
+    if (this.lock_cleanup_timer) {
+      clearInterval(this.lock_cleanup_timer);
+      this.lock_cleanup_timer = null;
+    }
 
     for (const conn of this.connections) {
       if (conn.ping_timer) clearInterval(conn.ping_timer);
@@ -157,8 +173,32 @@ export class KlineBreakoutService extends EventEmitter {
 
     this.connections = [];
     this.kline_cache.clear();
+    this.signal_lock.clear();
 
     logger.info('[KlineBreakout] Service stopped');
+  }
+
+  /**
+   * 启动锁清理定时器
+   */
+  private start_lock_cleanup(): void {
+    // 每5分钟清理过期的锁
+    this.lock_cleanup_timer = setInterval(() => {
+      const now = Date.now();
+      const cooldown_ms = this.config.signal_cooldown_minutes * 60 * 1000;
+      let cleaned = 0;
+
+      for (const [key, lock] of this.signal_lock.entries()) {
+        if (now - lock.time > cooldown_ms) {
+          this.signal_lock.delete(key);
+          cleaned++;
+        }
+      }
+
+      if (cleaned > 0) {
+        logger.debug(`[KlineBreakout] Cleaned ${cleaned} expired signal locks`);
+      }
+    }, 5 * 60 * 1000);
   }
 
   /**
@@ -410,21 +450,44 @@ export class KlineBreakoutService extends EventEmitter {
           continue;
         }
 
-        // 检查冷却时间（同方向 + 价格相近的信号）
+        // ===== 去重检查 1: 内存锁（防止同一周期内重复信号）=====
+        const lock_key = `${symbol}_${breakout.direction}`;
+        const recent_lock = this.signal_lock.get(lock_key);
+        const now = Date.now();
+        const price_tolerance_pct = 1.0; // 价格偏差 1% 内视为同一区域
+
+        if (recent_lock) {
+          const time_diff_minutes = (now - recent_lock.time) / 60000;
+          const price_diff_pct = Math.abs(breakout.breakout_price - recent_lock.price) / recent_lock.price * 100;
+
+          if (time_diff_minutes < this.config.signal_cooldown_minutes && price_diff_pct < price_tolerance_pct) {
+            logger.debug(`[KlineBreakout] ${symbol} ${breakout.direction} skipped: memory lock active (price ${price_diff_pct.toFixed(2)}% from ${recent_lock.price.toFixed(6)})`);
+            continue;
+          }
+        }
+
+        // ===== 去重检查 2: 数据库查询（防止跨周期重复信号）=====
         const has_recent = await this.repository.has_recent_signal_near_price(
           symbol,
           breakout.direction,
           breakout.breakout_price,
           this.config.signal_cooldown_minutes,
-          1.0  // 价格偏差 1% 内视为同一区域的信号
+          price_tolerance_pct
         );
 
         if (has_recent) {
-          logger.debug(`[KlineBreakout] ${symbol} ${breakout.direction} skipped: cooldown active (price near recent signal)`);
+          logger.debug(`[KlineBreakout] ${symbol} ${breakout.direction} skipped: database cooldown active`);
           continue; // 冷却中
         }
 
-        logger.info(`[KlineBreakout] ${symbol} ${breakout.direction} @ ${breakout.breakout_price.toFixed(6)} cooldown check passed, saving signal...`);
+        // ===== 设置内存锁（在保存前锁定，防止并发）=====
+        this.signal_lock.set(lock_key, {
+          direction: breakout.direction,
+          price: breakout.breakout_price,
+          time: now
+        });
+
+        logger.info(`[KlineBreakout] ${symbol} ${breakout.direction} @ ${breakout.breakout_price.toFixed(6)} dedup check passed, saving signal...`);
 
         // 保存信号
         await this.save_signal(symbol, breakout);
