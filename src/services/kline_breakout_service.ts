@@ -202,13 +202,17 @@ export class KlineBreakoutService extends EventEmitter {
   }
 
   /**
-   * 获取所有合约交易对
+   * 获取所有合约交易对（只监控 USDT 结算的）
    */
   private async fetch_all_symbols(): Promise<void> {
     try {
       const response = await axios.get('https://fapi.binance.com/fapi/v1/exchangeInfo');
       const symbols = response.data.symbols
-        .filter((s: any) => s.status === 'TRADING' && s.contractType === 'PERPETUAL')
+        .filter((s: any) =>
+          s.status === 'TRADING' &&
+          s.contractType === 'PERPETUAL' &&
+          s.symbol.endsWith('USDT')  // 只监控 USDT 结算的合约
+        )
         .map((s: any) => s.symbol);
 
       this.all_symbols = symbols;
