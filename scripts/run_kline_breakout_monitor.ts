@@ -54,7 +54,7 @@ const CONFIG = {
   allowed_directions: ['UP', 'DOWN'] as ('UP' | 'DOWN')[],
 
   // 状态打印间隔（毫秒）
-  status_interval_ms: 60000,  // 每分钟打印一次状态
+  status_interval_ms: 300000,  // 每5分钟打印一次状态
 
   // 区间检测配置
   detector_config: {
