@@ -324,7 +324,77 @@ export class OverlapRangeDetector {
     const filtered = merged.filter(r => r.score.total_score >= this.config.min_total_score);
 
     // 5. 按开始时间排序 (便于理解时间顺序)
-    return filtered.sort((a, b) => a.start_time - b.start_time);
+    const sorted = filtered.sort((a, b) => a.start_time - b.start_time);
+
+    // 6. 区间延续检测 - 如果后续K线仍在扩展边界内，延长区间end_time
+    const extended = this.extend_ranges_continuation(sorted, klines);
+
+    return extended;
+  }
+
+  /**
+   * 区间延续检测
+   * 如果区间结束后，后续K线的收盘价仍在扩展边界(extended_low ~ extended_high)内，
+   * 则认为价格仍在区间内震荡，延长区间的end_time
+   */
+  private extend_ranges_continuation(ranges: OverlapRange[], klines: KlineData[]): OverlapRange[] {
+    if (ranges.length === 0 || klines.length === 0) {
+      return ranges;
+    }
+
+    // 为每个区间执行延续检测
+    return ranges.map(range => {
+      // 找到区间结束后的第一根K线的索引
+      let start_extend_idx = -1;
+      for (let i = 0; i < klines.length; i++) {
+        if (klines[i].open_time > range.end_time) {
+          start_extend_idx = i;
+          break;
+        }
+      }
+
+      // 没有后续K线，返回原区间
+      if (start_extend_idx === -1) {
+        return range;
+      }
+
+      // 向后扫描，检查K线是否仍在扩展边界内
+      let extended_end_time = range.end_time;
+      let extended_kline_count = range.kline_count;
+
+      for (let i = start_extend_idx; i < klines.length; i++) {
+        const k = klines[i];
+
+        // 检查收盘价是否在扩展边界内
+        // 使用收盘价作为主要判断依据，因为收盘价代表该K线的最终方向
+        const is_within_extended_range =
+          k.close >= range.extended_low &&
+          k.close <= range.extended_high;
+
+        if (is_within_extended_range) {
+          // 价格仍在区间内，延长区间
+          extended_end_time = k.close_time;
+          extended_kline_count++;
+        } else {
+          // 价格突破了扩展边界，停止延续
+          break;
+        }
+      }
+
+      // 如果有延续，更新区间信息
+      if (extended_end_time > range.end_time) {
+        const duration_minutes = (extended_end_time - range.start_time) / 60000;
+
+        return {
+          ...range,
+          end_time: extended_end_time,
+          kline_count: extended_kline_count,
+          duration_minutes
+        };
+      }
+
+      return range;
+    });
   }
 
   /**
