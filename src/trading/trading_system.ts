@@ -23,6 +23,7 @@ import { RiskManager } from './risk_manager';
 import { OrderExecutor } from './order_executor';
 import { PositionTracker } from './position_tracker';
 import { OrderRecordRepository } from '../database/order_record_repository';
+import { TradingCooldownManager } from './trading_cooldown_manager';
 import { SubscriptionPool } from '../core/data/subscription_pool';
 import { signal_processing_repository } from '../database/signal_processing_repository';
 import {
@@ -39,6 +40,9 @@ export class TradingSystem {
   private order_executor: OrderExecutor;
   private position_tracker: PositionTracker;
   private order_record_repository: OrderRecordRepository;
+
+  // ⭐ 开仓冷却管理器（同一币种 N 小时内只能开仓一次）
+  private cooldown_manager: TradingCooldownManager;
 
   // ⭐ markPrice 实时订阅（用于成本止损检测）
   private subscription_pool: SubscriptionPool | null = null;
@@ -106,6 +110,9 @@ export class TradingSystem {
     this.order_executor = new OrderExecutor(this.config.mode);
     this.position_tracker = new PositionTracker(this.order_executor, this.risk_manager);
     this.order_record_repository = OrderRecordRepository.get_instance();
+
+    // 初始化冷却管理器（默认 6 小时冷却期）
+    this.cooldown_manager = new TradingCooldownManager(6);
 
     // 设置初始资金（用于仓位计算）
     if (this.config.initial_balance) {
@@ -264,6 +271,32 @@ export class TradingSystem {
       };
     }
 
+    // 4.5. 冷却期检查（同一币种 N 小时内只能开仓一次）
+    const cooldown_check = await this.cooldown_manager.check_cooldown(signal.symbol);
+    if (cooldown_check.in_cooldown) {
+      const reason = `Symbol ${signal.symbol} is in cooldown period, ${cooldown_check.remaining_minutes} minutes remaining`;
+      logger.info(`[TradingSystem] Position rejected by cooldown: ${reason}`);
+
+      // 记录拒绝：冷却期内
+      await this.record_signal_rejection({
+        anomaly_id: anomaly.id,
+        symbol: signal.symbol,
+        signal_direction: signal.direction === 'LONG' ? SignalDirection.LONG : SignalDirection.SHORT,
+        signal_score: signal.score,
+        rejection_reason: reason,
+        rejection_category: RejectionCategory.MARKET_CONDITIONS,
+        current_open_positions: open_positions.length,
+        available_balance: this.paper_account_balance,
+        signal_received_at
+      });
+
+      return {
+        signal,
+        action: 'RISK_REJECTED',
+        reason
+      };
+    }
+
     // 5. 执行开仓
     try {
       const position = await this.execute_trade(
@@ -274,6 +307,9 @@ export class TradingSystem {
 
       if (position) {
         logger.info(`[TradingSystem] Position opened: ${position.symbol} ${position.side} @ ${position.entry_price}`);
+
+        // ⭐ 记录冷却期（开仓成功后）
+        await this.cooldown_manager.record_open_position(position.symbol);
 
         // ⭐ 记录接受：成功开仓
         await this.record_signal_acceptance({
@@ -2134,5 +2170,50 @@ export class TradingSystem {
       logger.error('[TradingSystem] Failed to backfill historical trades:', error);
       return result;
     }
+  }
+
+  // ==================== 冷却期管理 ====================
+
+  /**
+   * 设置开仓冷却时间（小时）
+   */
+  set_cooldown_hours(hours: number): void {
+    this.cooldown_manager.set_cooldown_hours(hours);
+  }
+
+  /**
+   * 获取当前冷却时间配置（小时）
+   */
+  get_cooldown_hours(): number {
+    return this.cooldown_manager.get_cooldown_hours();
+  }
+
+  /**
+   * 检查币种是否在冷却期内
+   */
+  async check_symbol_cooldown(symbol: string): Promise<{
+    in_cooldown: boolean;
+    remaining_minutes?: number;
+    last_open_time?: number;
+  }> {
+    return this.cooldown_manager.check_cooldown(symbol);
+  }
+
+  /**
+   * 获取所有正在冷却的币种
+   */
+  async get_all_cooldowns(): Promise<Array<{
+    symbol: string;
+    last_open_time: number;
+    remaining_minutes: number;
+  }>> {
+    return this.cooldown_manager.get_all_cooldowns();
+  }
+
+  /**
+   * 手动清除币种的冷却状态
+   */
+  async clear_symbol_cooldown(symbol: string): Promise<boolean> {
+    return this.cooldown_manager.clear_cooldown(symbol);
   }
 }
