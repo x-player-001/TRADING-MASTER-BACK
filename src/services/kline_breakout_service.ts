@@ -410,19 +410,21 @@ export class KlineBreakoutService extends EventEmitter {
           continue;
         }
 
-        // 检查冷却时间
-        const has_recent = await this.repository.has_recent_signal(
+        // 检查冷却时间（同方向 + 价格相近的信号）
+        const has_recent = await this.repository.has_recent_signal_near_price(
           symbol,
           breakout.direction,
-          this.config.signal_cooldown_minutes
+          breakout.breakout_price,
+          this.config.signal_cooldown_minutes,
+          1.0  // 价格偏差 1% 内视为同一区域的信号
         );
 
         if (has_recent) {
-          logger.debug(`[KlineBreakout] ${symbol} ${breakout.direction} skipped: cooldown active`);
+          logger.debug(`[KlineBreakout] ${symbol} ${breakout.direction} skipped: cooldown active (price near recent signal)`);
           continue; // 冷却中
         }
 
-        logger.info(`[KlineBreakout] ${symbol} ${breakout.direction} cooldown check passed, saving signal...`);
+        logger.info(`[KlineBreakout] ${symbol} ${breakout.direction} @ ${breakout.breakout_price.toFixed(6)} cooldown check passed, saving signal...`);
 
         // 保存信号
         await this.save_signal(symbol, breakout);

@@ -180,38 +180,65 @@ export class KlineBreakoutRepository {
 
   /**
    * 检查是否有近期重复信号（避免短时间内重复发信号）
+   * @deprecated 使用 has_recent_signal_near_price 代替
    */
   async has_recent_signal(symbol: string, direction: 'UP' | 'DOWN', minutes: number = 30): Promise<boolean> {
+    return this.has_recent_signal_near_price(symbol, direction, 0, minutes, 100);
+  }
+
+  /**
+   * 检查是否有近期价格相近的重复信号
+   * @param symbol 交易对
+   * @param direction 方向
+   * @param price 当前突破价格
+   * @param minutes 冷却时间（分钟）
+   * @param price_tolerance_pct 价格容差百分比（例如 1.0 表示 ±1%）
+   */
+  async has_recent_signal_near_price(
+    symbol: string,
+    direction: 'UP' | 'DOWN',
+    price: number,
+    minutes: number = 30,
+    price_tolerance_pct: number = 1.0
+  ): Promise<boolean> {
     const connection = await DatabaseConfig.get_mysql_connection();
 
     try {
-      // 调试：查看 MySQL NOW() 和最近信号时间
-      const debug_sql = `
-        SELECT
-          NOW() as mysql_now,
-          (SELECT MAX(signal_time) FROM kline_breakout_signals WHERE symbol = ? AND direction = ?) as last_signal_time,
-          (SELECT TIMESTAMPDIFF(MINUTE, MAX(signal_time), NOW()) FROM kline_breakout_signals WHERE symbol = ? AND direction = ?) as minutes_ago
-      `;
-      const [debug_rows] = await connection.execute(debug_sql, [symbol, direction, symbol, direction]);
-      const debug_info = (debug_rows as any)[0];
+      // 计算价格范围
+      const price_min = price * (1 - price_tolerance_pct / 100);
+      const price_max = price * (1 + price_tolerance_pct / 100);
 
-      if (debug_info.last_signal_time) {
-        logger.info(`[KlineBreakout] Cooldown check: ${symbol} ${direction} | MySQL NOW: ${debug_info.mysql_now} | Last signal: ${debug_info.last_signal_time} | ${debug_info.minutes_ago} min ago`);
+      // 查询近期信号（如果 price > 0，还要检查价格范围）
+      let sql: string;
+      let params: any[];
+
+      if (price > 0) {
+        sql = `
+          SELECT COUNT(*) as count, MAX(signal_time) as last_time, MAX(breakout_price) as last_price
+          FROM kline_breakout_signals
+          WHERE symbol = ? AND direction = ?
+            AND signal_time > DATE_SUB(NOW(), INTERVAL ? MINUTE)
+            AND breakout_price BETWEEN ? AND ?
+        `;
+        params = [symbol, direction, minutes, price_min, price_max];
+      } else {
+        sql = `
+          SELECT COUNT(*) as count, MAX(signal_time) as last_time, MAX(breakout_price) as last_price
+          FROM kline_breakout_signals
+          WHERE symbol = ? AND direction = ?
+            AND signal_time > DATE_SUB(NOW(), INTERVAL ? MINUTE)
+        `;
+        params = [symbol, direction, minutes];
       }
 
-      const sql = `
-        SELECT COUNT(*) as count FROM kline_breakout_signals
-        WHERE symbol = ? AND direction = ?
-          AND signal_time > DATE_SUB(NOW(), INTERVAL ? MINUTE)
-      `;
-
-      const [rows] = await connection.execute(sql, [symbol, direction, minutes]);
-      const count = (rows as any)[0].count;
+      const [rows] = await connection.execute(sql, params);
+      const result = (rows as any)[0];
+      const count = result.count;
 
       if (count > 0) {
-        logger.info(`[KlineBreakout] Cooldown ACTIVE: ${symbol} ${direction} has ${count} signal(s) in last ${minutes} min`);
-      } else {
-        logger.info(`[KlineBreakout] Cooldown PASSED: ${symbol} ${direction} no signals in last ${minutes} min`);
+        logger.info(`[KlineBreakout] Cooldown ACTIVE: ${symbol} ${direction} @ ${price.toFixed(6)} | Last: ${result.last_price?.toFixed(6)} at ${result.last_time} | ${count} signal(s) in ${minutes} min`);
+      } else if (price > 0) {
+        logger.debug(`[KlineBreakout] Cooldown PASSED: ${symbol} ${direction} @ ${price.toFixed(6)} | No signals in price range [${price_min.toFixed(6)}, ${price_max.toFixed(6)}]`);
       }
 
       return count > 0;
