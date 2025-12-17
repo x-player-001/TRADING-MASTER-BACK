@@ -26,6 +26,7 @@ import {
 } from '@/analysis/overlap_range_detector';
 import { KlineBreakoutRepository, KlineBreakoutSignal } from '@/database/kline_breakout_repository';
 import { Kline5mRepository, Kline5mData } from '@/database/kline_5m_repository';
+import { BoundaryAlertRepository, BoundaryAlertData } from '@/database/boundary_alert_repository';
 import { logger } from '@/utils/logger';
 
 // 服务配置
@@ -103,6 +104,10 @@ export class KlineBreakoutService extends EventEmitter {
   private detector: OverlapRangeDetector;
   private repository: KlineBreakoutRepository;
   private kline_repository: Kline5mRepository;
+  private boundary_alert_repository: BoundaryAlertRepository;
+
+  // 边界报警去重锁: symbol_type -> 最近报警时间
+  private boundary_alert_lock: Map<string, number> = new Map();
 
   // 统计
   private stats = {
@@ -122,6 +127,7 @@ export class KlineBreakoutService extends EventEmitter {
     this.detector = new OverlapRangeDetector(this.config.detector_config);
     this.repository = new KlineBreakoutRepository();
     this.kline_repository = new Kline5mRepository();
+    this.boundary_alert_repository = new BoundaryAlertRepository();
   }
 
   // 锁清理定时器
@@ -425,7 +431,10 @@ export class KlineBreakoutService extends EventEmitter {
     // 更新区间缓存
     this.range_cache.set(symbol, ranges);
 
-    // 2. 对每个区间检测突破
+    // 2. 检测边界触碰报警
+    await this.check_boundary_alert(symbol, ranges, current_kline);
+
+    // 3. 对每个区间检测突破
     for (const range of ranges) {
       // ===== 关键检查：区间必须是"刚结束"的 =====
       // 区间 end_time 必须在最近 3 根 K 线内，确保是"刚刚突破"
@@ -499,6 +508,122 @@ export class KlineBreakoutService extends EventEmitter {
         // 每个方向只触发一次信号
         break;
       }
+    }
+  }
+
+  /**
+   * 检测边界触碰报警
+   * 当价格触碰区间的上下边界时生成报警
+   */
+  private async check_boundary_alert(
+    symbol: string,
+    ranges: OverlapRange[],
+    current_kline: KlineData
+  ): Promise<void> {
+    const cooldown_minutes = 30; // 边界报警冷却时间
+
+    for (const range of ranges) {
+      // 只检测活跃区间（end_time 在最近 6 根 K 线内）
+      const max_gap_ms = 6 * 5 * 60 * 1000; // 30分钟
+      const time_since_range_end = current_kline.open_time - range.end_time;
+      if (time_since_range_end > max_gap_ms) {
+        continue;
+      }
+
+      // 边界容差：区间宽度的 5%
+      const range_width = range.upper_bound - range.lower_bound;
+      const tolerance = range_width * 0.05;
+
+      // 检测触碰上沿
+      const touches_upper = current_kline.high >= range.upper_bound - tolerance &&
+                            current_kline.high <= range.extended_high;
+
+      // 检测触碰下沿
+      const touches_lower = current_kline.low <= range.lower_bound + tolerance &&
+                            current_kline.low >= range.extended_low;
+
+      // 处理上沿触碰
+      if (touches_upper) {
+        const lock_key = `${symbol}_TOUCH_UPPER`;
+        const last_alert_time = this.boundary_alert_lock.get(lock_key);
+        const now = Date.now();
+
+        if (!last_alert_time || (now - last_alert_time) > cooldown_minutes * 60 * 1000) {
+          // 检查数据库是否有最近的报警
+          const has_recent = await this.boundary_alert_repository.has_recent_alert(
+            symbol, 'TOUCH_UPPER', cooldown_minutes
+          );
+
+          if (!has_recent) {
+            await this.save_boundary_alert(symbol, 'TOUCH_UPPER', range, current_kline);
+            this.boundary_alert_lock.set(lock_key, now);
+          }
+        }
+      }
+
+      // 处理下沿触碰
+      if (touches_lower) {
+        const lock_key = `${symbol}_TOUCH_LOWER`;
+        const last_alert_time = this.boundary_alert_lock.get(lock_key);
+        const now = Date.now();
+
+        if (!last_alert_time || (now - last_alert_time) > cooldown_minutes * 60 * 1000) {
+          const has_recent = await this.boundary_alert_repository.has_recent_alert(
+            symbol, 'TOUCH_LOWER', cooldown_minutes
+          );
+
+          if (!has_recent) {
+            await this.save_boundary_alert(symbol, 'TOUCH_LOWER', range, current_kline);
+            this.boundary_alert_lock.set(lock_key, now);
+          }
+        }
+      }
+    }
+  }
+
+  /**
+   * 保存边界报警
+   */
+  private async save_boundary_alert(
+    symbol: string,
+    alert_type: 'TOUCH_UPPER' | 'TOUCH_LOWER',
+    range: OverlapRange,
+    kline: KlineData
+  ): Promise<void> {
+    try {
+      const alert_price = alert_type === 'TOUCH_UPPER' ? kline.high : kline.low;
+
+      const alert: BoundaryAlertData = {
+        symbol,
+        alert_type,
+        alert_price,
+        upper_bound: range.upper_bound,
+        lower_bound: range.lower_bound,
+        extended_high: range.extended_high,
+        extended_low: range.extended_low,
+        zone_score: range.score.total_score,
+        zone_start_time: new Date(range.start_time),
+        zone_end_time: new Date(range.end_time),
+        zone_kline_count: range.kline_count,
+        kline_open: kline.open,
+        kline_high: kline.high,
+        kline_low: kline.low,
+        kline_close: kline.close,
+        kline_volume: kline.volume,
+        alert_time: new Date()
+      };
+
+      await this.boundary_alert_repository.save(alert);
+
+      // 发出事件
+      this.emit('boundary_alert', { symbol, alert_type, alert });
+
+      // 日志输出
+      const icon = alert_type === 'TOUCH_UPPER' ? '⬆️' : '⬇️';
+      logger.info(`${icon} [BOUNDARY] ${symbol} ${alert_type} | Price: ${alert_price.toFixed(6)} | Zone: ${range.lower_bound.toFixed(6)} - ${range.upper_bound.toFixed(6)} | Score: ${range.score.total_score}`);
+
+    } catch (error) {
+      logger.error('[KlineBreakout] Failed to save boundary alert:', error);
     }
   }
 
@@ -846,6 +971,13 @@ export class KlineBreakoutService extends EventEmitter {
    */
   async cleanup_old_kline_tables(days_to_keep: number = 7): Promise<number> {
     return this.kline_repository.cleanup_old_tables(days_to_keep);
+  }
+
+  /**
+   * 获取边界报警 Repository（供 API 使用）
+   */
+  get_boundary_alert_repository(): BoundaryAlertRepository {
+    return this.boundary_alert_repository;
   }
 
   /**

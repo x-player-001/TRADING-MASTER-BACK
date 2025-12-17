@@ -15,6 +15,7 @@ import { BacktestRoutes } from './routes/backtest_routes';
 import { MonitoringManager } from '@/core/monitoring/monitoring_manager';
 import quantitative_routes from './routes/quantitative_routes';
 import { BreakoutRoutes } from './routes/breakout_routes';
+import { BoundaryAlertRoutes } from './routes/boundary_alert_routes';
 
 /**
  * HTTP API服务器
@@ -34,6 +35,7 @@ export class APIServer {
   private trading_routes: TradingRoutes;
   private backtest_routes: BacktestRoutes;
   private breakout_routes: BreakoutRoutes;
+  private boundary_alert_routes: BoundaryAlertRoutes;
   private monitoring_manager: MonitoringManager;
 
   constructor(oi_data_manager: OIDataManager, port: number = 3000) {
@@ -50,6 +52,7 @@ export class APIServer {
     this.trading_routes = new TradingRoutes(this.oi_data_manager.get_oi_polling_service());
     this.backtest_routes = new BacktestRoutes();
     this.breakout_routes = new BreakoutRoutes();
+    this.boundary_alert_routes = new BoundaryAlertRoutes();
     this.monitoring_manager = MonitoringManager.getInstance();
     this.setup_middleware();
     this.setup_routes();
@@ -133,6 +136,7 @@ export class APIServer {
           trading: '/api/trading/*',
           backtest: '/api/backtest/*',
           breakout: '/api/breakout/*',
+          'boundary-alerts': '/api/boundary-alerts/*',
           status: '/api/status'
         },
         timestamp: new Date().toISOString()
@@ -174,6 +178,9 @@ export class APIServer {
 
     // K线突破信号路由
     this.app.use('/api/breakout', this.breakout_routes.get_router());
+
+    // 边界报警路由
+    this.app.use('/api/boundary-alerts', this.boundary_alert_routes.get_router());
 
     // 系统状态
     this.app.get('/api/status', async (req: Request, res: Response) => {

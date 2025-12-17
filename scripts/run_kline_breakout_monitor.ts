@@ -51,7 +51,7 @@ const CONFIG = {
   // ['UP'] = 只做多
   // ['DOWN'] = 只做空
   // ['UP', 'DOWN'] = 双向
-  allowed_directions: ['UP', 'DOWN'] as ('UP' | 'DOWN')[],
+  allowed_directions: ['UP'] as ('UP' | 'DOWN')[],
 
   // 状态打印间隔（毫秒）
   status_interval_ms: 300000,  // 每5分钟打印一次状态
