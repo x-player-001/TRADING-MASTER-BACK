@@ -47,48 +47,60 @@ export class Logger {
     this.log_level = level;
   }
 
+  /**
+   * 获取 UTC+8 (北京/香港时间) 格式的时间字符串
+   */
+  private get_utc8_time(): string {
+    const now = new Date();
+    // UTC+8 偏移量（毫秒）
+    const utc8_offset = 8 * 60 * 60 * 1000;
+    const utc8_time = new Date(now.getTime() + utc8_offset);
+    // 格式: YYYY-MM-DD HH:mm:ss
+    return utc8_time.toISOString().replace('T', ' ').substring(0, 19);
+  }
+
   debug(message: string, data?: any): void {
     if (this.log_level <= LogLevel.DEBUG) {
-      console.log(`${Colors.Gray}[DEBUG] ${new Date().toISOString()} - ${message}${Colors.Reset}`, data || '');
+      console.log(`${Colors.Gray}[DEBUG] ${this.get_utc8_time()} - ${message}${Colors.Reset}`, data || '');
     }
   }
 
   info(message: string, data?: any): void {
     if (this.log_level <= LogLevel.INFO) {
-      console.log(`${Colors.Cyan}[INFO] ${new Date().toISOString()} - ${message}${Colors.Reset}`, data || '');
+      console.log(`${Colors.Cyan}[INFO] ${this.get_utc8_time()} - ${message}${Colors.Reset}`, data || '');
     }
   }
 
   warn(message: string, data?: any): void {
     if (this.log_level <= LogLevel.WARN) {
-      console.warn(`${Colors.Yellow}[WARN] ${new Date().toISOString()} - ${message}${Colors.Reset}`, data || '');
+      console.warn(`${Colors.Yellow}[WARN] ${this.get_utc8_time()} - ${message}${Colors.Reset}`, data || '');
     }
   }
 
   error(message: string, error?: Error | any): void {
     if (this.log_level <= LogLevel.ERROR) {
-      console.error(`${Colors.Red}[ERROR] ${new Date().toISOString()} - ${message}${Colors.Reset}`, error || '');
+      console.error(`${Colors.Red}[ERROR] ${this.get_utc8_time()} - ${message}${Colors.Reset}`, error || '');
     }
   }
 
   // 专门的API日志方法 - 使用蓝色
   api(message: string, data?: any): void {
     if (this.log_level <= LogLevel.DEBUG) {
-      console.log(`${Colors.Blue}[API] ${new Date().toISOString()} - ${message}${Colors.Reset}`, data || '');
+      console.log(`${Colors.Blue}[API] ${this.get_utc8_time()} - ${message}${Colors.Reset}`, data || '');
     }
   }
 
   // OI轮询日志 - 使用绿色
   oi(message: string, data?: any): void {
     if (this.log_level <= LogLevel.INFO) {
-      console.log(`${Colors.Green}[OI] ${new Date().toISOString()} - ${message}${Colors.Reset}`, data || '');
+      console.log(`${Colors.Green}[OI] ${this.get_utc8_time()} - ${message}${Colors.Reset}`, data || '');
     }
   }
 
   // 缓存日志 - 使用紫色
   cache(message: string, data?: any): void {
     if (this.log_level <= LogLevel.DEBUG) {
-      console.log(`${Colors.Magenta}[CACHE] ${new Date().toISOString()} - ${message}${Colors.Reset}`, data || '');
+      console.log(`${Colors.Magenta}[CACHE] ${this.get_utc8_time()} - ${message}${Colors.Reset}`, data || '');
     }
   }
 }

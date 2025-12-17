@@ -35,13 +35,25 @@ export class Kline5mRepository {
   }
 
   /**
-   * 获取日期对应的表名
+   * 获取日期对应的表名（使用 UTC 时间）
+   * 注意：必须使用 UTC 时间，因为 K 线的 open_time 是 UTC 时间戳
    */
   private get_table_name(date?: Date): string {
     const d = date || new Date();
-    const year = d.getFullYear();
-    const month = String(d.getMonth() + 1).padStart(2, '0');
-    const day = String(d.getDate()).padStart(2, '0');
+    const year = d.getUTCFullYear();
+    const month = String(d.getUTCMonth() + 1).padStart(2, '0');
+    const day = String(d.getUTCDate()).padStart(2, '0');
+    return `kline_5m_${year}${month}${day}`;
+  }
+
+  /**
+   * 根据时间戳获取表名（使用 UTC 时间）
+   */
+  private get_table_name_from_timestamp(ts: number): string {
+    const d = new Date(ts);
+    const year = d.getUTCFullYear();
+    const month = String(d.getUTCMonth() + 1).padStart(2, '0');
+    const day = String(d.getUTCDate()).padStart(2, '0');
     return `kline_5m_${year}${month}${day}`;
   }
 
@@ -121,8 +133,6 @@ export class Kline5mRepository {
     const klines_to_write = [...this.write_buffer];
     this.write_buffer = [];
 
-    logger.info(`[Kline5m] Flushing ${klines_to_write.length} klines to database...`);
-
     // 按日期分组
     const by_date = new Map<string, Kline5mData[]>();
     for (const kline of klines_to_write) {
@@ -136,9 +146,7 @@ export class Kline5mRepository {
     }
 
     // 按表批量写入
-    logger.info(`[Kline5m] Writing to ${by_date.size} tables`);
     for (const [table_name, klines] of by_date.entries()) {
-      logger.info(`[Kline5m] Processing table ${table_name} with ${klines.length} klines`);
       try {
         await this.batch_insert(table_name, klines);
       } catch (error) {
@@ -155,15 +163,11 @@ export class Kline5mRepository {
   private async batch_insert(table_name: string, klines: Kline5mData[]): Promise<void> {
     if (klines.length === 0) return;
 
-    logger.info(`[Kline5m] batch_insert called for ${table_name}`);
-
     const connection = await DatabaseConfig.get_mysql_connection();
 
     try {
       // 确保表存在（复用当前连接，避免连接池耗尽）
-      logger.info(`[Kline5m] Ensuring table ${table_name} exists...`);
       await this.ensure_table_exists(table_name, connection);
-      logger.info(`[Kline5m] Table ${table_name} ready`);
 
       // 构建批量插入 SQL
       const placeholders = klines.map(() => '(?, ?, ?, ?, ?, ?, ?, ?)').join(', ');
@@ -179,16 +183,11 @@ export class Kline5mRepository {
         VALUES ${placeholders}
       `;
 
-      const [result] = await connection.execute(sql, values);
-      const affected = (result as any).affectedRows;
-      if (affected > 0) {
-        logger.info(`[Kline5m] Inserted ${affected} rows to ${table_name}`);
-      }
+      await connection.execute(sql, values);
     } catch (error) {
       logger.error(`[Kline5m] Batch insert failed:`, error);
       throw error;
     } finally {
-      // 重要：释放连接回连接池
       connection.release();
     }
   }
@@ -197,12 +196,8 @@ export class Kline5mRepository {
    * 启动定时刷新
    */
   private start_flush_timer(): void {
-    logger.info(`[Kline5m] Starting flush timer (interval: ${this.FLUSH_INTERVAL_MS}ms)`);
     this.flush_timer = setInterval(async () => {
       try {
-        if (this.write_buffer.length > 0) {
-          logger.info(`[Kline5m] Timer triggered, buffer size: ${this.write_buffer.length}`);
-        }
         await this.flush();
       } catch (error) {
         logger.error('[Kline5m] Flush timer error:', error);
@@ -222,11 +217,13 @@ export class Kline5mRepository {
 
   /**
    * 查询某币种最近N根K线
+   * 注意：使用 UTC 时间计算表名
    */
   async get_recent_klines(symbol: string, limit: number = 50): Promise<Kline5mData[]> {
     const connection = await DatabaseConfig.get_mysql_connection();
-    const today = this.get_table_name();
-    const yesterday = this.get_table_name(new Date(Date.now() - 24 * 60 * 60 * 1000));
+    const now = Date.now();
+    const today = this.get_table_name_from_timestamp(now);
+    const yesterday = this.get_table_name_from_timestamp(now - 24 * 60 * 60 * 1000);
 
     try {
       // 先查今天的表
@@ -271,6 +268,7 @@ export class Kline5mRepository {
 
   /**
    * 查询指定时间范围的K线
+   * 注意：时间戳参数是毫秒级 UTC 时间
    */
   async get_klines_by_time_range(
     symbol: string,
@@ -280,16 +278,18 @@ export class Kline5mRepository {
     const connection = await DatabaseConfig.get_mysql_connection();
 
     try {
-      // 计算涉及的日期
-      const start_date = new Date(start_time);
-      const end_date = new Date(end_time);
-      const tables: string[] = [];
+      // 计算涉及的 UTC 日期（使用时间戳计算，避免本地时区问题）
+      const tables = new Set<string>();
+      const ONE_DAY_MS = 24 * 60 * 60 * 1000;
 
-      let current = new Date(start_date);
-      while (current <= end_date) {
-        tables.push(this.get_table_name(current));
-        current.setDate(current.getDate() + 1);
+      // 从开始时间到结束时间，按天遍历
+      let current_ts = start_time;
+      while (current_ts <= end_time) {
+        tables.add(this.get_table_name_from_timestamp(current_ts));
+        current_ts += ONE_DAY_MS;
       }
+      // 确保结束时间的表也被包含
+      tables.add(this.get_table_name_from_timestamp(end_time));
 
       const results: Kline5mData[] = [];
 
