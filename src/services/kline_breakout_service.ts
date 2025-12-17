@@ -460,6 +460,7 @@ export class KlineBreakoutService extends EventEmitter {
         zone_end_time: new Date(range.end_time),
         zone_kline_count: range.kline_count,
         center_price: range.center_price,
+        zone_score: range.score.total_score,  // 区间得分
         atr: range.range_width_pct / 100 * range.center_price,  // 用区间宽度估算ATR
         signal_time: new Date()
       };

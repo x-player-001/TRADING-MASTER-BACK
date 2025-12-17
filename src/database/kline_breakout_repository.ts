@@ -24,6 +24,7 @@ export interface KlineBreakoutSignal {
   zone_end_time?: Date;        // 密集区结束时间
   zone_kline_count?: number;   // 密集区K线数量
   center_price?: number;       // 密集区中心价格
+  zone_score?: number;         // 区间得分 (0-100)
   atr?: number;                // ATR值
   signal_time: Date;
   created_at?: Date;
@@ -42,9 +43,9 @@ export class KlineBreakoutRepository {
           symbol, direction, breakout_price, upper_bound, lower_bound,
           breakout_pct, volume, volume_ratio,
           kline_open, kline_high, kline_low, kline_close,
-          zone_start_time, zone_end_time, zone_kline_count, center_price, atr,
+          zone_start_time, zone_end_time, zone_kline_count, center_price, zone_score, atr,
           signal_time
-        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
       `;
 
       const [result] = await connection.execute(sql, [
@@ -64,6 +65,7 @@ export class KlineBreakoutRepository {
         signal.zone_end_time ?? null,
         signal.zone_kline_count ?? null,
         signal.center_price ?? null,
+        signal.zone_score ?? null,
         signal.atr ?? null,
         signal.signal_time
       ]);
