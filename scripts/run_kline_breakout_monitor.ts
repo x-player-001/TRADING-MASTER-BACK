@@ -2,7 +2,7 @@
  * K线重叠区间突破监控启动脚本 (v2)
  *
  * 功能说明:
- * - WebSocket 订阅所有合约的 5m K线
+ * - WebSocket 订阅所有合约的 15m K线
  * - K线完结时分析是否突破盘整区间
  * - 突破信号保存到数据库
  *
@@ -89,8 +89,8 @@ async function main() {
   console.log('═'.repeat(80));
 
   console.log('\n📋 配置说明:');
-  console.log(`   - K线周期: 5m`);
-  console.log(`   - 缓存数据: 最近 ${CONFIG.kline_cache_size} 根K线（约${Math.round(CONFIG.kline_cache_size * 5 / 60)}小时）`);
+  console.log(`   - K线周期: 15m`);
+  console.log(`   - 缓存数据: 最近 ${CONFIG.kline_cache_size} 根K线（约${Math.round(CONFIG.kline_cache_size * 15 / 60)}小时）`);
   console.log(`   - 算法: K线重叠度检测 + 趋势过滤 (OverlapRangeDetector v2)`);
   console.log(`   - 窗口范围: ${CONFIG.detector_config.min_window_size}-${CONFIG.detector_config.max_window_size} 根K线`);
   console.log(`   - 最低区间分数: ${CONFIG.detector_config.min_total_score} 分`);
@@ -182,7 +182,7 @@ async function main() {
   });
 
   // 保持进程运行
-  console.log('\n📡 正在监控所有合约的 5m K线...');
+  console.log('\n📡 正在监控所有合约的 15m K线...');
   console.log('   按 Ctrl+C 停止服务\n');
 }
 
