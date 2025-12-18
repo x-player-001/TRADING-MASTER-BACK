@@ -176,6 +176,9 @@ export interface OverlapRangeConfig {
   // 最低分数
   min_total_score: number;      // 最低总分，默认40
 
+  // 最小区间宽度百分比，默认0.3% (过滤太窄的区间)
+  min_range_width_pct: number;
+
   // 突破确认配置
   breakout_confirm: BreakoutConfirmConfig;
 
@@ -230,6 +233,7 @@ const DEFAULT_CONFIG: OverlapRangeConfig = {
   merge_time_gap_bars: 5,
   breakout_threshold_pct: 0.3,
   min_total_score: 40,
+  min_range_width_pct: 0.3,  // 最小区间宽度 0.3%，过滤太窄的区间
   breakout_confirm: DEFAULT_BREAKOUT_CONFIRM,
   trend_filter: DEFAULT_TREND_FILTER,
   segment_split: DEFAULT_SEGMENT_SPLIT
@@ -320,8 +324,11 @@ export class OverlapRangeDetector {
     // 3. 合并重叠的区间 (只在同一价格区域内合并)
     const merged = this.merge_overlapping_ranges(all_candidates);
 
-    // 4. 过滤低分区间
-    const filtered = merged.filter(r => r.score.total_score >= this.config.min_total_score);
+    // 4. 过滤低分区间和太窄的区间
+    const filtered = merged.filter(r =>
+      r.score.total_score >= this.config.min_total_score &&
+      r.range_width_pct >= this.config.min_range_width_pct
+    );
 
     // 5. 按开始时间排序 (便于理解时间顺序)
     const sorted = filtered.sort((a, b) => a.start_time - b.start_time);
