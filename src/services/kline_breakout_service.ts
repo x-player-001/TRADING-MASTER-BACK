@@ -2,10 +2,15 @@
  * K线重叠区间突破监控服务 (v2)
  *
  * 功能:
- * 1. WebSocket 订阅所有合约的 5m K线
+ * 1. WebSocket 订阅所有合约的 15m K线
  * 2. 内存缓存每个币种最近 N 根 K线
- * 3. K线完结时检测重叠区间突破
+ * 3. 每 5 分钟检测一次突破/边界触碰（利用 15m 流的实时推送）
  * 4. 保存突破信号到数据库
+ *
+ * 检测频率:
+ * - 订阅 15m K线（用于识别更大级别的盘整区间）
+ * - 每 5 分钟整点检测一次突破和边界触碰（对齐到 00, 05, 10, 15, ...）
+ * - 15m K线收盘时刻（如 1:15）自动包含在 5 分钟槽位中，不重复检测
  *
  * 算法升级 (v2):
  * - 使用 OverlapRangeDetector 替代 ConsolidationDetector
@@ -25,7 +30,7 @@ import {
   OverlapBreakout
 } from '@/analysis/overlap_range_detector';
 import { KlineBreakoutRepository, KlineBreakoutSignal } from '@/database/kline_breakout_repository';
-import { Kline5mRepository, Kline5mData } from '@/database/kline_5m_repository';
+import { Kline15mRepository, Kline15mData } from '@/database/kline_15m_repository';
 import { BoundaryAlertRepository, BoundaryAlertData } from '@/database/boundary_alert_repository';
 import { logger } from '@/utils/logger';
 
@@ -55,7 +60,7 @@ const DEFAULT_CONFIG: KlineBreakoutServiceConfig = {
   max_streams_per_connection: 150,
   reconnect_interval_ms: 5000,
   ping_interval_ms: 30000,
-  kline_cache_size: 100,               // 增加到100根，约8小时数据
+  kline_cache_size: 100,               // 100根15m K线，约25小时数据
   signal_cooldown_minutes: 30,
   allowed_directions: ['UP', 'DOWN'],
   detector_config: {
@@ -103,11 +108,16 @@ export class KlineBreakoutService extends EventEmitter {
   // 组件
   private detector: OverlapRangeDetector;
   private repository: KlineBreakoutRepository;
-  private kline_repository: Kline5mRepository;
+  private kline_repository: Kline15mRepository;
   private boundary_alert_repository: BoundaryAlertRepository;
 
   // 边界报警去重锁: symbol_type -> 最近报警时间
   private boundary_alert_lock: Map<string, number> = new Map();
+
+  // 5分钟检测槽位锁: symbol -> 已检测过的5分钟槽位时间戳
+  // 槽位对齐到整5分钟 (00, 05, 10, 15, 20, ...)
+  private last_check_slot: Map<string, number> = new Map();
+  private readonly CHECK_SLOT_MS = 5 * 60 * 1000; // 5分钟槽位
 
   // 统计
   private stats = {
@@ -126,7 +136,7 @@ export class KlineBreakoutService extends EventEmitter {
     }
     this.detector = new OverlapRangeDetector(this.config.detector_config);
     this.repository = new KlineBreakoutRepository();
-    this.kline_repository = new Kline5mRepository();
+    this.kline_repository = new Kline15mRepository();
     this.boundary_alert_repository = new BoundaryAlertRepository();
   }
 
@@ -243,8 +253,8 @@ export class KlineBreakoutService extends EventEmitter {
       const end = Math.min(start + streams_per_conn, total_symbols);
       const symbols = this.all_symbols.slice(start, end);
 
-      // 构建 5m K线流名称
-      const streams = symbols.map(s => `${s.toLowerCase()}@kline_5m`);
+      // 构建 15m K线流名称
+      const streams = symbols.map(s => `${s.toLowerCase()}@kline_15m`);
 
       const connection: WebSocketConnection = {
         ws: null,
@@ -316,7 +326,7 @@ export class KlineBreakoutService extends EventEmitter {
     try {
       const message = JSON.parse(raw_data);
 
-      // Combined stream 格式: { stream: "btcusdt@kline_5m", data: {...} }
+      // Combined stream 格式: { stream: "btcusdt@kline_15m", data: {...} }
       if (message.stream && message.data) {
         const kline_data = message.data;
 
@@ -330,14 +340,23 @@ export class KlineBreakoutService extends EventEmitter {
         // 更新缓存（无论是否完结）
         this.update_kline_cache(symbol, k);
 
-        // 只在 K 线完结时检测突破并保存到数据库
+        // K 线完结时保存到数据库
         if (is_final) {
           this.stats.total_klines_received++;
 
           // 保存完结的 K 线到数据库（异步，不阻塞）
           this.save_kline_to_db(symbol, k);
+        }
 
-          // 检测突破
+        // 每 5 分钟整点检测一次突破/边界触碰
+        // 槽位对齐: 1:00, 1:05, 1:10, 1:15(收盘), 1:20, ...
+        const now = Date.now();
+        const current_slot = Math.floor(now / this.CHECK_SLOT_MS) * this.CHECK_SLOT_MS;
+        const last_slot = this.last_check_slot.get(symbol) || 0;
+
+        // 只有进入新的 5 分钟槽位才检测（自动包含 K 线收盘时刻）
+        if (current_slot > last_slot) {
+          this.last_check_slot.set(symbol, current_slot);
           this.check_breakout(symbol);
         }
       }
@@ -350,7 +369,7 @@ export class KlineBreakoutService extends EventEmitter {
    * 保存 K 线到数据库（异步）
    */
   private save_kline_to_db(symbol: string, k: any): void {
-    const kline_data: Kline5mData = {
+    const kline_data: Kline15mData = {
       symbol,
       open_time: k.t,
       close_time: k.T,
@@ -438,8 +457,8 @@ export class KlineBreakoutService extends EventEmitter {
     for (const range of ranges) {
       // ===== 关键检查：区间必须是"刚结束"的 =====
       // 区间 end_time 必须在最近 3 根 K 线内，确保是"刚刚突破"
-      // 5分钟K线，3根 = 15分钟
-      const max_gap_ms = 3 * 5 * 60 * 1000; // 15分钟
+      // 15分钟K线，3根 = 45分钟
+      const max_gap_ms = 3 * 15 * 60 * 1000; // 45分钟
       const time_since_range_end = current_kline.open_time - range.end_time;
 
       if (time_since_range_end > max_gap_ms) {
@@ -524,7 +543,7 @@ export class KlineBreakoutService extends EventEmitter {
 
     for (const range of ranges) {
       // 只检测活跃区间（end_time 在最近 6 根 K 线内）
-      const max_gap_ms = 6 * 5 * 60 * 1000; // 30分钟
+      const max_gap_ms = 6 * 15 * 60 * 1000; // 90分钟
       const time_since_range_end = current_kline.open_time - range.end_time;
       if (time_since_range_end > max_gap_ms) {
         continue;
@@ -780,7 +799,7 @@ export class KlineBreakoutService extends EventEmitter {
     try {
       // 计算需要查询的时间范围（预留一定余量）
       const now = Date.now();
-      const start_time = now - (limit + 10) * 5 * 60 * 1000; // 每根K线5分钟
+      const start_time = now - (limit + 10) * 15 * 60 * 1000; // 每根K线15分钟
 
       const db_rows = await this.kline_repository.get_klines_by_time_range(
         symbol,
@@ -812,7 +831,7 @@ export class KlineBreakoutService extends EventEmitter {
       const response = await axios.get('https://fapi.binance.com/fapi/v1/klines', {
         params: {
           symbol,
-          interval: '5m',
+          interval: '15m',
           limit
         }
       });
