@@ -561,6 +561,12 @@ export class KlineBreakoutService extends EventEmitter {
       const touches_lower = current_kline.low <= range.lower_bound + tolerance &&
                             current_kline.low >= range.extended_low;
 
+      // 如果同一根 K 线同时触碰上下边界，说明 K 线振幅过大，已"吞没"区间
+      // 这种情况不应触发边界报警，应视为潜在突破信号
+      if (touches_upper && touches_lower) {
+        continue;
+      }
+
       // 处理上沿触碰
       if (touches_upper) {
         const lock_key = `${symbol}_TOUCH_UPPER`;
