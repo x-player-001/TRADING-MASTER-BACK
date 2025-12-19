@@ -16,6 +16,7 @@ import { MonitoringManager } from '@/core/monitoring/monitoring_manager';
 import quantitative_routes from './routes/quantitative_routes';
 import { BreakoutRoutes } from './routes/breakout_routes';
 import { BoundaryAlertRoutes } from './routes/boundary_alert_routes';
+import { SRLevelRoutes } from './routes/sr_level_routes';
 
 /**
  * HTTP API服务器
@@ -36,6 +37,7 @@ export class APIServer {
   private backtest_routes: BacktestRoutes;
   private breakout_routes: BreakoutRoutes;
   private boundary_alert_routes: BoundaryAlertRoutes;
+  private sr_level_routes: SRLevelRoutes;
   private monitoring_manager: MonitoringManager;
 
   constructor(oi_data_manager: OIDataManager, port: number = 3000) {
@@ -53,6 +55,7 @@ export class APIServer {
     this.backtest_routes = new BacktestRoutes();
     this.breakout_routes = new BreakoutRoutes();
     this.boundary_alert_routes = new BoundaryAlertRoutes();
+    this.sr_level_routes = new SRLevelRoutes();
     this.monitoring_manager = MonitoringManager.getInstance();
     this.setup_middleware();
     this.setup_routes();
@@ -137,6 +140,7 @@ export class APIServer {
           backtest: '/api/backtest/*',
           breakout: '/api/breakout/*',
           'boundary-alerts': '/api/boundary-alerts/*',
+          sr: '/api/sr/*',
           status: '/api/status'
         },
         timestamp: new Date().toISOString()
@@ -181,6 +185,9 @@ export class APIServer {
 
     // 边界报警路由
     this.app.use('/api/boundary-alerts', this.boundary_alert_routes.get_router());
+
+    // 支撑阻力位路由
+    this.app.use('/api/sr', this.sr_level_routes.get_router());
 
     // 系统状态
     this.app.get('/api/status', async (req: Request, res: Response) => {
