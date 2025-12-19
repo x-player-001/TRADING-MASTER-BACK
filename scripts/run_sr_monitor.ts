@@ -154,13 +154,12 @@ async function process_kline(symbol: string, kline: any, is_final: boolean): Pro
   // 获取或初始化缓存
   let cache = kline_cache.get(symbol);
   if (!cache) {
-    // 首次收到该币种K线，拉取历史数据
+    // 首次收到该币种K线，从币安API拉取历史数据
     try {
       cache = await fetch_historical_klines(symbol);
       kline_cache.set(symbol, cache);
-      console.log(`📥 ${symbol}: 加载 ${cache.length} 根历史K线`);
     } catch (error) {
-      console.error(`❌ ${symbol}: 获取历史K线失败`, error);
+      // 静默失败，不打印日志
       return;
     }
   }
