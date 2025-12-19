@@ -416,6 +416,18 @@ export class OverlapRangeDetector {
     const change_points: number[] = [];
     const window_size = Math.min(20, Math.floor(klines.length / 4));
 
+    // ===== 计算动态阈值（基于币种自身波动率） =====
+    // 计算所有 K 线的平均振幅百分比
+    let total_amplitude_pct = 0;
+    for (const k of klines) {
+      const amplitude_pct = (k.high - k.low) / k.low * 100;
+      total_amplitude_pct += amplitude_pct;
+    }
+    const avg_amplitude_pct = total_amplitude_pct / klines.length;
+
+    // 动态阈值 = 平均振幅 × 1.5（至少 0.3%，最大 3%）
+    const dynamic_price_shift_threshold = Math.max(0.3, Math.min(3.0, avg_amplitude_pct * 1.5));
+
     // 计算每个位置的局部趋势和价格中心
     const local_info: {
       direction: 'UP' | 'DOWN' | 'SIDEWAYS';
@@ -450,9 +462,9 @@ export class OverlapRangeDetector {
         is_change_point = true;
       }
 
-      // 条件2: 价格中心发生显著跳跃 (超过0.5%)
+      // 条件2: 价格中心发生显著跳跃（使用动态阈值，而非固定 0.5%）
       const price_shift_pct = Math.abs(curr.price_center - prev.price_center) / prev.price_center * 100;
-      if (price_shift_pct > 0.5) {
+      if (price_shift_pct > dynamic_price_shift_threshold) {
         is_change_point = true;
       }
 
@@ -1842,13 +1854,28 @@ export class OverlapRangeDetector {
     }
 
     const gap_indices: number[] = [];
-    const config = this.config.segment_split;
+
+    // ===== 计算动态阈值（基于币种自身波动率） =====
+    // 计算平均振幅
+    let total_amplitude_pct = 0;
+    for (const k of klines) {
+      const amplitude_pct = (k.high - k.low) / k.low * 100;
+      total_amplitude_pct += amplitude_pct;
+    }
+    const avg_amplitude_pct = total_amplitude_pct / klines.length;
+
+    // 动态跳空阈值 = 平均振幅 × 2（至少 0.8%，最大 5%）
+    // 只有超过正常振幅 2 倍的跳空才算真正的断裂
+    const dynamic_gap_threshold = Math.max(0.8, Math.min(5.0, avg_amplitude_pct * 2));
+
+    // 动态剧烈变化阈值 = 平均振幅 × 3（至少 1.2%，最大 8%）
+    const dynamic_change_threshold = Math.max(1.2, Math.min(8.0, avg_amplitude_pct * 3));
 
     for (let i = 1; i < klines.length; i++) {
       const prev = klines[i - 1];
       const curr = klines[i];
 
-      // 检测价格跳空
+      // 检测价格跳空（K线之间有空隙）
       const gap_up = curr.low > prev.high;
       const gap_down = curr.high < prev.low;
 
@@ -1859,7 +1886,7 @@ export class OverlapRangeDetector {
         const avg_price = (prev.close + curr.open) / 2;
         const gap_pct = (gap_size / avg_price) * 100;
 
-        if (gap_pct >= config.price_gap_pct) {
+        if (gap_pct >= dynamic_gap_threshold) {
           gap_indices.push(i);
         }
       }
@@ -1867,7 +1894,7 @@ export class OverlapRangeDetector {
       // 检测价格剧烈变化 (非跳空但价格变化很大)
       const price_change = Math.abs(curr.close - prev.close);
       const change_pct = (price_change / prev.close) * 100;
-      if (change_pct >= config.price_gap_pct * 1.5) {
+      if (change_pct >= dynamic_change_threshold) {
         if (!gap_indices.includes(i)) {
           gap_indices.push(i);
         }
