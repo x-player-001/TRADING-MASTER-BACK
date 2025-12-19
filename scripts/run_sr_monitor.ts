@@ -24,10 +24,10 @@ dotenv.config({ override: true });
 
 import WebSocket from 'ws';
 import axios from 'axios';
-import mysql from 'mysql2/promise';
 import { SRAlertService } from '../src/services/sr_alert_service';
 import { SRLevelRepository } from '../src/database/sr_level_repository';
 import { KlineData } from '../src/analysis/support_resistance_detector';
+import { ConfigManager } from '../src/core/config/config_manager';
 import { logger } from '../src/utils/logger';
 
 // ==================== 配置 ====================
@@ -67,7 +67,6 @@ const CONFIG = {
 let ws: WebSocket | null = null;
 let alert_service: SRAlertService;
 let sr_repository: SRLevelRepository;
-let db_connection: mysql.Connection;
 
 // K线缓存: symbol -> klines[]
 const kline_cache: Map<string, KlineData[]> = new Map();
@@ -98,13 +97,8 @@ function get_current_time(): string {
 
 // ==================== 数据库操作 ====================
 async function init_database(): Promise<void> {
-  db_connection = await mysql.createConnection({
-    host: process.env.MYSQL_HOST,
-    port: parseInt(process.env.MYSQL_PORT || '3306'),
-    user: process.env.MYSQL_USER,
-    password: process.env.MYSQL_PASSWORD,
-    database: process.env.MYSQL_DATABASE
-  });
+  // 初始化配置管理器（会自动初始化数据库连接池）
+  await ConfigManager.getInstance().initialize();
 
   sr_repository = new SRLevelRepository();
   console.log('✅ 数据库连接成功');
@@ -136,7 +130,11 @@ async function get_all_symbols(): Promise<string[]> {
   const url = 'https://fapi.binance.com/fapi/v1/exchangeInfo';
   const response = await axios.get(url);
   return response.data.symbols
-    .filter((s: any) => s.status === 'TRADING' && s.contractType === 'PERPETUAL')
+    .filter((s: any) =>
+      s.status === 'TRADING' &&
+      s.contractType === 'PERPETUAL' &&
+      s.symbol.endsWith('USDT')  // 只监控 USDT 交易对，排除 USDC
+    )
     .map((s: any) => s.symbol);
 }
 
@@ -344,9 +342,6 @@ async function main() {
     console.log('\n\n⏹️  收到退出信号，正在停止...');
     if (ws) {
       ws.close();
-    }
-    if (db_connection) {
-      await db_connection.end();
     }
     console.log('👋 服务已停止');
     process.exit(0);
