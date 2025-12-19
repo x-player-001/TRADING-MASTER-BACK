@@ -26,6 +26,7 @@ import WebSocket from 'ws';
 import axios from 'axios';
 import { SRAlertService } from '../src/services/sr_alert_service';
 import { SRLevelRepository } from '../src/database/sr_level_repository';
+import { Kline15mRepository } from '../src/database/kline_15m_repository';
 import { KlineData } from '../src/analysis/support_resistance_detector';
 import { ConfigManager } from '../src/core/config/config_manager';
 import { logger } from '../src/utils/logger';
@@ -67,6 +68,7 @@ const CONFIG = {
 let ws: WebSocket | null = null;
 let alert_service: SRAlertService;
 let sr_repository: SRLevelRepository;
+let kline_repository: Kline15mRepository;
 
 // K线缓存: symbol -> klines[]
 const kline_cache: Map<string, KlineData[]> = new Map();
@@ -102,17 +104,46 @@ async function init_database(): Promise<void> {
   config_manager.initialize();
 
   sr_repository = new SRLevelRepository();
+  kline_repository = new Kline15mRepository();
   console.log('✅ 数据库连接成功');
 }
 
 // ==================== K线数据获取 ====================
-async function fetch_historical_klines(symbol: string): Promise<KlineData[]> {
+
+/**
+ * 从数据库加载K线数据
+ */
+async function load_klines_from_db(symbol: string, limit: number): Promise<KlineData[]> {
+  try {
+    const now = Date.now();
+    const start_time = now - (limit + 10) * 15 * 60 * 1000; // 每根K线15分钟
+
+    const db_rows = await kline_repository.get_klines_by_time_range(symbol, start_time, now);
+
+    return db_rows.map(row => ({
+      open_time: typeof row.open_time === 'number' ? row.open_time : Number(row.open_time),
+      close_time: typeof row.close_time === 'number' ? row.close_time : Number(row.close_time),
+      open: typeof row.open === 'number' ? row.open : parseFloat(String(row.open)),
+      high: typeof row.high === 'number' ? row.high : parseFloat(String(row.high)),
+      low: typeof row.low === 'number' ? row.low : parseFloat(String(row.low)),
+      close: typeof row.close === 'number' ? row.close : parseFloat(String(row.close)),
+      volume: typeof row.volume === 'number' ? row.volume : parseFloat(String(row.volume))
+    }));
+  } catch (error) {
+    return [];
+  }
+}
+
+/**
+ * 从API拉取K线数据
+ */
+async function fetch_klines_from_api(symbol: string, limit: number): Promise<KlineData[]> {
   const url = `https://fapi.binance.com/fapi/v1/klines`;
   const response = await axios.get(url, {
     params: {
       symbol,
       interval: CONFIG.interval,
-      limit: CONFIG.kline_cache_size
+      limit
     }
   });
 
@@ -125,6 +156,57 @@ async function fetch_historical_klines(symbol: string): Promise<KlineData[]> {
     close: parseFloat(k[4]),
     volume: parseFloat(k[5])
   }));
+}
+
+/**
+ * 合并K线数据（去重）
+ */
+function merge_klines(db_klines: KlineData[], api_klines: KlineData[]): KlineData[] {
+  const map = new Map<number, KlineData>();
+
+  for (const k of db_klines) {
+    map.set(k.open_time, k);
+  }
+  for (const k of api_klines) {
+    map.set(k.open_time, k);  // API数据优先（更新）
+  }
+
+  return Array.from(map.values()).sort((a, b) => a.open_time - b.open_time);
+}
+
+/**
+ * 加载历史K线（优先数据库，缺失的从API补全）
+ */
+async function load_historical_klines(symbol: string): Promise<KlineData[]> {
+  const required = CONFIG.kline_cache_size;
+
+  // 1. 先从数据库查询
+  const db_klines = await load_klines_from_db(symbol, required);
+
+  if (db_klines.length >= required * 0.8) {
+    // 数据库数据足够（>=80%），直接使用
+    return db_klines.slice(-required);
+  }
+
+  // 2. 数据库数据不足，从API拉取
+  try {
+    const api_klines = await fetch_klines_from_api(symbol, required);
+
+    if (api_klines.length > 0) {
+      // 合并数据库和API数据，去重
+      const merged = merge_klines(db_klines, api_klines);
+      return merged.slice(-required);
+    }
+  } catch (error) {
+    // API失败，静默处理
+  }
+
+  // 3. API也失败了，使用数据库已有数据
+  if (db_klines.length > 0) {
+    return db_klines;
+  }
+
+  throw new Error('No kline data available');
 }
 
 async function get_all_symbols(): Promise<string[]> {
@@ -154,9 +236,9 @@ async function process_kline(symbol: string, kline: any, is_final: boolean): Pro
   // 获取或初始化缓存
   let cache = kline_cache.get(symbol);
   if (!cache) {
-    // 首次收到该币种K线，从币安API拉取历史数据
+    // 首次收到该币种K线，优先从数据库加载，不足时从API补全
     try {
-      cache = await fetch_historical_klines(symbol);
+      cache = await load_historical_klines(symbol);
       kline_cache.set(symbol, cache);
     } catch (error) {
       // 静默失败，不打印日志
