@@ -97,8 +97,9 @@ function get_current_time(): string {
 
 // ==================== 数据库操作 ====================
 async function init_database(): Promise<void> {
-  // 初始化配置管理器（会自动初始化数据库连接池）
-  await ConfigManager.getInstance().initialize();
+  // 初始化配置管理器（数据库连接必需）
+  const config_manager = ConfigManager.getInstance();
+  config_manager.initialize();
 
   sr_repository = new SRLevelRepository();
   console.log('✅ 数据库连接成功');
