@@ -172,6 +172,25 @@ function format_time(ts: number): string {
   return new Date(ts).toISOString().slice(0, 19).replace('T', ' ');
 }
 
+// ==================== 检查币种是否已有足够数据 ====================
+async function check_existing_data(
+  kline_repository: Kline15mRepository,
+  symbol: string,
+  start_ts: number,
+  end_ts: number,
+  expected_count: number
+): Promise<{ has_data: boolean; existing_count: number }> {
+  try {
+    const klines = await kline_repository.get_klines_by_time_range(symbol, start_ts, end_ts);
+    const existing_count = klines.length;
+    // 如果已有数据超过预期的80%，认为已有足够数据
+    const has_data = existing_count >= expected_count * 0.8;
+    return { has_data, existing_count };
+  } catch {
+    return { has_data: false, existing_count: 0 };
+  }
+}
+
 // ==================== 主函数 ====================
 async function main() {
   console.log('═'.repeat(70));
@@ -216,6 +235,7 @@ async function main() {
     total_symbols: symbols.length,
     processed: 0,
     success: 0,
+    skipped: 0,
     failed: 0,
     total_klines: 0,
     start_time: Date.now()
@@ -227,6 +247,19 @@ async function main() {
     const progress = `[${stats.processed}/${stats.total_symbols}]`;
 
     try {
+      process.stdout.write(`\r${progress} ${symbol.padEnd(12)} 检查数据...`);
+
+      // 先检查是否已有数据
+      const { has_data, existing_count } = await check_existing_data(
+        kline_repository, symbol, start_ts, end_ts, expected_klines_per_symbol
+      );
+
+      if (has_data) {
+        stats.skipped++;
+        process.stdout.write(`\r${progress} ${symbol.padEnd(12)} ⏭️  已有 ${existing_count} 根K线，跳过\n`);
+        continue;
+      }
+
       process.stdout.write(`\r${progress} ${symbol.padEnd(12)} 正在拉取...`);
 
       // 拉取K线数据
@@ -261,9 +294,10 @@ async function main() {
   console.log('                       完成统计');
   console.log('═'.repeat(70));
   console.log(`   处理币种: ${stats.processed}`);
-  console.log(`   成功: ${stats.success}`);
+  console.log(`   成功拉取: ${stats.success}`);
+  console.log(`   已有跳过: ${stats.skipped}`);
   console.log(`   失败: ${stats.failed}`);
-  console.log(`   总K线数: ${stats.total_klines}`);
+  console.log(`   新增K线: ${stats.total_klines}`);
   console.log(`   耗时: ${elapsed} 秒`);
   console.log('═'.repeat(70));
 
