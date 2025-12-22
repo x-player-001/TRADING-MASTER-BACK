@@ -391,4 +391,42 @@ export class Kline15mRepository {
       connection.release();
     }
   }
+
+  /**
+   * 获取数据库中已有的所有币种
+   */
+  async get_all_symbols(): Promise<string[]> {
+    const connection = await DatabaseConfig.get_mysql_connection();
+
+    try {
+      // 获取所有 kline_15m_ 开头的表
+      const [tables] = await connection.execute(`
+        SELECT TABLE_NAME FROM information_schema.TABLES
+        WHERE TABLE_SCHEMA = DATABASE() AND TABLE_NAME LIKE 'kline_15m_%'
+        ORDER BY TABLE_NAME DESC
+        LIMIT 5
+      `);
+
+      const all_symbols = new Set<string>();
+
+      // 从最近的表中获取币种
+      for (const row of tables as any[]) {
+        const table_name = row.TABLE_NAME;
+        try {
+          const [symbols] = await connection.execute(`
+            SELECT DISTINCT symbol FROM ${table_name}
+          `);
+          for (const s of symbols as any[]) {
+            all_symbols.add(s.symbol);
+          }
+        } catch {
+          // 忽略错误
+        }
+      }
+
+      return Array.from(all_symbols).sort();
+    } finally {
+      connection.release();
+    }
+  }
 }

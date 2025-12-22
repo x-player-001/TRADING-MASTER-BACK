@@ -30,7 +30,7 @@ import WebSocket from 'ws';
 import axios from 'axios';
 import { SRAlertService } from '../src/services/sr_alert_service';
 import { SRLevelRepository } from '../src/database/sr_level_repository';
-import { Kline15mRepository } from '../src/database/kline_15m_repository';
+import { Kline15mRepository, Kline15mData } from '../src/database/kline_15m_repository';
 import { KlineData } from '../src/analysis/support_resistance_detector';
 import { ConfigManager } from '../src/core/config/config_manager';
 
@@ -228,6 +228,27 @@ async function get_all_symbols(): Promise<string[]> {
     .map((s: any) => s.symbol);
 }
 
+/**
+ * 保存K线到数据库（异步）
+ */
+function save_kline_to_db(symbol: string, k: any): void {
+  const kline_data: Kline15mData = {
+    symbol,
+    open_time: k.t,
+    close_time: k.T,
+    open: parseFloat(k.o),
+    high: parseFloat(k.h),
+    low: parseFloat(k.l),
+    close: parseFloat(k.c),
+    volume: parseFloat(k.v)
+  };
+
+  // 异步添加到写入缓冲区，不阻塞
+  kline_repository.add_kline(kline_data).catch(err => {
+    console.error(`Failed to save kline for ${symbol}:`, err.message);
+  });
+}
+
 // ==================== 核心处理逻辑 ====================
 async function process_kline(symbol: string, kline: any, is_final: boolean): Promise<void> {
   const kline_data: KlineData = {
@@ -268,10 +289,13 @@ async function process_kline(symbol: string, kline: any, is_final: boolean): Pro
   stats.klines_received++;
   stats.last_kline_time = kline_data.open_time;
 
-  // 只在K线完结时处理报警逻辑
+  // 只在K线完结时处理
   if (!is_final) {
     return;
   }
+
+  // 保存完结的K线到数据库（异步，不阻塞）
+  save_kline_to_db(symbol, kline);
 
   // 检查是否需要刷新支撑阻力位
   const counter = (refresh_counter.get(symbol) || 0) + 1;
@@ -363,15 +387,24 @@ async function start_websocket(): Promise<void> {
 }
 
 // ==================== 状态打印 ====================
-function print_status(): void {
+async function print_status(): Promise<void> {
   const uptime = Math.round((Date.now() - stats.start_time) / 60000);
   const cached_count = kline_cache.size;
+
+  // 获取K线入库统计
+  let db_stats = { today_count: 0, today_symbols: 0, buffer_size: 0 };
+  try {
+    db_stats = await kline_repository.get_statistics();
+  } catch {
+    // 忽略错误
+  }
 
   console.log(`\n📊 [${get_current_time()}] 状态报告`);
   console.log(`   运行时间: ${uptime} 分钟`);
   console.log(`   监控币种: ${stats.symbols_count}`);
   console.log(`   缓存币种: ${cached_count}`);
   console.log(`   K线接收: ${stats.klines_received}`);
+  console.log(`   K线入库: ${db_stats.today_count} (${db_stats.today_symbols}币种, 缓冲${db_stats.buffer_size})`);
   console.log(`   报警信号: ${stats.alerts_generated}`);
 
   // 打印几个有支撑阻力位的币种摘要
@@ -448,6 +481,10 @@ async function main() {
     if (ws) {
       ws.close();
     }
+    // 刷新K线写入缓冲区
+    console.log('💾 正在保存缓冲区数据...');
+    kline_repository.stop_flush_timer();
+    await kline_repository.flush();
     console.log('👋 服务已停止');
     process.exit(0);
   });
