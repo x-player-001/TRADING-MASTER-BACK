@@ -1,19 +1,23 @@
 /**
- * 支撑阻力位监控启动脚本
+ * 支撑阻力位监控启动脚本 (带爆发预测)
  *
  * 功能说明:
  * - WebSocket 订阅所有合约的 15m K线
  * - 实时检测支撑阻力位
- * - 价格接近或触碰支撑阻力位时生成报警信号
+ * - 基于多维度特征评估爆发概率（波动收敛、量能萎缩、均线靠拢等）
+ * - 只有评分达到阈值的信号才会报警，减少噪音
  *
- * 算法原理 (SupportResistanceDetector):
- * - 局部极值检测 (Swing High/Low)
- * - 价格聚类 (相近的极值点合并为一个价位)
- * - 有效性评分 (触碰次数 + 时间跨度 + 最近性)
+ * 爆发预测特征:
+ * - 波动收敛度: 布林带宽度/ATR 相对历史的缩窄程度
+ * - 成交量萎缩: 近期成交量相对历史均量的缩量程度
+ * - 均线收敛度: MA5/MA10/MA20 的靠拢程度
+ * - 位置接近度: 距支撑阻力位的距离
+ * - 形态特征: K线实体缩小、影线变短、三角收敛
  *
  * 报警类型:
- * - APPROACHING: 价格接近支撑阻力位 (距离 < 0.5%)
- * - TOUCHED: 价格触碰支撑阻力位 (距离 < 0.1%)
+ * - SQUEEZE: 波动收敛预警 (评分 >= 80，可能即将爆发)
+ * - APPROACHING: 接近支撑阻力位 (距离 < 0.5%，评分 >= 60)
+ * - TOUCHED: 触碰支撑阻力位 (距离 < 0.1%，评分 >= 60)
  *
  * 运行命令:
  * npx ts-node -r tsconfig-paths/register scripts/run_sr_monitor.ts
@@ -29,7 +33,6 @@ import { SRLevelRepository } from '../src/database/sr_level_repository';
 import { Kline15mRepository } from '../src/database/kline_15m_repository';
 import { KlineData } from '../src/analysis/support_resistance_detector';
 import { ConfigManager } from '../src/core/config/config_manager';
-import { logger } from '../src/utils/logger';
 
 // ==================== 配置 ====================
 const CONFIG = {
@@ -50,7 +53,11 @@ const CONFIG = {
     cluster_threshold_pct: 0.5,
     min_touch_count: 2,
     min_strength: 25,
-    max_levels: 15
+    max_levels: 15,
+    // 爆发预测评分阈值
+    min_breakout_score: 60,        // 最小评分（低于此分数不触发接近/触碰报警）
+    enable_squeeze_alert: true,     // 启用 SQUEEZE 波动收敛报警
+    squeeze_score_threshold: 80     // SQUEEZE 报警阈值
   },
 
   // 冷却时间 (毫秒)
@@ -291,10 +298,22 @@ async function process_kline(symbol: string, kline: any, is_final: boolean): Pro
         // 打印报警
         const time_str = format_beijing_time(alert.kline_time);
         const type_icon = alert.level_type === 'SUPPORT' ? '🟢' : '🔴';
-        const alert_icon = alert.alert_type === 'TOUCHED' ? '⚠️' : '📍';
 
-        console.log(`\n${alert_icon} [${time_str}] ${symbol}`);
+        // 根据报警类型选择图标
+        let alert_icon = '📍';
+        if (alert.alert_type === 'SQUEEZE') {
+          alert_icon = '🔥';
+        } else if (alert.alert_type === 'TOUCHED') {
+          alert_icon = '⚠️';
+        }
+
+        // 方向箭头
+        const direction_icon = alert.predicted_direction === 'UP' ? '↑' :
+                               alert.predicted_direction === 'DOWN' ? '↓' : '?';
+
+        console.log(`\n${alert_icon} [${time_str}] ${symbol} ${direction_icon}`);
         console.log(`   ${type_icon} ${alert.alert_type}: ${alert.description}`);
+        console.log(`   📊 评分: ${alert.breakout_score?.toFixed(1) || '-'} | 波动:${alert.volatility_score || '-'} 量能:${alert.volume_score || '-'} 均线:${alert.ma_convergence_score || '-'} 形态:${alert.pattern_score || '-'}`);
         console.log(`   💪 强度: ${alert.level_strength}  📏 距离: ${alert.distance_pct.toFixed(3)}%`);
       }
     }
@@ -389,7 +408,7 @@ function print_status(): void {
 // ==================== 主函数 ====================
 async function main() {
   console.log('═'.repeat(70));
-  console.log('           支撑阻力位监控系统');
+  console.log('        支撑阻力位监控系统 (带爆发预测)');
   console.log('═'.repeat(70));
 
   console.log('\n📋 配置说明:');
@@ -400,6 +419,10 @@ async function main() {
   console.log(`   - 最小触碰次数: ${CONFIG.sr_config.min_touch_count}`);
   console.log(`   - 最小强度: ${CONFIG.sr_config.min_strength}`);
   console.log(`   - 冷却时间: ${CONFIG.cooldown_ms / 60000} 分钟`);
+  console.log('\n🎯 爆发预测:');
+  console.log(`   - 最小评分: ${CONFIG.sr_config.min_breakout_score} (低于此分数不报警)`);
+  console.log(`   - SQUEEZE阈值: ${CONFIG.sr_config.squeeze_score_threshold} (波动收敛报警)`);
+  console.log(`   - 评分维度: 波动收敛(25%) + 量能萎缩(20%) + 均线收敛(20%) + 位置(20%) + 形态(15%)`);
   console.log('═'.repeat(70));
 
   // 初始化数据库

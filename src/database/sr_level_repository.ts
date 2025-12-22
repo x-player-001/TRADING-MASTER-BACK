@@ -10,7 +10,7 @@ export type SRLevelType = 'SUPPORT' | 'RESISTANCE';
 /**
  * 报警类型
  */
-export type SRAlertType = 'APPROACHING' | 'TOUCHED' | 'BREAKOUT' | 'BOUNCE';
+export type SRAlertType = 'APPROACHING' | 'TOUCHED' | 'BREAKOUT' | 'BOUNCE' | 'SQUEEZE';
 
 /**
  * 支撑阻力位
@@ -45,6 +45,13 @@ export interface SRAlert {
   level_strength: number;     // 该位置的强度
   kline_time: number;         // K线时间
   description: string;
+  // 爆发预测评分
+  breakout_score?: number;              // 综合评分 (0-100)
+  volatility_score?: number;            // 波动收敛度评分
+  volume_score?: number;                // 成交量萎缩评分
+  ma_convergence_score?: number;        // 均线收敛度评分
+  pattern_score?: number;               // 形态特征评分
+  predicted_direction?: 'UP' | 'DOWN' | 'UNKNOWN';  // 预测方向
   created_at?: Date;
 }
 
@@ -87,7 +94,7 @@ export class SRLevelRepository extends BaseRepository {
           id INT PRIMARY KEY AUTO_INCREMENT,
           symbol VARCHAR(20) NOT NULL,
           \`interval\` VARCHAR(10) NOT NULL,
-          alert_type ENUM('APPROACHING', 'TOUCHED', 'BREAKOUT', 'BOUNCE') NOT NULL,
+          alert_type ENUM('APPROACHING', 'TOUCHED', 'BREAKOUT', 'BOUNCE', 'SQUEEZE') NOT NULL,
           level_type ENUM('SUPPORT', 'RESISTANCE') NOT NULL,
           level_price DECIMAL(20, 8) NOT NULL,
           current_price DECIMAL(20, 8) NOT NULL,
@@ -95,12 +102,19 @@ export class SRLevelRepository extends BaseRepository {
           level_strength INT NOT NULL,
           kline_time BIGINT NOT NULL,
           description TEXT,
+          breakout_score DECIMAL(5, 2) DEFAULT NULL,
+          volatility_score DECIMAL(5, 2) DEFAULT NULL,
+          volume_score DECIMAL(5, 2) DEFAULT NULL,
+          ma_convergence_score DECIMAL(5, 2) DEFAULT NULL,
+          pattern_score DECIMAL(5, 2) DEFAULT NULL,
+          predicted_direction ENUM('UP', 'DOWN', 'UNKNOWN') DEFAULT NULL,
           created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
 
           INDEX idx_symbol_interval (symbol, \`interval\`),
           INDEX idx_alert_type (alert_type),
           INDEX idx_kline_time (kline_time),
-          INDEX idx_created_at (created_at)
+          INDEX idx_created_at (created_at),
+          INDEX idx_breakout_score (breakout_score)
         ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4
       `;
 
@@ -269,8 +283,10 @@ export class SRLevelRepository extends BaseRepository {
       const query = `
         INSERT INTO sr_alerts (
           symbol, \`interval\`, alert_type, level_type, level_price,
-          current_price, distance_pct, level_strength, kline_time, description
-        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+          current_price, distance_pct, level_strength, kline_time, description,
+          breakout_score, volatility_score, volume_score, ma_convergence_score,
+          pattern_score, predicted_direction
+        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
       `;
 
       const [result] = await conn.execute<ResultSetHeader>(query, [
@@ -283,7 +299,13 @@ export class SRLevelRepository extends BaseRepository {
         alert.distance_pct,
         alert.level_strength,
         alert.kline_time,
-        alert.description
+        alert.description,
+        alert.breakout_score ?? null,
+        alert.volatility_score ?? null,
+        alert.volume_score ?? null,
+        alert.ma_convergence_score ?? null,
+        alert.pattern_score ?? null,
+        alert.predicted_direction ?? null
       ]);
 
       return result.insertId;
@@ -390,6 +412,12 @@ export class SRLevelRepository extends BaseRepository {
       level_strength: row.level_strength,
       kline_time: Number(row.kline_time),
       description: row.description,
+      breakout_score: row.breakout_score ? parseFloat(row.breakout_score) : undefined,
+      volatility_score: row.volatility_score ? parseFloat(row.volatility_score) : undefined,
+      volume_score: row.volume_score ? parseFloat(row.volume_score) : undefined,
+      ma_convergence_score: row.ma_convergence_score ? parseFloat(row.ma_convergence_score) : undefined,
+      pattern_score: row.pattern_score ? parseFloat(row.pattern_score) : undefined,
+      predicted_direction: row.predicted_direction || undefined,
       created_at: row.created_at
     };
   }
