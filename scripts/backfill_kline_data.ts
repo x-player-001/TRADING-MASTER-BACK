@@ -26,7 +26,8 @@ const CONFIG = {
   interval: '15m',
   interval_ms: 15 * 60 * 1000,  // 15分钟
   batch_size: 1000,             // 每次API请求的K线数量
-  request_delay_ms: 100,        // 请求间隔，避免限流
+  request_delay_ms: 300,        // 请求间隔，避免限流 (300ms)
+  retry_delay_ms: 5000,         // 429错误后等待时间 (5秒)
   max_retries: 3                // 最大重试次数
 };
 
@@ -142,9 +143,11 @@ async function fetch_klines(
         break; // 成功，跳出重试循环
 
       } catch (error: any) {
+        const is_rate_limit = error.response?.status === 429;
         if (retry < CONFIG.max_retries - 1) {
-          console.error(`   ⚠️ ${symbol} 请求失败，重试 ${retry + 1}/${CONFIG.max_retries}`);
-          await sleep(1000 * (retry + 1)); // 递增延迟
+          const delay = is_rate_limit ? CONFIG.retry_delay_ms : 1000 * (retry + 1);
+          console.error(`   ⚠️ ${symbol} ${is_rate_limit ? '限流' : '请求失败'}，${delay/1000}秒后重试 ${retry + 1}/${CONFIG.max_retries}`);
+          await sleep(delay);
         } else {
           console.error(`   ❌ ${symbol} 请求失败: ${error.message}`);
           return klines; // 返回已获取的数据
