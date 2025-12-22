@@ -145,14 +145,16 @@ export class SRAlertService {
       return [];
     }
 
-    // 1. 检查是否满足 SQUEEZE 报警条件（高评分但不一定接近关键位）
-    if (this.config.enable_squeeze_alert &&
-        prediction.total_score >= this.config.squeeze_score_threshold) {
+    // 1. 检查是否满足 SQUEEZE 报警条件
+    // 触发条件：均线收敛评分 >= 95 (表示粘合度 < 0.2%)
+    // 这是用户最关注的核心指标，不依赖综合评分
+    const ma_score = prediction.feature_scores.ma_convergence_score;
+    const should_alert_squeeze = this.config.enable_squeeze_alert && ma_score >= 95;
 
+    if (should_alert_squeeze) {
       // 检查 SQUEEZE 冷却时间
       if (now - cache.last_squeeze_alert >= this.config.cooldown_ms) {
         const nearest = prediction.nearest_level;
-        const level_type_label = nearest?.type === 'SUPPORT' ? '支撑' : '阻力';
 
         const alert: SRAlert = {
           symbol,
@@ -164,11 +166,11 @@ export class SRAlertService {
           distance_pct: prediction.distance_to_level_pct,
           level_strength: nearest?.strength || 0,
           kline_time,
-          description: `${symbol} 波动收敛 | ${prediction.description}`,
+          description: `${symbol} 均线粘合 | MA收敛=${ma_score} | ${prediction.description}`,
           breakout_score: prediction.total_score,
           volatility_score: prediction.feature_scores.volatility_score,
           volume_score: prediction.feature_scores.volume_score,
-          ma_convergence_score: prediction.feature_scores.ma_convergence_score,
+          ma_convergence_score: ma_score,
           pattern_score: prediction.feature_scores.pattern_score,
           predicted_direction: prediction.predicted_direction
         };
