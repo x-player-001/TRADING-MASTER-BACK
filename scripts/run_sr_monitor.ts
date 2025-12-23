@@ -38,6 +38,9 @@ const CONFIG = {
   // K线周期
   interval: '15m',
 
+  // 黑名单币种（不监控）
+  blacklist: ['USDCUSDT'],
+
   // K线缓存数量
   kline_cache_size: 200,
 
@@ -250,6 +253,11 @@ function save_kline_to_db(symbol: string, k: any): void {
 
 // ==================== 核心处理逻辑 ====================
 async function process_kline(symbol: string, kline: any, is_final: boolean): Promise<void> {
+  // 黑名单过滤
+  if (CONFIG.blacklist.includes(symbol)) {
+    return;
+  }
+
   const kline_data: KlineData = {
     open_time: kline.t,
     close_time: kline.T,
@@ -451,6 +459,7 @@ async function main() {
   console.log(`   - 最小触碰次数: ${CONFIG.sr_config.min_touch_count}`);
   console.log(`   - 最小强度: ${CONFIG.sr_config.min_strength}`);
   console.log(`   - 冷却时间: ${CONFIG.cooldown_ms / 60000} 分钟`);
+  console.log(`   - 黑名单: ${CONFIG.blacklist.length > 0 ? CONFIG.blacklist.join(', ') : '无'}`);
   console.log('\n🎯 爆发预测:');
   console.log(`   - SQUEEZE报警: MA收敛评分 = 100 (EMA20/60粘合度 <= 0.03%)`);
   console.log(`   - APPROACHING/TOUCHED: 需综合评分 >= ${CONFIG.sr_config.min_breakout_score}`);
