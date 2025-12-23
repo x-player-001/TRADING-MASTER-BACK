@@ -61,6 +61,7 @@ interface SymbolSRCache {
   last_update: number;
   last_alerts: Map<string, number>;  // level_key -> last_alert_time
   last_squeeze_alert: number;        // 上次 SQUEEZE 报警时间
+  last_squeeze_pct: number;          // 上次 SQUEEZE 报警时的粘合度
 }
 
 export class SRAlertService {
@@ -99,7 +100,8 @@ export class SRAlertService {
       levels,
       last_update: Date.now(),
       last_alerts: existing?.last_alerts || new Map(),
-      last_squeeze_alert: existing?.last_squeeze_alert || 0
+      last_squeeze_alert: existing?.last_squeeze_alert || 0,
+      last_squeeze_pct: existing?.last_squeeze_pct ?? Infinity
     });
 
     return levels;
@@ -145,15 +147,27 @@ export class SRAlertService {
       return [];
     }
 
+    // 计算24小时涨幅
+    const interval_ms = this.get_interval_ms(interval);
+    const { max_gain_pct, has_big_move } = this.calc_24h_max_gain(klines, interval_ms);
+    const gain_hint = has_big_move ? ` ⚠️24h涨${max_gain_pct.toFixed(1)}%` : '';
+
     // 1. 检查是否满足 SQUEEZE 报警条件
-    // 触发条件：均线收敛评分 >= 95 (表示粘合度 < 0.2%)
-    // 这是用户最关注的核心指标，不依赖综合评分
+    // 触发条件：MA收敛评分 = 100 (表示 EMA20/EMA60 粘合度 <= 0.03%)
     const ma_score = prediction.feature_scores.ma_convergence_score;
-    const should_alert_squeeze = this.config.enable_squeeze_alert && ma_score >= 95;
+    const should_alert_squeeze = this.config.enable_squeeze_alert && ma_score === 100;
 
     if (should_alert_squeeze) {
-      // 检查 SQUEEZE 冷却时间
-      if (now - cache.last_squeeze_alert >= this.config.cooldown_ms) {
+      // 计算当前粘合度
+      const current_squeeze_pct = this.calc_current_squeeze_pct(klines);
+
+      // 判断是否触发报警:
+      // 1. 冷却时间已过，或
+      // 2. 在冷却时间内但粘合度比上次更低（更紧密）
+      const cooldown_passed = now - cache.last_squeeze_alert >= this.config.cooldown_ms;
+      const is_tighter = current_squeeze_pct < cache.last_squeeze_pct;
+
+      if (cooldown_passed || is_tighter) {
         const nearest = prediction.nearest_level;
 
         const alert: SRAlert = {
@@ -166,7 +180,7 @@ export class SRAlertService {
           distance_pct: prediction.distance_to_level_pct,
           level_strength: nearest?.strength || 0,
           kline_time,
-          description: `${symbol} 均线粘合 | MA收敛=${ma_score} | ${prediction.description}`,
+          description: `${symbol} EMA20/60粘合 ${(current_squeeze_pct * 100).toFixed(3)}%${gain_hint} | ${prediction.description}`,
           breakout_score: prediction.total_score,
           volatility_score: prediction.feature_scores.volatility_score,
           volume_score: prediction.feature_scores.volume_score,
@@ -177,6 +191,17 @@ export class SRAlertService {
 
         alerts.push(alert);
         cache.last_squeeze_alert = now;
+        cache.last_squeeze_pct = current_squeeze_pct;
+
+        // 如果冷却时间已过，重置上次粘合度记录
+        if (cooldown_passed) {
+          cache.last_squeeze_pct = current_squeeze_pct;
+        }
+      }
+    } else {
+      // 如果不满足SQUEEZE条件且冷却时间已过，重置粘合度记录
+      if (now - cache.last_squeeze_alert >= this.config.cooldown_ms) {
+        cache.last_squeeze_pct = Infinity;
       }
     }
 
@@ -203,10 +228,10 @@ export class SRAlertService {
       // 判断报警类型
       if (distance_pct <= this.config.touched_threshold_pct) {
         alert_type = 'TOUCHED';
-        description = `${symbol} 触碰${type_label}位 ${level.price.toFixed(6)} | ${prediction.description}`;
+        description = `${symbol} 触碰${type_label}位 ${level.price.toFixed(6)}${gain_hint} | ${prediction.description}`;
       } else if (distance_pct <= this.config.approaching_threshold_pct) {
         alert_type = 'APPROACHING';
-        description = `${symbol} 接近${type_label}位 ${level.price.toFixed(6)} | ${prediction.description}`;
+        description = `${symbol} 接近${type_label}位 ${level.price.toFixed(6)}${gain_hint} | ${prediction.description}`;
       }
 
       if (alert_type) {
@@ -393,6 +418,88 @@ export class SRAlertService {
   ): { supports: SRLevel[]; resistances: SRLevel[] } {
     const levels = this.get_cached_levels(symbol, interval);
     return this.detector.find_nearby_levels(levels, current_price, range_pct);
+  }
+
+  /**
+   * 计算当前粘合度（EMA20 vs EMA60 的差距百分比）
+   */
+  private calc_current_squeeze_pct(klines: KlineData[]): number {
+    const closes = klines.map(k => k.close);
+    if (closes.length < 60) {
+      return Infinity;
+    }
+
+    const ema20 = this.calc_ema(closes, 20);
+    const ema60 = this.calc_ema(closes, 60);
+    const current_price = closes[closes.length - 1];
+
+    return Math.abs(ema20 - ema60) / current_price;
+  }
+
+  /**
+   * 计算24小时内最大涨幅
+   * @param klines K线数据
+   * @param interval_ms K线周期毫秒数
+   * @returns { max_gain_pct: number, has_big_move: boolean }
+   */
+  private calc_24h_max_gain(klines: KlineData[], interval_ms: number): { max_gain_pct: number; has_big_move: boolean } {
+    const hours_24_ms = 24 * 60 * 60 * 1000;
+    const bars_in_24h = Math.ceil(hours_24_ms / interval_ms);
+
+    if (klines.length < bars_in_24h) {
+      return { max_gain_pct: 0, has_big_move: false };
+    }
+
+    // 取最近24小时的K线
+    const recent_klines = klines.slice(-bars_in_24h);
+
+    // 找24小时内的最低价和当前价
+    const low_24h = Math.min(...recent_klines.map(k => k.low));
+    const current_price = recent_klines[recent_klines.length - 1].close;
+
+    // 计算从最低点到当前的涨幅
+    const max_gain_pct = ((current_price - low_24h) / low_24h) * 100;
+
+    return {
+      max_gain_pct,
+      has_big_move: max_gain_pct >= 10
+    };
+  }
+
+  /**
+   * 根据K线周期获取毫秒数
+   */
+  private get_interval_ms(interval: string): number {
+    const match = interval.match(/^(\d+)([mhd])$/);
+    if (!match) return 5 * 60 * 1000; // 默认5分钟
+
+    const value = parseInt(match[1]);
+    const unit = match[2];
+
+    switch (unit) {
+      case 'm': return value * 60 * 1000;
+      case 'h': return value * 60 * 60 * 1000;
+      case 'd': return value * 24 * 60 * 60 * 1000;
+      default: return 5 * 60 * 1000;
+    }
+  }
+
+  /**
+   * 计算EMA（指数移动平均线）
+   */
+  private calc_ema(data: number[], period: number): number {
+    if (data.length < period) {
+      return data[data.length - 1];
+    }
+
+    const multiplier = 2 / (period + 1);
+    let ema = data.slice(0, period).reduce((a, b) => a + b, 0) / period;
+
+    for (let i = period; i < data.length; i++) {
+      ema = (data[i] - ema) * multiplier + ema;
+    }
+
+    return ema;
   }
 
   /**

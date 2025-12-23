@@ -322,96 +322,50 @@ export class BreakoutPredictor {
 
   /**
    * 计算均线收敛度评分
-   * MA5/MA10/MA20的靠拢程度
+   * EMA20 和 EMA60 的粘合程度
    *
-   * 核心改进：使用绝对粘合度评分
-   * - 粘合度 = (max_ma - min_ma) / price * 100
-   * - 粘合度 < 0.1% 时得分 100（极度粘合，三线几乎重合）
-   * - 粘合度 < 0.3% 时得分 90+（强粘合）
-   * - 粘合度 < 0.5% 时得分 80+（中等粘合）
-   * - 粘合度 > 1% 时得分快速下降
+   * 简化逻辑：粘合度 <= 0.03% 时返回 100 分（触发报警），否则返回 0 分
    */
   private calc_ma_convergence_score(klines: KlineData[]): number {
     const closes = klines.map(k => k.close);
 
-    if (closes.length < this.config.ma_long) {
-      return 50;
+    // EMA20 和 EMA60 需要足够的数据
+    if (closes.length < 60) {
+      return 0;
     }
 
-    // 计算各周期均线
-    const ma5 = this.calc_sma(closes.slice(-this.config.ma_short), this.config.ma_short);
-    const ma10 = this.calc_sma(closes.slice(-this.config.ma_mid), this.config.ma_mid);
-    const ma20 = this.calc_sma(closes.slice(-this.config.ma_long), this.config.ma_long);
+    // 计算 EMA20 和 EMA60
+    const ema20 = this.calc_ema(closes, 20);
+    const ema60 = this.calc_ema(closes, 60);
 
     const current_price = closes[closes.length - 1];
 
-    // 计算绝对粘合度：三条均线的最大差距占价格的百分比
-    const max_ma = Math.max(ma5, ma10, ma20);
-    const min_ma = Math.min(ma5, ma10, ma20);
-    const squeeze_pct = (max_ma - min_ma) / current_price * 100;
+    // 计算绝对粘合度：EMA20 和 EMA60 的差距占价格的百分比
+    const squeeze_pct = Math.abs(ema20 - ema60) / current_price * 100;
 
-    // 绝对粘合度评分（核心评分）
-    // 更严格的评分标准：
-    // squeeze_pct < 0.1% → 100分 (极度粘合，三线几乎重合)
-    // squeeze_pct = 0.2% → 95分 (强粘合，触发报警阈值)
-    // squeeze_pct = 0.3% → 90分 (较强粘合)
-    // squeeze_pct = 0.5% → 80分 (中等粘合)
-    // squeeze_pct = 1.0% → 50分 (轻微粘合)
-    // squeeze_pct > 2.0% → 0分 (无粘合)
-    let abs_score: number;
-    if (squeeze_pct < 0.1) {
-      abs_score = 100;
-    } else if (squeeze_pct < 0.2) {
-      // 0.1% ~ 0.2% 映射到 100 ~ 95
-      abs_score = 100 - (squeeze_pct - 0.1) * 50;
-    } else if (squeeze_pct < 0.3) {
-      // 0.2% ~ 0.3% 映射到 95 ~ 90
-      abs_score = 95 - (squeeze_pct - 0.2) * 50;
-    } else if (squeeze_pct < 0.5) {
-      // 0.3% ~ 0.5% 映射到 90 ~ 80
-      abs_score = 90 - (squeeze_pct - 0.3) * 50;
-    } else if (squeeze_pct < 1.0) {
-      // 0.5% ~ 1.0% 映射到 80 ~ 50
-      abs_score = 80 - (squeeze_pct - 0.5) * 60;
-    } else {
-      // 1.0% ~ 2.0% 映射到 50 ~ 0
-      abs_score = 50 - (squeeze_pct - 1.0) * 50;
-    }
-    abs_score = Math.max(0, Math.min(100, abs_score));
+    // 简化逻辑：粘合度 <= 0.03% 时触发报警
+    return squeeze_pct <= 0.03 ? 100 : 0;
+  }
 
-    // 计算相对收敛趋势（均线是否在靠拢）
-    if (closes.length < this.config.ma_long + 10) {
-      return abs_score;
+  /**
+   * 计算EMA（指数移动平均线）
+   */
+  private calc_ema(data: number[], period: number): number {
+    if (data.length < period) {
+      return data[data.length - 1];
     }
 
-    // 计算10根K线前的粘合度
-    const prev_closes = closes.slice(0, -10);
-    const prev_ma5 = this.calc_sma(prev_closes.slice(-this.config.ma_short), this.config.ma_short);
-    const prev_ma10 = this.calc_sma(prev_closes.slice(-this.config.ma_mid), this.config.ma_mid);
-    const prev_ma20 = this.calc_sma(prev_closes.slice(-this.config.ma_long), this.config.ma_long);
+    const multiplier = 2 / (period + 1);
 
-    const prev_price = prev_closes[prev_closes.length - 1];
-    const prev_max_ma = Math.max(prev_ma5, prev_ma10, prev_ma20);
-    const prev_min_ma = Math.min(prev_ma5, prev_ma10, prev_ma20);
-    const prev_squeeze_pct = (prev_max_ma - prev_min_ma) / prev_price * 100;
+    // 使用前period个数据的SMA作为初始EMA
+    let ema = data.slice(0, period).reduce((a, b) => a + b, 0) / period;
 
-    // 收敛趋势评分：当前粘合度 < 历史粘合度 说明在收敛
-    let trend_score = 50;
-    if (prev_squeeze_pct > 0.001) {
-      const converge_ratio = squeeze_pct / prev_squeeze_pct;
-      if (converge_ratio < 0.5) {
-        trend_score = 100; // 粘合度减少一半以上
-      } else if (converge_ratio < 0.8) {
-        trend_score = 80;  // 粘合度明显减少
-      } else if (converge_ratio < 1.0) {
-        trend_score = 60;  // 粘合度在减少
-      } else {
-        trend_score = 30;  // 粘合度在增加（发散）
-      }
+    // 从第period个数据开始计算EMA
+    for (let i = period; i < data.length; i++) {
+      ema = (data[i] - ema) * multiplier + ema;
     }
 
-    // 综合评分：绝对粘合度为主(70%)，收敛趋势为辅(30%)
-    return abs_score * 0.7 + trend_score * 0.3;
+    return ema;
   }
 
   /**
