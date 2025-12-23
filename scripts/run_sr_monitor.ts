@@ -4,18 +4,17 @@
  * 功能说明:
  * - WebSocket 订阅所有合约的 15m K线
  * - 实时检测支撑阻力位
- * - 基于多维度特征评估爆发概率（波动收敛、量能萎缩、均线靠拢等）
+ * - 基于多维度特征评估爆发概率
  * - 只有评分达到阈值的信号才会报警，减少噪音
  *
- * 均线粘合度检测:
- * - 粘合度 = (max(MA5,MA10,MA20) - min(MA5,MA10,MA20)) / price * 100
- * - 粘合度 < 0.1% → 评分 100 (极度粘合)
- * - 粘合度 = 0.2% → 评分 95 (触发 SQUEEZE 报警阈值)
- * - 粘合度 = 0.3% → 评分 90
- * - 粘合度 > 0.5% → 评分 < 80
+ * SQUEEZE 报警 (均线粘合):
+ * - 粘合度 = |EMA20 - EMA60| / price * 100
+ * - 粘合度 <= 0.03% 时触发报警 (MA收敛评分 = 100)
+ * - 冷却期内如果粘合度比上次更低，也会触发新报警
+ * - 24小时涨幅 >= 10% 时显示警告提示
  *
  * 报警类型:
- * - SQUEEZE: 均线粘合预警 (MA收敛评分 >= 95，即粘合度 < 0.2%)
+ * - SQUEEZE: 均线粘合预警 (EMA20/EMA60 粘合度 <= 0.03%)
  * - APPROACHING: 接近支撑阻力位 (距离 < 0.5%，综合评分 >= 60)
  * - TOUCHED: 触碰支撑阻力位 (距离 < 0.1%，综合评分 >= 60)
  *
@@ -453,9 +452,10 @@ async function main() {
   console.log(`   - 最小强度: ${CONFIG.sr_config.min_strength}`);
   console.log(`   - 冷却时间: ${CONFIG.cooldown_ms / 60000} 分钟`);
   console.log('\n🎯 爆发预测:');
-  console.log(`   - 最小评分: ${CONFIG.sr_config.min_breakout_score} (低于此分数不报警)`);
-  console.log(`   - SQUEEZE阈值: ${CONFIG.sr_config.squeeze_score_threshold} (波动收敛报警)`);
+  console.log(`   - SQUEEZE报警: MA收敛评分 >= 95 (EMA20/60粘合度 < 0.2%)`);
+  console.log(`   - APPROACHING/TOUCHED: 需综合评分 >= ${CONFIG.sr_config.min_breakout_score}`);
   console.log(`   - 评分维度: 波动收敛(25%) + 量能萎缩(20%) + 均线收敛(20%) + 位置(20%) + 形态(15%)`);
+  console.log(`   - 24小时涨幅 >= 10% 时显示 ⚠️ 提示`);
   console.log('═'.repeat(70));
 
   // 初始化数据库
