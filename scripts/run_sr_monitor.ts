@@ -452,7 +452,7 @@ async function main() {
   console.log(`   - 最小强度: ${CONFIG.sr_config.min_strength}`);
   console.log(`   - 冷却时间: ${CONFIG.cooldown_ms / 60000} 分钟`);
   console.log('\n🎯 爆发预测:');
-  console.log(`   - SQUEEZE报警: MA收敛评分 >= 95 (EMA20/60粘合度 < 0.2%)`);
+  console.log(`   - SQUEEZE报警: MA收敛评分 = 100 (EMA20/60粘合度 <= 0.03%)`);
   console.log(`   - APPROACHING/TOUCHED: 需综合评分 >= ${CONFIG.sr_config.min_breakout_score}`);
   console.log(`   - 评分维度: 波动收敛(25%) + 量能萎缩(20%) + 均线收敛(20%) + 位置(20%) + 形态(15%)`);
   console.log(`   - 24小时涨幅 >= 10% 时显示 ⚠️ 提示`);
