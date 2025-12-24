@@ -57,11 +57,11 @@ export class SRLevelRoutes {
 
   /**
    * 获取最近的报警信号
-   * GET /api/sr/alerts/recent?limit=1000
+   * GET /api/sr/alerts/recent?limit=1000&symbol=BTC&keyword=粘合
    */
   private async get_recent_alerts(req: Request, res: Response): Promise<void> {
     try {
-      const { limit = 1000, alert_type, level_type } = req.query;
+      const { limit = 1000, alert_type, level_type, symbol, keyword } = req.query;
       const parsed_limit = parseInt(limit as string) || 1000;
 
       let alerts = await this.sr_repository.get_recent_alerts(undefined, undefined, parsed_limit);
@@ -72,6 +72,16 @@ export class SRLevelRoutes {
       }
       if (level_type) {
         alerts = alerts.filter(a => a.level_type === level_type);
+      }
+      // 模糊搜索 symbol
+      if (symbol) {
+        const symbol_pattern = (symbol as string).toUpperCase();
+        alerts = alerts.filter(a => a.symbol.includes(symbol_pattern));
+      }
+      // 模糊搜索 description
+      if (keyword) {
+        const keyword_lower = (keyword as string).toLowerCase();
+        alerts = alerts.filter(a => a.description?.toLowerCase().includes(keyword_lower));
       }
 
       res.json({
