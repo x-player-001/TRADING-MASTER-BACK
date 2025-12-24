@@ -205,9 +205,13 @@ export class SRAlertService {
       }
     }
 
-    // 2. 检查是否接近支撑阻力位（需要评分 >= min_breakout_score）
-    if (prediction.total_score < this.config.min_breakout_score) {
-      // 评分过低，不产生接近/触碰报警
+    // 2. 检查是否接近支撑阻力位
+    // 评分条件：评分 >= min_breakout_score，或者24小时有大涨幅（>=10%）
+    const score_ok = prediction.total_score >= this.config.min_breakout_score;
+    const big_move_bypass = has_big_move;  // 24h涨幅>=10%可以绕过评分限制
+
+    if (!score_ok && !big_move_bypass) {
+      // 评分过低且没有大涨幅，不产生接近/触碰报警
       return alerts;
     }
 

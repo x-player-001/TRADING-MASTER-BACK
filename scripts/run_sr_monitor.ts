@@ -15,8 +15,8 @@
  *
  * 报警类型:
  * - SQUEEZE: 均线粘合预警 (EMA20/EMA60 粘合度 <= 0.03%)
- * - APPROACHING: 接近支撑阻力位 (距离 < 0.5%，综合评分 >= 60)
- * - TOUCHED: 触碰支撑阻力位 (距离 < 0.1%，综合评分 >= 60)
+ * - APPROACHING: 接近支撑阻力位 (距离 < 0.3%，综合评分 >= 70，或24h涨幅>=10%)
+ * - TOUCHED: 触碰支撑阻力位 (距离 < 0.1%，综合评分 >= 70，或24h涨幅>=10%)
  *
  * 运行命令:
  * npx ts-node -r tsconfig-paths/register scripts/run_sr_monitor.ts
@@ -45,7 +45,7 @@ const CONFIG = {
   kline_cache_size: 200,
 
   // 报警阈值
-  approaching_threshold_pct: 0.5,  // 接近阈值
+  approaching_threshold_pct: 0.3,  // 接近阈值 (从0.5收紧到0.3)
   touched_threshold_pct: 0.1,      // 触碰阈值
 
   // 支撑阻力位检测配置
@@ -57,13 +57,13 @@ const CONFIG = {
     min_strength: 25,
     max_levels: 15,
     // 爆发预测评分阈值
-    min_breakout_score: 60,        // 最小评分（低于此分数不触发接近/触碰报警）
+    min_breakout_score: 70,        // 最小评分（从60提升到70）
     enable_squeeze_alert: true,     // 启用 SQUEEZE 波动收敛报警
     squeeze_score_threshold: 80     // SQUEEZE 报警阈值
   },
 
   // 冷却时间 (毫秒)
-  cooldown_ms: 30 * 60 * 1000,  // 30分钟
+  cooldown_ms: 15 * 60 * 1000,  // 15分钟 (从30分钟调整为15分钟)
 
   // 状态打印间隔
   status_interval_ms: 60000,  // 1分钟
@@ -462,9 +462,9 @@ async function main() {
   console.log(`   - 黑名单: ${CONFIG.blacklist.length > 0 ? CONFIG.blacklist.join(', ') : '无'}`);
   console.log('\n🎯 爆发预测:');
   console.log(`   - SQUEEZE报警: MA收敛评分 = 100 (EMA20/60粘合度 <= 0.03%)`);
-  console.log(`   - APPROACHING/TOUCHED: 需综合评分 >= ${CONFIG.sr_config.min_breakout_score}`);
+  console.log(`   - APPROACHING/TOUCHED: 综合评分 >= ${CONFIG.sr_config.min_breakout_score}，或24h涨幅 >= 10%`);
   console.log(`   - 评分维度: 波动收敛(25%) + 量能萎缩(20%) + 均线收敛(20%) + 位置(20%) + 形态(15%)`);
-  console.log(`   - 24小时涨幅 >= 10% 时显示 ⚠️ 提示`);
+  console.log(`   - 24小时涨幅 >= 10% 时显示 ⚠️ 提示，且可绕过评分限制`);
   console.log('═'.repeat(70));
 
   // 初始化数据库
