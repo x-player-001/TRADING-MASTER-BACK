@@ -15,8 +15,9 @@
  *
  * 报警类型:
  * - SQUEEZE: 均线粘合预警 (EMA20/EMA60 粘合度 <= 0.03%)
- * - APPROACHING: 接近支撑阻力位 (距离 < 0.3%，综合评分 >= 70，或24h涨幅>=10%)
- * - TOUCHED: 触碰支撑阻力位 (距离 < 0.1%，综合评分 >= 70，或24h涨幅>=10%)
+ * - BULLISH_STREAK: 连续阳线预警 (连续5根阳线，至少一根涨幅>=1%)
+ * - APPROACHING: 接近支撑阻力位 (距离 < 0.1%，综合评分 >= 70，或24h涨幅>=10%)
+ * - TOUCHED: 触碰支撑阻力位 (距离 < 0.05%，综合评分 >= 70，或24h涨幅>=10%)
  *
  * 运行命令:
  * npx ts-node -r tsconfig-paths/register scripts/run_sr_monitor.ts
@@ -45,8 +46,8 @@ const CONFIG = {
   kline_cache_size: 200,
 
   // 报警阈值
-  approaching_threshold_pct: 0.3,  // 接近阈值 (从0.5收紧到0.3)
-  touched_threshold_pct: 0.1,      // 触碰阈值
+  approaching_threshold_pct: 0.1,  // 接近阈值 (收紧到0.1%)
+  touched_threshold_pct: 0.05,     // 触碰阈值 (收紧到0.05%)
 
   // 支撑阻力位检测配置
   sr_config: {
@@ -59,7 +60,11 @@ const CONFIG = {
     // 爆发预测评分阈值
     min_breakout_score: 70,        // 最小评分（从60提升到70）
     enable_squeeze_alert: true,     // 启用 SQUEEZE 波动收敛报警
-    squeeze_score_threshold: 80     // SQUEEZE 报警阈值
+    squeeze_score_threshold: 80,    // SQUEEZE 报警阈值
+    // 连续阳线报警
+    enable_bullish_streak_alert: true,  // 启用连续阳线报警
+    bullish_streak_count: 5,            // 连续5根阳线
+    bullish_streak_min_gain_pct: 1.0    // 至少一根涨幅 >= 1%
   },
 
   // 冷却时间 (毫秒)
@@ -334,6 +339,8 @@ async function process_kline(symbol: string, kline: any, is_final: boolean): Pro
         let alert_icon = '📍';
         if (alert.alert_type === 'SQUEEZE') {
           alert_icon = '🔥';
+        } else if (alert.alert_type === 'BULLISH_STREAK') {
+          alert_icon = '🚀';
         } else if (alert.alert_type === 'TOUCHED') {
           alert_icon = '⚠️';
         }
@@ -462,6 +469,7 @@ async function main() {
   console.log(`   - 黑名单: ${CONFIG.blacklist.length > 0 ? CONFIG.blacklist.join(', ') : '无'}`);
   console.log('\n🎯 爆发预测:');
   console.log(`   - SQUEEZE报警: MA收敛评分 = 100 (EMA20/60粘合度 <= 0.03%)`);
+  console.log(`   - BULLISH_STREAK: 连续${CONFIG.sr_config.bullish_streak_count}根阳线，至少一根涨幅 >= ${CONFIG.sr_config.bullish_streak_min_gain_pct}%`);
   console.log(`   - APPROACHING/TOUCHED: 综合评分 >= ${CONFIG.sr_config.min_breakout_score}，或24h涨幅 >= 10%`);
   console.log(`   - 评分维度: 波动收敛(25%) + 量能萎缩(20%) + 均线收敛(20%) + 位置(20%) + 形态(15%)`);
   console.log(`   - 24小时涨幅 >= 10% 时显示 ⚠️ 提示，且可绕过评分限制`);

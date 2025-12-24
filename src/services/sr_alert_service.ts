@@ -36,6 +36,11 @@ export interface SRAlertServiceConfig {
   min_breakout_score: number;   // 最小爆发评分，低于此分数不报警，默认 60
   enable_squeeze_alert: boolean; // 是否启用纯 SQUEEZE 报警（无需接近关键位）
   squeeze_score_threshold: number; // SQUEEZE 报警评分阈值，默认 80
+
+  // 连续阳线报警配置
+  enable_bullish_streak_alert: boolean;  // 是否启用连续阳线报警
+  bullish_streak_count: number;          // 连续阳线数量，默认 5
+  bullish_streak_min_gain_pct: number;   // 至少一根K线的最小涨幅，默认 1%
 }
 
 const DEFAULT_CONFIG: SRAlertServiceConfig = {
@@ -50,7 +55,10 @@ const DEFAULT_CONFIG: SRAlertServiceConfig = {
   cooldown_ms: 30 * 60 * 1000,  // 30 分钟
   min_breakout_score: 60,       // 最小评分 60
   enable_squeeze_alert: true,    // 启用 SQUEEZE 报警
-  squeeze_score_threshold: 80    // SQUEEZE 评分阈值 80
+  squeeze_score_threshold: 80,   // SQUEEZE 评分阈值 80
+  enable_bullish_streak_alert: true,  // 启用连续阳线报警
+  bullish_streak_count: 5,            // 连续5根阳线
+  bullish_streak_min_gain_pct: 1.0    // 至少一根涨幅 >= 1%
 };
 
 /**
@@ -62,6 +70,7 @@ interface SymbolSRCache {
   last_alerts: Map<string, number>;  // level_key -> last_alert_time
   last_squeeze_alert: number;        // 上次 SQUEEZE 报警时间
   last_squeeze_pct: number;          // 上次 SQUEEZE 报警时的粘合度
+  last_bullish_streak_alert: number; // 上次连续阳线报警时间
 }
 
 export class SRAlertService {
@@ -101,7 +110,8 @@ export class SRAlertService {
       last_update: Date.now(),
       last_alerts: existing?.last_alerts || new Map(),
       last_squeeze_alert: existing?.last_squeeze_alert || 0,
-      last_squeeze_pct: existing?.last_squeeze_pct ?? Infinity
+      last_squeeze_pct: existing?.last_squeeze_pct ?? Infinity,
+      last_bullish_streak_alert: existing?.last_bullish_streak_alert || 0
     });
 
     return levels;
@@ -205,7 +215,43 @@ export class SRAlertService {
       }
     }
 
-    // 2. 检查是否接近支撑阻力位
+    // 2. 检查连续阳线报警
+    if (this.config.enable_bullish_streak_alert) {
+      const bullish_result = this.check_bullish_streak(klines);
+      if (bullish_result.is_bullish_streak) {
+        // 检查冷却时间
+        const cooldown_passed = now - cache.last_bullish_streak_alert >= this.config.cooldown_ms;
+        if (cooldown_passed) {
+          const nearest = prediction.nearest_level;
+          const total_gain = bullish_result.total_gain_pct;
+          const max_single = bullish_result.max_single_gain_pct;
+
+          const alert: SRAlert = {
+            symbol,
+            interval,
+            alert_type: 'BULLISH_STREAK',
+            level_type: nearest?.type || 'SUPPORT',
+            level_price: nearest?.price || current_price,
+            current_price,
+            distance_pct: prediction.distance_to_level_pct,
+            level_strength: nearest?.strength || 0,
+            kline_time,
+            description: `${symbol} 连续${this.config.bullish_streak_count}根阳线 累计涨${total_gain.toFixed(2)}% 单根最大${max_single.toFixed(2)}%${gain_hint}`,
+            breakout_score: prediction.total_score,
+            volatility_score: prediction.feature_scores.volatility_score,
+            volume_score: prediction.feature_scores.volume_score,
+            ma_convergence_score: ma_score,
+            pattern_score: prediction.feature_scores.pattern_score,
+            predicted_direction: 'UP'  // 连续阳线预测向上
+          };
+
+          alerts.push(alert);
+          cache.last_bullish_streak_alert = now;
+        }
+      }
+    }
+
+    // 3. 检查是否接近支撑阻力位
     // 评分条件：评分 >= min_breakout_score，或者24小时有大涨幅（>=10%）
     const score_ok = prediction.total_score >= this.config.min_breakout_score;
     const big_move_bypass = has_big_move;  // 24h涨幅>=10%可以绕过评分限制
@@ -504,6 +550,47 @@ export class SRAlertService {
     }
 
     return ema;
+  }
+
+  /**
+   * 检查是否满足连续阳线条件
+   * @param klines K线数据
+   * @returns 检测结果
+   */
+  private check_bullish_streak(klines: KlineData[]): {
+    is_bullish_streak: boolean;
+    total_gain_pct: number;
+    max_single_gain_pct: number;
+  } {
+    const count = this.config.bullish_streak_count;
+    const min_gain = this.config.bullish_streak_min_gain_pct;
+
+    if (klines.length < count) {
+      return { is_bullish_streak: false, total_gain_pct: 0, max_single_gain_pct: 0 };
+    }
+
+    // 取最后 count 根K线
+    const recent = klines.slice(-count);
+
+    // 检查是否都是阳线 (close > open)
+    const all_bullish = recent.every(k => k.close > k.open);
+    if (!all_bullish) {
+      return { is_bullish_streak: false, total_gain_pct: 0, max_single_gain_pct: 0 };
+    }
+
+    // 计算每根K线的涨幅
+    const gains = recent.map(k => ((k.close - k.open) / k.open) * 100);
+    const max_single_gain_pct = Math.max(...gains);
+    const total_gain_pct = ((recent[recent.length - 1].close - recent[0].open) / recent[0].open) * 100;
+
+    // 检查是否有至少一根涨幅 >= min_gain
+    const has_big_candle = gains.some(g => g >= min_gain);
+
+    return {
+      is_bullish_streak: has_big_candle,
+      total_gain_pct,
+      max_single_gain_pct
+    };
   }
 
   /**
