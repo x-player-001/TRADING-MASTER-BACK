@@ -64,24 +64,21 @@ export class SRLevelRoutes {
       const { limit = 1000, alert_type, level_type, symbol, keyword } = req.query;
       const parsed_limit = parseInt(limit as string) || 1000;
 
-      let alerts = await this.sr_repository.get_recent_alerts(undefined, undefined, parsed_limit);
+      // 在数据库层面进行模糊搜索，而不是先取再过滤
+      let alerts = await this.sr_repository.get_recent_alerts(
+        undefined,
+        undefined,
+        parsed_limit,
+        symbol as string | undefined,
+        keyword as string | undefined
+      );
 
-      // 可选过滤
+      // 可选过滤（这些是精确匹配，数据量小可以在内存过滤）
       if (alert_type) {
         alerts = alerts.filter(a => a.alert_type === alert_type);
       }
       if (level_type) {
         alerts = alerts.filter(a => a.level_type === level_type);
-      }
-      // 模糊搜索 symbol
-      if (symbol) {
-        const symbol_pattern = (symbol as string).toUpperCase();
-        alerts = alerts.filter(a => a.symbol.includes(symbol_pattern));
-      }
-      // 模糊搜索 description
-      if (keyword) {
-        const keyword_lower = (keyword as string).toLowerCase();
-        alerts = alerts.filter(a => a.description?.toLowerCase().includes(keyword_lower));
       }
 
       res.json({

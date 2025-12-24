@@ -347,7 +347,9 @@ export class SRLevelRepository extends BaseRepository {
   async get_recent_alerts(
     symbol?: string,
     interval?: string,
-    limit: number = 50
+    limit: number = 50,
+    symbol_like?: string,
+    keyword?: string
   ): Promise<SRAlert[]> {
     return this.execute_with_connection(async (conn) => {
       let query = 'SELECT * FROM sr_alerts WHERE 1=1';
@@ -357,9 +359,19 @@ export class SRLevelRepository extends BaseRepository {
         query += ' AND symbol = ?';
         params.push(symbol);
       }
+      // 模糊匹配 symbol
+      if (symbol_like) {
+        query += ' AND symbol LIKE ?';
+        params.push(`%${symbol_like.toUpperCase()}%`);
+      }
       if (interval) {
         query += ' AND `interval` = ?';
         params.push(interval);
+      }
+      // 模糊匹配 description
+      if (keyword) {
+        query += ' AND description LIKE ?';
+        params.push(`%${keyword}%`);
       }
 
       query += ' ORDER BY created_at DESC LIMIT ?';
