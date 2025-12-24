@@ -57,12 +57,12 @@ export class SRLevelRoutes {
 
   /**
    * 获取最近的报警信号
-   * GET /api/sr/alerts/recent?limit=50
+   * GET /api/sr/alerts/recent?limit=1000
    */
   private async get_recent_alerts(req: Request, res: Response): Promise<void> {
     try {
-      const { limit = 50, alert_type, level_type } = req.query;
-      const parsed_limit = Math.min(parseInt(limit as string) || 50, 200);
+      const { limit = 1000, alert_type, level_type } = req.query;
+      const parsed_limit = parseInt(limit as string) || 1000;
 
       let alerts = await this.sr_repository.get_recent_alerts(undefined, undefined, parsed_limit);
 
@@ -95,15 +95,15 @@ export class SRLevelRoutes {
 
   /**
    * 获取指定币种的报警信号
-   * GET /api/sr/alerts/:symbol?limit=50
+   * GET /api/sr/alerts/:symbol?limit=1000
    */
   private async get_alerts_by_symbol(req: Request, res: Response): Promise<void> {
     try {
       const { symbol } = req.params;
-      const { limit = 50 } = req.query;
+      const { limit = 1000 } = req.query;
 
       const symbol_upper = symbol.toUpperCase();
-      const parsed_limit = Math.min(parseInt(limit as string) || 50, 200);
+      const parsed_limit = parseInt(limit as string) || 1000;
 
       const alerts = await this.sr_repository.get_recent_alerts(symbol_upper, undefined, parsed_limit);
 
@@ -129,15 +129,15 @@ export class SRLevelRoutes {
 
   /**
    * 获取指定币种和周期的报警信号
-   * GET /api/sr/alerts/:symbol/:interval?limit=50
+   * GET /api/sr/alerts/:symbol/:interval?limit=1000
    */
   private async get_alerts_by_symbol_interval(req: Request, res: Response): Promise<void> {
     try {
       const { symbol, interval } = req.params;
-      const { limit = 50 } = req.query;
+      const { limit = 1000 } = req.query;
 
       const symbol_upper = symbol.toUpperCase();
-      const parsed_limit = Math.min(parseInt(limit as string) || 50, 200);
+      const parsed_limit = parseInt(limit as string) || 1000;
 
       const alerts = await this.sr_repository.get_recent_alerts(symbol_upper, interval, parsed_limit);
 
