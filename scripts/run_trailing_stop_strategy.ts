@@ -137,115 +137,50 @@ function format_quantity(quantity: number, precision: number, step_size: number)
 }
 
 /**
- * 撤销止损单（如果存在）
+ * 初始化持仓状态（不下止损单，只记录状态用于后续升级）
  */
-async function cancel_stop_loss_if_exists(symbol: string): Promise<boolean> {
-  if (!trading_api) return false;
-
-  const state = position_sl_states.get(symbol);
-  if (!state || !state.algo_id) {
-    return true;  // 没有止损单需要撤销
-  }
-
-  try {
-    await trading_api.cancel_algo_order(state.algo_id);
-    logger.info(`[Strategy] Cancelled stop loss order for ${symbol}: algoId=${state.algo_id}`);
-    state.algo_id = null;
-    return true;
-  } catch (error: any) {
-    // 如果订单已不存在，也视为成功
-    if (error.message?.includes('Order does not exist') || error.message?.includes('Unknown order')) {
-      logger.info(`[Strategy] Stop loss order already cancelled or filled for ${symbol}`);
-      state.algo_id = null;
-      return true;
-    }
-    logger.error(`[Strategy] Failed to cancel stop loss for ${symbol}:`, error.message);
-    return false;
-  }
-}
-
-/**
- * 下初始止损单（-1%）
- */
-async function place_initial_stop_loss(
+function init_position_state(
   symbol: string,
   entry_price: number,
   quantity: number
-): Promise<{ success: boolean; algo_id?: number }> {
-  if (!trading_api) return { success: false };
+): void {
+  // 只记录状态，不下止损单
+  position_sl_states.set(symbol, {
+    symbol,
+    entry_price,
+    quantity,
+    current_stop_price: 0,
+    stop_level: 'INITIAL',
+    algo_id: null,
+    trailing_algo_id: null,
+    last_update: Date.now()
+  });
 
-  try {
-    // 获取精度
-    const precision = await get_symbol_precision(symbol);
-
-    // 计算止损价: 入场价 * (1 - 1%)
-    let stop_price = entry_price * (1 - STRATEGY_CONFIG.initial_stop_loss_pct / 100);
-    let formatted_qty = quantity;
-
-    if (precision) {
-      stop_price = format_price(stop_price, precision.price_precision);
-      formatted_qty = format_quantity(quantity, precision.quantity_precision, precision.step_size);
-    }
-
-    // 下止损单
-    const result = await trading_api.place_stop_loss_order(
-      symbol,
-      OrderSide.SELL,  // 多头止损用 SELL
-      formatted_qty,
-      stop_price,
-      BinancePositionSide.BOTH  // 单向持仓模式
-    );
-
-    // 更新状态
-    position_sl_states.set(symbol, {
-      symbol,
-      entry_price,
-      quantity: formatted_qty,
-      current_stop_price: stop_price,
-      stop_level: 'INITIAL',
-      algo_id: result.algoId,
-      trailing_algo_id: null,
-      last_update: Date.now()
-    });
-
-    logger.info(`[Strategy] Initial stop loss placed: ${symbol} @ ${stop_price} (-${STRATEGY_CONFIG.initial_stop_loss_pct}%), algoId=${result.algoId}`);
-    console.log(`\n🛑 初始止损已设置: ${symbol} @ ${stop_price} (入场价${entry_price}的-${STRATEGY_CONFIG.initial_stop_loss_pct}%)\n`);
-
-    return { success: true, algo_id: result.algoId };
-
-  } catch (error: any) {
-    logger.error(`[Strategy] Failed to place initial stop loss for ${symbol}:`, error.message);
-    return { success: false };
-  }
+  logger.info(`[Strategy] Position state initialized: ${symbol} @ ${entry_price}, qty=${quantity}`);
+  console.log(`\n📝 持仓状态已记录: ${symbol} @ ${entry_price}（无初始止损，等待盈利后设置成本止损）\n`);
 }
 
 /**
- * 升级到成本止损（保本）
+ * 设置成本止损（保本）
+ * 盈利 >= 1% 时触发，直接下成本止损单（无需撤销，因为初始状态没有止损单）
  */
 async function upgrade_to_breakeven_stop(symbol: string): Promise<boolean> {
   if (!trading_api) return false;
 
   const state = position_sl_states.get(symbol);
   if (!state) {
-    logger.warn(`[Strategy] No position state for ${symbol}, cannot upgrade to breakeven`);
+    logger.warn(`[Strategy] No position state for ${symbol}, cannot set breakeven stop`);
     return false;
   }
 
-  // 如果已经是 BREAKEVEN 或 TRAILING 级别，不需要再升级
-  if (state.stop_level !== 'INITIAL') {
-    logger.debug(`[Strategy] ${symbol} already at ${state.stop_level} level, skipping breakeven upgrade`);
+  // 如果已经有成本止损单，不需要再下
+  if (state.algo_id !== null) {
+    logger.debug(`[Strategy] ${symbol} already has breakeven stop (algoId=${state.algo_id}), skipping`);
     return true;
   }
 
   try {
-    // 1. 先撤销现有止损单
-    const cancelled = await cancel_stop_loss_if_exists(symbol);
-    if (!cancelled) {
-      logger.error(`[Strategy] Failed to cancel existing stop loss for ${symbol} before breakeven upgrade`);
-      return false;
-    }
-
-    // 2. 计算成本止损价: 入场价 * (1 + 0.15%) 覆盖手续费
+    // 1. 计算成本止损价: 入场价 * (1 + 0.15%) 覆盖手续费
     const precision = await get_symbol_precision(symbol);
     let breakeven_price = state.entry_price * (1 + 0.0015);
     let formatted_qty = state.quantity;
@@ -255,7 +190,7 @@ async function upgrade_to_breakeven_stop(symbol: string): Promise<boolean> {
       formatted_qty = format_quantity(state.quantity, precision.quantity_precision, precision.step_size);
     }
 
-    // 3. 下新的止损单
+    // 2. 下成本止损单
     const result = await trading_api.place_stop_loss_order(
       symbol,
       OrderSide.SELL,
@@ -264,19 +199,19 @@ async function upgrade_to_breakeven_stop(symbol: string): Promise<boolean> {
       BinancePositionSide.BOTH
     );
 
-    // 4. 更新状态
+    // 3. 更新状态
     state.current_stop_price = breakeven_price;
     state.stop_level = 'BREAKEVEN';
     state.algo_id = result.algoId;
     state.last_update = Date.now();
 
-    logger.info(`[Strategy] Upgraded to breakeven stop: ${symbol} @ ${breakeven_price} (entry+0.15%), algoId=${result.algoId}`);
+    logger.info(`[Strategy] Breakeven stop placed: ${symbol} @ ${breakeven_price} (entry+0.15%), algoId=${result.algoId}`);
     console.log(`\n🛡️ 成本止损已设置: ${symbol} @ ${breakeven_price} (入场价${state.entry_price}+0.15%手续费)\n`);
 
     return true;
 
   } catch (error: any) {
-    logger.error(`[Strategy] Failed to upgrade to breakeven stop for ${symbol}:`, error.message);
+    logger.error(`[Strategy] Failed to place breakeven stop for ${symbol}:`, error.message);
     return false;
   }
 }
@@ -498,14 +433,14 @@ async function main() {
       if (sync_result.synced > 0) {
         console.log(`✅ 同步完成: 发现 ${sync_result.synced} 个持仓`);
 
-        // 为已有持仓设置初始止损
+        // 为已有持仓初始化状态（不下止损单）
         const positions = trading_system.get_open_positions();
         for (const pos of positions) {
           if (pos.side === PositionSide.LONG) {
             // 检查是否已有止损状态
             if (!position_sl_states.has(pos.symbol)) {
-              console.log(`🔧 为已有持仓 ${pos.symbol} 设置止损...`);
-              await place_initial_stop_loss(pos.symbol, pos.entry_price, pos.quantity);
+              console.log(`🔧 为已有持仓 ${pos.symbol} 初始化状态...`);
+              init_position_state(pos.symbol, pos.entry_price, pos.quantity);
             }
           }
         }
@@ -544,7 +479,7 @@ async function main() {
             // 检查是否是新持仓
             if (!known_positions.has(pos.symbol) && !position_sl_states.has(pos.symbol)) {
               console.log(`\n🆕 检测到新持仓: ${pos.symbol} @ ${pos.entry_price}`);
-              await place_initial_stop_loss(pos.symbol, pos.entry_price, pos.quantity);
+              init_position_state(pos.symbol, pos.entry_price, pos.quantity);
               known_positions.add(pos.symbol);
             }
 
