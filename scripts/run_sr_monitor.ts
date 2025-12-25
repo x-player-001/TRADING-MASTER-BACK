@@ -13,6 +13,9 @@
  * - 冷却期内如果粘合度比上次更低，也会触发新报警
  * - 24小时涨幅 >= 10% 时显示警告提示
  *
+ * 报警前提条件:
+ * - 均线多头排列: EMA30 > EMA60 > EMA120 > EMA200
+ *
  * 报警类型:
  * - SQUEEZE: 均线粘合预警 (EMA20/EMA60 粘合度 <= 0.03%)
  * - BULLISH_STREAK: 连续阳线预警 (连续5根阳线，至少一根涨幅>=1%)
@@ -468,6 +471,7 @@ async function main() {
   console.log(`   - 冷却时间: ${CONFIG.cooldown_ms / 60000} 分钟`);
   console.log(`   - 黑名单: ${CONFIG.blacklist.length > 0 ? CONFIG.blacklist.join(', ') : '无'}`);
   console.log('\n🎯 爆发预测:');
+  console.log(`   - 前提条件: 均线多头排列 (EMA30 > EMA60 > EMA120 > EMA200)`);
   console.log(`   - SQUEEZE报警: MA收敛评分 = 100 (EMA20/60粘合度 <= 0.03%)`);
   console.log(`   - BULLISH_STREAK: 连续${CONFIG.sr_config.bullish_streak_count}根阳线，至少一根涨幅 >= ${CONFIG.sr_config.bullish_streak_min_gain_pct}%`);
   console.log(`   - APPROACHING/TOUCHED: 综合评分 >= ${CONFIG.sr_config.min_breakout_score}，或24h涨幅 >= 10%`);

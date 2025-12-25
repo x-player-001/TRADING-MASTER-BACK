@@ -57,11 +57,11 @@ export class SRLevelRoutes {
 
   /**
    * 获取最近的报警信号
-   * GET /api/sr/alerts/recent?limit=1000&symbol=BTC&keyword=粘合
+   * GET /api/sr/alerts/recent?limit=1000&symbol=BTC&keyword=粘合&group_by=symbol
    */
   private async get_recent_alerts(req: Request, res: Response): Promise<void> {
     try {
-      const { limit = 1000, alert_type, level_type, symbol, keyword } = req.query;
+      const { limit = 1000, alert_type, level_type, symbol, keyword, group_by } = req.query;
       const parsed_limit = parseInt(limit as string) || 1000;
 
       // 在数据库层面进行模糊搜索，而不是先取再过滤
@@ -79,6 +79,21 @@ export class SRLevelRoutes {
       }
       if (level_type) {
         alerts = alerts.filter(a => a.level_type === level_type);
+      }
+
+      // 按代币聚合返回
+      if (group_by === 'symbol') {
+        const grouped = this.group_alerts_by_symbol(alerts);
+        res.json({
+          success: true,
+          data: {
+            symbol_count: Object.keys(grouped).length,
+            total_alerts: alerts.length,
+            symbols: grouped
+          },
+          timestamp: Date.now()
+        });
+        return;
       }
 
       res.json({
@@ -414,8 +429,58 @@ export class SRLevelRoutes {
       kline_time: alert.kline_time,
       kline_time_str: new Date(alert.kline_time).toISOString(),
       description: alert.description,
+      breakout_score: alert.breakout_score,
+      predicted_direction: alert.predicted_direction,
       created_at: alert.created_at
     };
+  }
+
+  /**
+   * 按代币聚合报警信号
+   * @param alerts 报警列表
+   * @returns 按代币分组的报警数据
+   */
+  private group_alerts_by_symbol(alerts: SRAlert[]): Record<string, any> {
+    const grouped: Record<string, any> = {};
+
+    for (const alert of alerts) {
+      if (!grouped[alert.symbol]) {
+        grouped[alert.symbol] = {
+          symbol: alert.symbol,
+          alert_count: 0,
+          latest_alert_time: null,
+          alert_types: {} as Record<string, number>,
+          alerts: []
+        };
+      }
+
+      const group = grouped[alert.symbol];
+      group.alert_count++;
+      group.alerts.push(this.format_alert(alert));
+
+      // 统计报警类型数量
+      if (!group.alert_types[alert.alert_type]) {
+        group.alert_types[alert.alert_type] = 0;
+      }
+      group.alert_types[alert.alert_type]++;
+
+      // 更新最新报警时间
+      if (!group.latest_alert_time || alert.created_at! > group.latest_alert_time) {
+        group.latest_alert_time = alert.created_at;
+      }
+    }
+
+    // 按报警数量排序（多的在前）
+    const sorted_keys = Object.keys(grouped).sort(
+      (a, b) => grouped[b].alert_count - grouped[a].alert_count
+    );
+
+    const sorted_result: Record<string, any> = {};
+    for (const key of sorted_keys) {
+      sorted_result[key] = grouped[key];
+    }
+
+    return sorted_result;
   }
 
   /**

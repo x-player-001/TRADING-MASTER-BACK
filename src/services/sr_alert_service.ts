@@ -140,6 +140,11 @@ export class SRAlertService {
       return [];
     }
 
+    // 检查均线多头排列条件: EMA30 > EMA60 > EMA120 > EMA200
+    if (!this.is_bullish_ema_alignment(klines)) {
+      return [];  // 均线未多头排列，不产生任何报警
+    }
+
     const alerts: SRAlert[] = [];
     const now = Date.now();
 
@@ -550,6 +555,29 @@ export class SRAlertService {
     }
 
     return ema;
+  }
+
+  /**
+   * 检查均线是否多头排列
+   * 条件: EMA30 > EMA60 > EMA120 > EMA200
+   * @param klines K线数据
+   * @returns 是否满足多头排列
+   */
+  private is_bullish_ema_alignment(klines: KlineData[]): boolean {
+    const closes = klines.map(k => k.close);
+
+    // 需要至少200根K线才能计算EMA200
+    if (closes.length < 200) {
+      return false;
+    }
+
+    const ema30 = this.calc_ema(closes, 30);
+    const ema60 = this.calc_ema(closes, 60);
+    const ema120 = this.calc_ema(closes, 120);
+    const ema200 = this.calc_ema(closes, 200);
+
+    // 多头排列: EMA30 > EMA60 > EMA120 > EMA200
+    return ema30 > ema60 && ema60 > ema120 && ema120 > ema200;
   }
 
   /**
