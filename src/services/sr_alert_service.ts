@@ -41,6 +41,16 @@ export interface SRAlertServiceConfig {
   enable_bullish_streak_alert: boolean;  // 是否启用连续阳线报警
   bullish_streak_count: number;          // 连续阳线数量，默认 5
   bullish_streak_min_gain_pct: number;   // 至少一根K线的最小涨幅，默认 1%
+
+  // 回调企稳报警配置
+  enable_pullback_alert: boolean;        // 是否启用回调企稳报警
+  pullback_min_surge_pct: number;        // 主升浪最小涨幅，默认 5%
+  pullback_max_retrace: number;          // 最大回撤比例，默认 0.618
+  pullback_min_retrace: number;          // 最小回撤比例，默认 0.236
+  pullback_stabilize_bars: number;       // 企稳确认K线数，默认 3
+
+  // 接近/触碰报警配置
+  enable_approaching_alert: boolean;     // 是否启用接近/触碰支撑阻力位报警
 }
 
 const DEFAULT_CONFIG: SRAlertServiceConfig = {
@@ -58,12 +68,42 @@ const DEFAULT_CONFIG: SRAlertServiceConfig = {
   squeeze_score_threshold: 80,   // SQUEEZE 评分阈值 80
   enable_bullish_streak_alert: true,  // 启用连续阳线报警
   bullish_streak_count: 5,            // 连续5根阳线
-  bullish_streak_min_gain_pct: 1.0    // 至少一根涨幅 >= 1%
+  bullish_streak_min_gain_pct: 1.0,   // 至少一根涨幅 >= 1%
+  enable_pullback_alert: true,        // 启用回调企稳报警
+  pullback_min_surge_pct: 5.0,        // 主升浪最小涨幅 5%
+  pullback_max_retrace: 0.618,        // 最大回撤 61.8%
+  pullback_min_retrace: 0.236,        // 最小回撤 23.6%
+  pullback_stabilize_bars: 3,         // 企稳确认 3 根K线
+  enable_approaching_alert: true      // 启用接近/触碰报警
 };
 
 /**
  * 币种的支撑阻力位缓存
  */
+/**
+ * 波段信息
+ */
+interface SwingPoint {
+  index: number;
+  price: number;
+  time: number;
+  type: 'HIGH' | 'LOW';
+}
+
+/**
+ * 回调企稳检测结果
+ */
+interface PullbackResult {
+  is_pullback_ready: boolean;       // 是否触发回调企稳
+  swing_low: number;                // 波段低点
+  swing_high: number;               // 波段高点
+  surge_pct: number;                // 主升浪涨幅
+  current_retrace: number;          // 当前回撤比例 (0-1)
+  fib_level: string;                // 斐波那契位置描述
+  stabilize_signal: string;         // 企稳信号类型
+  volume_shrink_pct: number;        // 成交量萎缩百分比
+}
+
 interface SymbolSRCache {
   levels: SRLevel[];
   last_update: number;
@@ -71,6 +111,7 @@ interface SymbolSRCache {
   last_squeeze_alert: number;        // 上次 SQUEEZE 报警时间
   last_squeeze_pct: number;          // 上次 SQUEEZE 报警时的粘合度
   last_bullish_streak_alert: number; // 上次连续阳线报警时间
+  last_pullback_alert: number;       // 上次回调企稳报警时间
 }
 
 export class SRAlertService {
@@ -111,7 +152,8 @@ export class SRAlertService {
       last_alerts: existing?.last_alerts || new Map(),
       last_squeeze_alert: existing?.last_squeeze_alert || 0,
       last_squeeze_pct: existing?.last_squeeze_pct ?? Infinity,
-      last_bullish_streak_alert: existing?.last_bullish_streak_alert || 0
+      last_bullish_streak_alert: existing?.last_bullish_streak_alert || 0,
+      last_pullback_alert: existing?.last_pullback_alert || 0
     });
 
     return levels;
@@ -256,7 +298,47 @@ export class SRAlertService {
       }
     }
 
-    // 3. 检查是否接近支撑阻力位
+    // 3. 检查回调企稳报警
+    if (this.config.enable_pullback_alert) {
+      const pullback_result = this.check_pullback_ready(klines);
+      if (pullback_result.is_pullback_ready) {
+        // 检查冷却时间
+        const cooldown_passed = now - cache.last_pullback_alert >= this.config.cooldown_ms;
+        if (cooldown_passed) {
+          const nearest = prediction.nearest_level;
+          const retrace_pct = (pullback_result.current_retrace * 100).toFixed(1);
+
+          const alert: SRAlert = {
+            symbol,
+            interval,
+            alert_type: 'PULLBACK_READY',
+            level_type: 'SUPPORT',  // 回调企稳通常是支撑
+            level_price: pullback_result.swing_low + (pullback_result.swing_high - pullback_result.swing_low) * (1 - pullback_result.current_retrace),
+            current_price,
+            distance_pct: prediction.distance_to_level_pct,
+            level_strength: nearest?.strength || 50,
+            kline_time,
+            description: `${symbol} 回调企稳 涨${pullback_result.surge_pct.toFixed(1)}%后回撤${retrace_pct}%(${pullback_result.fib_level}) ${pullback_result.stabilize_signal} 量缩${pullback_result.volume_shrink_pct.toFixed(0)}%${gain_hint}`,
+            breakout_score: prediction.total_score,
+            volatility_score: prediction.feature_scores.volatility_score,
+            volume_score: prediction.feature_scores.volume_score,
+            ma_convergence_score: ma_score,
+            pattern_score: prediction.feature_scores.pattern_score,
+            predicted_direction: 'UP'  // 回调企稳预测向上
+          };
+
+          alerts.push(alert);
+          cache.last_pullback_alert = now;
+        }
+      }
+    }
+
+    // 4. 检查是否接近支撑阻力位
+    // 如果禁用了接近/触碰报警，直接返回
+    if (!this.config.enable_approaching_alert) {
+      return alerts;
+    }
+
     // 评分条件：评分 >= min_breakout_score，或者24小时有大涨幅（>=10%）
     const score_ok = prediction.total_score >= this.config.min_breakout_score;
     const big_move_bypass = has_big_move;  // 24h涨幅>=10%可以绕过评分限制
@@ -559,25 +641,23 @@ export class SRAlertService {
 
   /**
    * 检查均线是否多头排列
-   * 条件: EMA30 > EMA60 > EMA120 > EMA200
+   * 条件: EMA30 > EMA60 (短期趋势向上)
    * @param klines K线数据
-   * @returns 是否满足多头排列
+   * @returns 是否满足短期多头
    */
   private is_bullish_ema_alignment(klines: KlineData[]): boolean {
     const closes = klines.map(k => k.close);
 
-    // 需要至少200根K线才能计算EMA200
-    if (closes.length < 200) {
+    // 需要至少60根K线才能计算EMA60
+    if (closes.length < 60) {
       return false;
     }
 
     const ema30 = this.calc_ema(closes, 30);
     const ema60 = this.calc_ema(closes, 60);
-    const ema120 = this.calc_ema(closes, 120);
-    const ema200 = this.calc_ema(closes, 200);
 
-    // 多头排列: EMA30 > EMA60 > EMA120 > EMA200
-    return ema30 > ema60 && ema60 > ema120 && ema120 > ema200;
+    // 短期均线多头: EMA30 > EMA60
+    return ema30 > ema60;
   }
 
   /**
@@ -619,6 +699,259 @@ export class SRAlertService {
       total_gain_pct,
       max_single_gain_pct
     };
+  }
+
+  /**
+   * 检查是否满足回调企稳条件
+   *
+   * 逻辑流程:
+   * 1. 识别最近的波段低点和高点 (Swing Low -> Swing High)
+   * 2. 确认主升浪涨幅 >= 阈值 (如 5%)
+   * 3. 检查当前回撤是否在斐波那契关键位 (0.236 - 0.618)
+   * 4. 检测企稳信号 (连续阳线不创新低 / 量能萎缩 / 突破短期高点)
+   *
+   * @param klines K线数据
+   * @returns 回调企稳检测结果
+   */
+  private check_pullback_ready(klines: KlineData[]): PullbackResult {
+    const default_result: PullbackResult = {
+      is_pullback_ready: false,
+      swing_low: 0,
+      swing_high: 0,
+      surge_pct: 0,
+      current_retrace: 0,
+      fib_level: '',
+      stabilize_signal: '',
+      volume_shrink_pct: 0
+    };
+
+    if (klines.length < 30) {
+      return default_result;
+    }
+
+    // 1. 识别波段高点和低点
+    const swing_points = this.find_swing_points(klines);
+    if (swing_points.length < 2) {
+      return default_result;
+    }
+
+    // 找到最近的 Swing High（波段高点）
+    const recent_highs = swing_points.filter(p => p.type === 'HIGH').slice(-3);
+    const recent_lows = swing_points.filter(p => p.type === 'LOW').slice(-3);
+
+    if (recent_highs.length === 0 || recent_lows.length === 0) {
+      return default_result;
+    }
+
+    // 找到有效的上涨波段: Swing Low -> Swing High
+    // 条件: High 在 Low 之后，且涨幅 >= 阈值
+    let valid_swing_low: SwingPoint | null = null;
+    let valid_swing_high: SwingPoint | null = null;
+
+    for (const high of recent_highs.reverse()) {  // 从最近的高点开始
+      for (const low of recent_lows.reverse()) {  // 从最近的低点开始
+        if (low.index < high.index) {  // Low 必须在 High 之前
+          const surge_pct = ((high.price - low.price) / low.price) * 100;
+          if (surge_pct >= this.config.pullback_min_surge_pct) {
+            valid_swing_low = low;
+            valid_swing_high = high;
+            break;
+          }
+        }
+      }
+      if (valid_swing_low && valid_swing_high) break;
+    }
+
+    if (!valid_swing_low || !valid_swing_high) {
+      return default_result;
+    }
+
+    // 2. 计算主升浪涨幅
+    const surge_pct = ((valid_swing_high.price - valid_swing_low.price) / valid_swing_low.price) * 100;
+
+    // 3. 检查当前价格的回撤位置
+    const current_price = klines[klines.length - 1].close;
+    const current_low = klines[klines.length - 1].low;
+
+    // 确保当前价格低于波段高点（正在回调中）
+    if (current_price >= valid_swing_high.price) {
+      return default_result;
+    }
+
+    // 确保没有跌破波段低点
+    if (current_low <= valid_swing_low.price) {
+      return default_result;
+    }
+
+    // 计算回撤比例 (0-1, 0=高点, 1=低点)
+    const swing_range = valid_swing_high.price - valid_swing_low.price;
+    const pullback_amount = valid_swing_high.price - current_price;
+    const current_retrace = pullback_amount / swing_range;
+
+    // 检查回撤是否在有效范围内
+    // - 只要低于前高就算回调 (current_retrace > 0)
+    // - 跌破0.618就是反转，不再是回调
+    if (current_retrace <= 0 || current_retrace > this.config.pullback_max_retrace) {
+      return default_result;
+    }
+
+    // 确定斐波那契位置描述
+    let fib_level = '';
+    if (current_retrace <= 0.236) {
+      fib_level = '<0.236';
+    } else if (current_retrace <= 0.382) {
+      fib_level = '0.382';
+    } else if (current_retrace <= 0.5) {
+      fib_level = '0.5';
+    } else {
+      fib_level = '0.618';
+    }
+
+    // 4. 检测企稳信号
+    const stabilize_check = this.check_stabilize_signal(klines, valid_swing_high.index);
+    if (!stabilize_check.is_stabilized) {
+      return default_result;
+    }
+
+    // 5. 计算成交量萎缩百分比
+    const volume_shrink_pct = this.calc_volume_shrink(klines, valid_swing_high.index);
+
+    return {
+      is_pullback_ready: true,
+      swing_low: valid_swing_low.price,
+      swing_high: valid_swing_high.price,
+      surge_pct,
+      current_retrace,
+      fib_level,
+      stabilize_signal: stabilize_check.signal_type,
+      volume_shrink_pct
+    };
+  }
+
+  /**
+   * 识别波段高低点 (Swing High / Swing Low)
+   * 使用左右各N根K线确认
+   */
+  private find_swing_points(klines: KlineData[]): SwingPoint[] {
+    const points: SwingPoint[] = [];
+    const lookback = 5;  // 左右各5根K线确认
+
+    for (let i = lookback; i < klines.length - lookback; i++) {
+      const current = klines[i];
+
+      // 检查是否为 Swing High
+      let is_swing_high = true;
+      for (let j = i - lookback; j <= i + lookback; j++) {
+        if (j !== i && klines[j].high >= current.high) {
+          is_swing_high = false;
+          break;
+        }
+      }
+      if (is_swing_high) {
+        points.push({
+          index: i,
+          price: current.high,
+          time: current.open_time,
+          type: 'HIGH'
+        });
+      }
+
+      // 检查是否为 Swing Low
+      let is_swing_low = true;
+      for (let j = i - lookback; j <= i + lookback; j++) {
+        if (j !== i && klines[j].low <= current.low) {
+          is_swing_low = false;
+          break;
+        }
+      }
+      if (is_swing_low) {
+        points.push({
+          index: i,
+          price: current.low,
+          time: current.open_time,
+          type: 'LOW'
+        });
+      }
+    }
+
+    return points.sort((a, b) => a.index - b.index);
+  }
+
+  /**
+   * 检测企稳信号
+   *
+   * 企稳信号类型:
+   * 1. 锤子线形态 (底部反转信号)
+   * 2. 靠近前高 (价格接近波段高点，准备突破)
+   */
+  private check_stabilize_signal(klines: KlineData[], high_index: number): {
+    is_stabilized: boolean;
+    signal_type: string;
+  } {
+    const stabilize_bars = this.config.pullback_stabilize_bars;
+    const recent = klines.slice(-stabilize_bars);
+
+    if (recent.length < stabilize_bars) {
+      return { is_stabilized: false, signal_type: '' };
+    }
+
+    const last = klines[klines.length - 1];
+
+    // 1. 检查锤子线形态 (下影线长，实体小)
+    const body = Math.abs(last.close - last.open);
+    const lower_shadow = Math.min(last.open, last.close) - last.low;
+    const upper_shadow = last.high - Math.max(last.open, last.close);
+    const total_range = last.high - last.low;
+
+    if (total_range > 0) {
+      const body_ratio = body / total_range;
+      const lower_shadow_ratio = lower_shadow / total_range;
+
+      // 锤子线特征: 实体小(<30%), 下影线长(>50%), 上影线短(<20%)
+      if (body_ratio < 0.3 && lower_shadow_ratio > 0.5 && upper_shadow / total_range < 0.2) {
+        return { is_stabilized: true, signal_type: '锤子线' };
+      }
+    }
+
+    // 2. 检查靠近前高 (价格接近波段高点)
+    // 获取波段高点价格
+    if (high_index > 0 && high_index < klines.length) {
+      const swing_high_price = klines[high_index].high;
+      const current_price = last.close;
+
+      // 计算距离高点的百分比
+      const distance_to_high_pct = ((swing_high_price - current_price) / swing_high_price) * 100;
+
+      // 靠近前高条件: 距离高点 < 0.5%，且当前K线是阳线
+      const is_bullish = last.close > last.open;
+      if (distance_to_high_pct > 0 && distance_to_high_pct < 0.5 && is_bullish) {
+        return { is_stabilized: true, signal_type: '靠近前高' };
+      }
+    }
+
+    return { is_stabilized: false, signal_type: '' };
+  }
+
+  /**
+   * 计算回调期间的成交量萎缩百分比
+   */
+  private calc_volume_shrink(klines: KlineData[], high_index: number): number {
+    // 主升浪期间的平均成交量 (取高点前的5根K线)
+    const surge_start = Math.max(0, high_index - 5);
+    const surge_klines = klines.slice(surge_start, high_index);
+    if (surge_klines.length === 0) return 0;
+
+    const surge_avg_volume = surge_klines.reduce((sum, k) => sum + k.volume, 0) / surge_klines.length;
+
+    // 回调期间的平均成交量 (高点后到最新)
+    const pullback_klines = klines.slice(high_index + 1);
+    if (pullback_klines.length === 0) return 0;
+
+    const pullback_avg_volume = pullback_klines.reduce((sum, k) => sum + k.volume, 0) / pullback_klines.length;
+
+    // 计算萎缩百分比
+    if (surge_avg_volume === 0) return 0;
+    return ((surge_avg_volume - pullback_avg_volume) / surge_avg_volume) * 100;
   }
 
   /**

@@ -10,7 +10,7 @@ export type SRLevelType = 'SUPPORT' | 'RESISTANCE';
 /**
  * 报警类型
  */
-export type SRAlertType = 'APPROACHING' | 'TOUCHED' | 'BREAKOUT' | 'BOUNCE' | 'SQUEEZE' | 'BULLISH_STREAK';
+export type SRAlertType = 'APPROACHING' | 'TOUCHED' | 'BREAKOUT' | 'BOUNCE' | 'SQUEEZE' | 'BULLISH_STREAK' | 'PULLBACK_READY';
 
 /**
  * 支撑阻力位

@@ -14,11 +14,12 @@
  * - 24小时涨幅 >= 10% 时显示警告提示
  *
  * 报警前提条件:
- * - 均线多头排列: EMA30 > EMA60 > EMA120 > EMA200
+ * - 短期均线多头: EMA30 > EMA60
  *
  * 报警类型:
  * - SQUEEZE: 均线粘合预警 (EMA20/EMA60 粘合度 <= 0.03%)
  * - BULLISH_STREAK: 连续阳线预警 (连续5根阳线，至少一根涨幅>=1%)
+ * - PULLBACK_READY: 回调企稳预警 (上涨>=5%后回调，靠近前高<0.5%时阳线报警)
  * - APPROACHING: 接近支撑阻力位 (距离 < 0.1%，综合评分 >= 70，或24h涨幅>=10%)
  * - TOUCHED: 触碰支撑阻力位 (距离 < 0.05%，综合评分 >= 70，或24h涨幅>=10%)
  *
@@ -61,13 +62,21 @@ const CONFIG = {
     min_strength: 25,
     max_levels: 15,
     // 爆发预测评分阈值
-    min_breakout_score: 70,        // 最小评分（从60提升到70）
-    enable_squeeze_alert: true,     // 启用 SQUEEZE 波动收敛报警
+    min_breakout_score: 999,       // 设为999禁用APPROACHING/TOUCHED报警
+    enable_squeeze_alert: false,    // 禁用 SQUEEZE 波动收敛报警
     squeeze_score_threshold: 80,    // SQUEEZE 报警阈值
     // 连续阳线报警
-    enable_bullish_streak_alert: true,  // 启用连续阳线报警
+    enable_bullish_streak_alert: false, // 禁用连续阳线报警
     bullish_streak_count: 5,            // 连续5根阳线
-    bullish_streak_min_gain_pct: 1.0    // 至少一根涨幅 >= 1%
+    bullish_streak_min_gain_pct: 1.0,   // 至少一根涨幅 >= 1%
+    // 回调企稳报警
+    enable_pullback_alert: true,        // 启用回调企稳报警
+    pullback_min_surge_pct: 5.0,        // 主升浪最小涨幅 5%
+    pullback_max_retrace: 0.618,        // 最大回撤 61.8% (超过则视为反转)
+    pullback_min_retrace: 0,            // 取消最小回撤限制 (只要低于前高就算回调)
+    pullback_stabilize_bars: 3,         // 企稳确认 3 根K线
+    // 接近/触碰报警
+    enable_approaching_alert: false     // 禁用接近/触碰支撑阻力位报警
   },
 
   // 冷却时间 (毫秒)
@@ -344,6 +353,8 @@ async function process_kline(symbol: string, kline: any, is_final: boolean): Pro
           alert_icon = '🔥';
         } else if (alert.alert_type === 'BULLISH_STREAK') {
           alert_icon = '🚀';
+        } else if (alert.alert_type === 'PULLBACK_READY') {
+          alert_icon = '📈';  // 回调企稳
         } else if (alert.alert_type === 'TOUCHED') {
           alert_icon = '⚠️';
         }
@@ -470,13 +481,13 @@ async function main() {
   console.log(`   - 最小强度: ${CONFIG.sr_config.min_strength}`);
   console.log(`   - 冷却时间: ${CONFIG.cooldown_ms / 60000} 分钟`);
   console.log(`   - 黑名单: ${CONFIG.blacklist.length > 0 ? CONFIG.blacklist.join(', ') : '无'}`);
-  console.log('\n🎯 爆发预测:');
-  console.log(`   - 前提条件: 均线多头排列 (EMA30 > EMA60 > EMA120 > EMA200)`);
-  console.log(`   - SQUEEZE报警: MA收敛评分 = 100 (EMA20/60粘合度 <= 0.03%)`);
-  console.log(`   - BULLISH_STREAK: 连续${CONFIG.sr_config.bullish_streak_count}根阳线，至少一根涨幅 >= ${CONFIG.sr_config.bullish_streak_min_gain_pct}%`);
-  console.log(`   - APPROACHING/TOUCHED: 综合评分 >= ${CONFIG.sr_config.min_breakout_score}，或24h涨幅 >= 10%`);
-  console.log(`   - 评分维度: 波动收敛(25%) + 量能萎缩(20%) + 均线收敛(20%) + 位置(20%) + 形态(15%)`);
-  console.log(`   - 24小时涨幅 >= 10% 时显示 ⚠️ 提示，且可绕过评分限制`);
+  console.log('\n🎯 报警类型:');
+  console.log(`   - 前提条件: 短期均线多头 (EMA30 > EMA60)`);
+  console.log(`   - 🔥 SQUEEZE: MA收敛评分 = 100 (EMA20/60粘合度 <= 0.03%)`);
+  console.log(`   - 🚀 BULLISH_STREAK: 连续${CONFIG.sr_config.bullish_streak_count}根阳线，至少一根涨幅 >= ${CONFIG.sr_config.bullish_streak_min_gain_pct}%`);
+  console.log(`   - 📈 PULLBACK_READY: 上涨>=${CONFIG.sr_config.pullback_min_surge_pct}%后回调，靠近前高<0.5%时阳线报警`);
+  console.log(`   - 📍 APPROACHING/TOUCHED: 综合评分 >= ${CONFIG.sr_config.min_breakout_score}，或24h涨幅 >= 10%`);
+  console.log('\n📊 评分维度: 波动收敛(25%) + 量能萎缩(20%) + 均线收敛(20%) + 位置(20%) + 形态(15%)');
   console.log('═'.repeat(70));
 
   // 初始化数据库
