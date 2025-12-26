@@ -85,7 +85,8 @@ const DEFAULT_CONFIG: SRAlertServiceConfig = {
  */
 interface SwingPoint {
   index: number;
-  price: number;
+  price: number;      // 高点用 high，低点用 low
+  close: number;      // 该K线的收盘价
   time: number;
   type: 'HIGH' | 'LOW';
 }
@@ -735,36 +736,59 @@ export class SRAlertService {
       return default_result;
     }
 
-    // 找到最近的 Swing High（波段高点）
-    const recent_highs = swing_points.filter(p => p.type === 'HIGH').slice(-3);
-    const recent_lows = swing_points.filter(p => p.type === 'LOW').slice(-3);
+    // 获取所有高点和低点（不限制数量，确保能追踪完整的波段历史）
+    const all_highs = swing_points.filter(p => p.type === 'HIGH');
+    const all_lows = swing_points.filter(p => p.type === 'LOW');
 
-    if (recent_highs.length === 0 || recent_lows.length === 0) {
+    if (all_highs.length === 0 || all_lows.length === 0) {
       return default_result;
     }
 
-    // 找到有效的上涨波段: Swing Low -> Swing High
-    // 条件: High 在 Low 之后，且涨幅 >= 阈值
-    let valid_swing_low: SwingPoint | null = null;
-    let valid_swing_high: SwingPoint | null = null;
+    // 按时间顺序遍历所有高点，找出被收盘价有效突破的最高点
+    // 规则：只有当新高点的收盘价 > 前高点的最高价时，才算有效突破
+    let confirmed_high: SwingPoint | null = null;
+    let confirmed_low: SwingPoint | null = null;
 
-    for (const high of recent_highs.reverse()) {  // 从最近的高点开始
-      for (const low of recent_lows.reverse()) {  // 从最近的低点开始
-        if (low.index < high.index) {  // Low 必须在 High 之前
-          const surge_pct = ((high.price - low.price) / low.price) * 100;
-          if (surge_pct >= this.config.pullback_min_surge_pct) {
-            valid_swing_low = low;
-            valid_swing_high = high;
-            break;
+    // 按时间顺序处理所有高点
+    for (const high of all_highs) {
+      // 找到该高点之前最近的低点
+      let best_low: SwingPoint | null = null;
+      for (const low of all_lows) {
+        if (low.index < high.index) {
+          if (!best_low || low.index > best_low.index) {
+            best_low = low;
           }
         }
       }
-      if (valid_swing_low && valid_swing_high) break;
+
+      if (!best_low) continue;
+
+      // 计算涨幅
+      const surge_pct = ((high.price - best_low.price) / best_low.price) * 100;
+      if (surge_pct < this.config.pullback_min_surge_pct) continue;
+
+      // 检查是否为有效突破
+      if (confirmed_high === null) {
+        // 第一个有效波段
+        confirmed_high = high;
+        confirmed_low = best_low;
+      } else {
+        // 检查是否有效突破前高：收盘价必须高于前高的最高价
+        if (high.close > confirmed_high.price) {
+          // 收盘价站上前高，更新高点
+          confirmed_high = high;
+          confirmed_low = best_low;
+        }
+        // 假突破（影线新高但收盘没站上）不更新
+      }
     }
 
-    if (!valid_swing_low || !valid_swing_high) {
+    if (!confirmed_high || !confirmed_low) {
       return default_result;
     }
+
+    const valid_swing_low = confirmed_low;
+    const valid_swing_high = confirmed_high;
 
     // 2. 计算主升浪涨幅
     const surge_pct = ((valid_swing_high.price - valid_swing_low.price) / valid_swing_low.price) * 100;
@@ -851,6 +875,7 @@ export class SRAlertService {
         points.push({
           index: i,
           price: current.high,
+          close: current.close,
           time: current.open_time,
           type: 'HIGH'
         });
@@ -868,6 +893,7 @@ export class SRAlertService {
         points.push({
           index: i,
           price: current.low,
+          close: current.close,
           time: current.open_time,
           type: 'LOW'
         });

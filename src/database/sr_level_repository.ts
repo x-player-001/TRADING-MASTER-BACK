@@ -94,7 +94,7 @@ export class SRLevelRepository extends BaseRepository {
           id INT PRIMARY KEY AUTO_INCREMENT,
           symbol VARCHAR(20) NOT NULL,
           \`interval\` VARCHAR(10) NOT NULL,
-          alert_type ENUM('APPROACHING', 'TOUCHED', 'BREAKOUT', 'BOUNCE', 'SQUEEZE') NOT NULL,
+          alert_type ENUM('APPROACHING', 'TOUCHED', 'BREAKOUT', 'BOUNCE', 'SQUEEZE', 'BULLISH_STREAK', 'PULLBACK_READY') NOT NULL,
           level_type ENUM('SUPPORT', 'RESISTANCE') NOT NULL,
           level_price DECIMAL(20, 8) NOT NULL,
           current_price DECIMAL(20, 8) NOT NULL,
