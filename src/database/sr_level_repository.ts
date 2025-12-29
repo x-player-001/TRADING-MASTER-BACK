@@ -45,6 +45,7 @@ export interface SRAlert {
   level_strength: number;     // 该位置的强度
   kline_time: number;         // K线时间
   description: string;
+  signal_score?: number;      // 信号评分 (0-100)，用于回调企稳信号
   // 爆发预测评分
   breakout_score?: number;              // 综合评分 (0-100)
   volatility_score?: number;            // 波动收敛度评分
@@ -102,6 +103,7 @@ export class SRLevelRepository extends BaseRepository {
           level_strength INT NOT NULL,
           kline_time BIGINT NOT NULL,
           description TEXT,
+          signal_score INT DEFAULT NULL,
           breakout_score DECIMAL(5, 2) DEFAULT NULL,
           volatility_score DECIMAL(5, 2) DEFAULT NULL,
           volume_score DECIMAL(5, 2) DEFAULT NULL,
@@ -114,7 +116,8 @@ export class SRLevelRepository extends BaseRepository {
           INDEX idx_alert_type (alert_type),
           INDEX idx_kline_time (kline_time),
           INDEX idx_created_at (created_at),
-          INDEX idx_breakout_score (breakout_score)
+          INDEX idx_breakout_score (breakout_score),
+          INDEX idx_signal_score (signal_score)
         ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4
       `;
 
@@ -284,9 +287,9 @@ export class SRLevelRepository extends BaseRepository {
         INSERT INTO sr_alerts (
           symbol, \`interval\`, alert_type, level_type, level_price,
           current_price, distance_pct, level_strength, kline_time, description,
-          breakout_score, volatility_score, volume_score, ma_convergence_score,
+          signal_score, breakout_score, volatility_score, volume_score, ma_convergence_score,
           pattern_score, predicted_direction
-        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
       `;
 
       const [result] = await conn.execute<ResultSetHeader>(query, [
@@ -300,6 +303,7 @@ export class SRLevelRepository extends BaseRepository {
         alert.level_strength,
         alert.kline_time,
         alert.description,
+        alert.signal_score ?? null,
         alert.breakout_score ?? null,
         alert.volatility_score ?? null,
         alert.volume_score ?? null,
