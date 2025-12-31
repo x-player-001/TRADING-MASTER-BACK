@@ -468,6 +468,63 @@ export class KlineAggregator {
   }
 
   /**
+   * 从聚合表获取有数据的交易对列表
+   * @param interval K线周期 (15m, 1h, 4h)
+   */
+  async get_symbols_from_db(interval: string): Promise<string[]> {
+    const config = AGGREGATE_CONFIGS.find(c => c.interval === interval);
+    if (!config) {
+      return [];
+    }
+
+    const connection = await DatabaseConfig.get_mysql_connection();
+
+    try {
+      const symbols = new Set<string>();
+
+      if (config.use_partition) {
+        // 15m: 分表存储，查询今天和昨天的表
+        const today = new Date();
+        const yesterday = new Date(today.getTime() - 24 * 60 * 60 * 1000);
+
+        const tables = [
+          this.get_table_name_for_config(config, today.getTime()),
+          this.get_table_name_for_config(config, yesterday.getTime())
+        ];
+
+        for (const table of tables) {
+          try {
+            const [rows] = await connection.execute(
+              `SELECT DISTINCT symbol FROM ${table}`
+            );
+            for (const row of rows as any[]) {
+              symbols.add(row.symbol);
+            }
+          } catch {
+            // 表不存在则忽略
+          }
+        }
+      } else {
+        // 1h/4h: 固定表名
+        try {
+          const [rows] = await connection.execute(
+            `SELECT DISTINCT symbol FROM ${config.table_name}`
+          );
+          for (const row of rows as any[]) {
+            symbols.add(row.symbol);
+          }
+        } catch {
+          // 表不存在则忽略
+        }
+      }
+
+      return Array.from(symbols).sort();
+    } finally {
+      connection.release();
+    }
+  }
+
+  /**
    * 获取统计信息
    */
   get_statistics(): {

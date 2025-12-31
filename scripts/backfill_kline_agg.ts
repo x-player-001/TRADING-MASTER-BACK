@@ -24,8 +24,8 @@ import { DatabaseConfig } from '../src/core/config/database';
 
 // ==================== 配置 ====================
 const CONFIG = {
-  request_delay_ms: 300,          // 请求间隔，避免限流 (300ms)
-  retry_delay_ms: 10000,          // 429错误后等待时间 (10秒)
+  request_delay_ms: 600,          // 请求间隔，避免限流 (600ms，每分钟约100次请求)
+  retry_delay_ms: 30000,          // 429错误后等待时间 (30秒)
   max_retries: 3,                 // 最大重试次数
   batch_insert_size: 500          // 批量插入大小
 };
