@@ -17,6 +17,10 @@ import quantitative_routes from './routes/quantitative_routes';
 import { BreakoutRoutes } from './routes/breakout_routes';
 import { BoundaryAlertRoutes } from './routes/boundary_alert_routes';
 import { SRLevelRoutes } from './routes/sr_level_routes';
+import volume_monitor_routes, { set_volume_monitor_repository } from './routes/volume_monitor_routes';
+import pattern_scan_routes, { set_pattern_scan_service } from './routes/pattern_scan_routes';
+import { VolumeMonitorRepository } from '@/database/volume_monitor_repository';
+import { PatternScanService } from '@/services/pattern_scan_service';
 
 /**
  * HTTP API服务器
@@ -39,6 +43,8 @@ export class APIServer {
   private boundary_alert_routes: BoundaryAlertRoutes;
   private sr_level_routes: SRLevelRoutes;
   private monitoring_manager: MonitoringManager;
+  private volume_monitor_repository: VolumeMonitorRepository;
+  private pattern_scan_service: PatternScanService;
 
   constructor(oi_data_manager: OIDataManager, port: number = 3000) {
     this.app = express();
@@ -57,8 +63,26 @@ export class APIServer {
     this.boundary_alert_routes = new BoundaryAlertRoutes();
     this.sr_level_routes = new SRLevelRoutes();
     this.monitoring_manager = MonitoringManager.getInstance();
+    this.volume_monitor_repository = new VolumeMonitorRepository();
+    this.pattern_scan_service = new PatternScanService();
     this.setup_middleware();
     this.setup_routes();
+    this.init_volume_monitor_services();
+  }
+
+  /**
+   * 初始化成交量监控相关服务
+   */
+  private async init_volume_monitor_services(): Promise<void> {
+    try {
+      await this.volume_monitor_repository.init_tables();
+      await this.pattern_scan_service.init();
+      set_volume_monitor_repository(this.volume_monitor_repository);
+      set_pattern_scan_service(this.pattern_scan_service);
+      logger.info('[APIServer] Volume monitor services initialized');
+    } catch (error) {
+      logger.error('[APIServer] Failed to init volume monitor services:', error);
+    }
   }
 
   /**
@@ -141,6 +165,8 @@ export class APIServer {
           breakout: '/api/breakout/*',
           'boundary-alerts': '/api/boundary-alerts/*',
           sr: '/api/sr/*',
+          'volume-monitor': '/api/volume-monitor/*',
+          'pattern-scan': '/api/pattern-scan/*',
           status: '/api/status'
         },
         timestamp: new Date().toISOString()
@@ -188,6 +214,12 @@ export class APIServer {
 
     // 支撑阻力位路由
     this.app.use('/api/sr', this.sr_level_routes.get_router());
+
+    // 成交量监控路由
+    this.app.use('/api/volume-monitor', volume_monitor_routes);
+
+    // 形态扫描路由
+    this.app.use('/api/pattern-scan', pattern_scan_routes);
 
     // 系统状态
     this.app.get('/api/status', async (req: Request, res: Response) => {

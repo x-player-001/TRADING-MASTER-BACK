@@ -27,13 +27,14 @@ interface AggregateConfig {
   interval: string;
   bars_count: number;      // 需要多少根5m K线
   interval_ms: number;     // 周期毫秒数
-  table_prefix: string;    // 表名前缀
+  table_name: string;      // 表名（15m分表用前缀，1h/4h用固定表名）
+  use_partition: boolean;  // 是否按日期分表
 }
 
 const AGGREGATE_CONFIGS: AggregateConfig[] = [
-  { interval: '15m', bars_count: 3, interval_ms: 15 * 60 * 1000, table_prefix: 'kline_15m_agg' },
-  { interval: '1h', bars_count: 12, interval_ms: 60 * 60 * 1000, table_prefix: 'kline_1h_agg' },
-  { interval: '4h', bars_count: 48, interval_ms: 4 * 60 * 60 * 1000, table_prefix: 'kline_4h_agg' }
+  { interval: '15m', bars_count: 3, interval_ms: 15 * 60 * 1000, table_name: 'kline_15m_agg', use_partition: true },
+  { interval: '1h', bars_count: 12, interval_ms: 60 * 60 * 1000, table_name: 'kline_1h_agg', use_partition: false },
+  { interval: '4h', bars_count: 48, interval_ms: 4 * 60 * 60 * 1000, table_name: 'kline_4h_agg', use_partition: false }
 ];
 
 export class KlineAggregator {
@@ -94,7 +95,7 @@ export class KlineAggregator {
         this.update_aggregated_cache(agg_kline);
 
         // 添加到写入缓冲区
-        this.add_to_write_buffer(agg_kline, config.table_prefix);
+        this.add_to_write_buffer(agg_kline, config);
       }
     }
 
@@ -174,8 +175,8 @@ export class KlineAggregator {
   /**
    * 添加到写入缓冲区
    */
-  private add_to_write_buffer(kline: AggregatedKline, table_prefix: string): void {
-    const table_name = this.get_table_name(table_prefix, kline.open_time);
+  private add_to_write_buffer(kline: AggregatedKline, config: AggregateConfig): void {
+    const table_name = this.get_table_name_for_config(config, kline.open_time);
 
     let buffer = this.write_buffer.get(table_name);
     if (!buffer) {
@@ -194,14 +195,19 @@ export class KlineAggregator {
   }
 
   /**
-   * 获取表名（按日期分表）
+   * 根据配置获取表名
+   * 15m: 按日期分表 (kline_15m_agg_20241231)
+   * 1h/4h: 固定表名 (kline_1h_agg, kline_4h_agg)
    */
-  private get_table_name(prefix: string, timestamp: number): string {
+  private get_table_name_for_config(config: AggregateConfig, timestamp: number): string {
+    if (!config.use_partition) {
+      return config.table_name;
+    }
     const d = new Date(timestamp);
     const year = d.getUTCFullYear();
     const month = String(d.getUTCMonth() + 1).padStart(2, '0');
     const day = String(d.getUTCDate()).padStart(2, '0');
-    return `${prefix}_${year}${month}${day}`;
+    return `${config.table_name}_${year}${month}${day}`;
   }
 
   /**
@@ -405,16 +411,22 @@ export class KlineAggregator {
     const connection = await DatabaseConfig.get_mysql_connection();
 
     try {
-      // 计算涉及的表
+      // 根据是否分表，获取需要查询的表
       const tables = new Set<string>();
-      const ONE_DAY_MS = 24 * 60 * 60 * 1000;
 
-      let current_ts = start_time;
-      while (current_ts <= end_time) {
-        tables.add(this.get_table_name(config.table_prefix, current_ts));
-        current_ts += ONE_DAY_MS;
+      if (config.use_partition) {
+        // 15m: 按日期分表
+        const ONE_DAY_MS = 24 * 60 * 60 * 1000;
+        let current_ts = start_time;
+        while (current_ts <= end_time) {
+          tables.add(this.get_table_name_for_config(config, current_ts));
+          current_ts += ONE_DAY_MS;
+        }
+        tables.add(this.get_table_name_for_config(config, end_time));
+      } else {
+        // 1h/4h: 固定表名
+        tables.add(config.table_name);
       }
-      tables.add(this.get_table_name(config.table_prefix, end_time));
 
       const results: AggregatedKline[] = [];
 
@@ -478,27 +490,28 @@ export class KlineAggregator {
   }
 
   /**
-   * 清理旧表
+   * 清理旧表（仅清理分表的15m数据）
    */
   async cleanup_old_tables(days_to_keep: number = 7): Promise<number> {
     const connection = await DatabaseConfig.get_mysql_connection();
     let dropped = 0;
 
     try {
-      for (const config of AGGREGATE_CONFIGS) {
+      // 只清理分表的配置（15m）
+      for (const config of AGGREGATE_CONFIGS.filter(c => c.use_partition)) {
         const [tables] = await connection.execute(`
           SELECT TABLE_NAME FROM information_schema.TABLES
-          WHERE TABLE_SCHEMA = DATABASE() AND TABLE_NAME LIKE '${config.table_prefix}_%'
+          WHERE TABLE_SCHEMA = DATABASE() AND TABLE_NAME LIKE '${config.table_name}_%'
         `);
 
         const cutoff_date = new Date();
         cutoff_date.setDate(cutoff_date.getDate() - days_to_keep);
-        const cutoff_str = this.get_table_name(config.table_prefix, cutoff_date.getTime())
-          .replace(`${config.table_prefix}_`, '');
+        const cutoff_str = this.get_table_name_for_config(config, cutoff_date.getTime())
+          .replace(`${config.table_name}_`, '');
 
         for (const row of tables as any[]) {
           const table_name = row.TABLE_NAME;
-          const date_str = table_name.replace(`${config.table_prefix}_`, '');
+          const date_str = table_name.replace(`${config.table_name}_`, '');
 
           if (date_str < cutoff_str) {
             try {

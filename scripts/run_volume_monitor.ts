@@ -5,7 +5,10 @@
  * 1. WebSocket 订阅所有合约的 5m K线
  * 2. 5m K线聚合为 15m/1h/4h 并存储
  * 3. 监控指定币种的成交量激增
- * 4. 提供 API 接口进行形态扫描
+ *
+ * 注意: API 接口已集成到主服务 (api_server.ts)
+ * - 成交量监控: /api/volume-monitor/*
+ * - 形态扫描: /api/pattern-scan/*
  *
  * 运行命令:
  * npx ts-node -r tsconfig-paths/register scripts/run_volume_monitor.ts
@@ -14,8 +17,6 @@
 import * as dotenv from 'dotenv';
 dotenv.config({ override: true });
 
-import express from 'express';
-import cors from 'cors';
 import WebSocket from 'ws';
 import axios from 'axios';
 
@@ -23,10 +24,6 @@ import { ConfigManager } from '@/core/config/config_manager';
 import { Kline5mRepository, Kline5mData } from '@/database/kline_5m_repository';
 import { KlineAggregator } from '@/core/data/kline_aggregator';
 import { VolumeMonitorService, VolumeCheckResult } from '@/services/volume_monitor_service';
-import { PatternScanService } from '@/services/pattern_scan_service';
-
-import volume_monitor_routes, { set_volume_monitor_repository } from '@/api/routes/volume_monitor_routes';
-import pattern_scan_routes, { set_pattern_scan_service } from '@/api/routes/pattern_scan_routes';
 
 // ==================== 配置 ====================
 const CONFIG = {
@@ -35,9 +32,6 @@ const CONFIG = {
 
   // 黑名单币种（不监控）
   blacklist: ['USDCUSDT'],
-
-  // API服务器端口
-  api_port: 3001,
 
   // 状态打印间隔
   status_interval_ms: 60000,  // 1分钟
@@ -51,7 +45,6 @@ let ws: WebSocket | null = null;
 let kline_5m_repository: Kline5mRepository;
 let kline_aggregator: KlineAggregator;
 let volume_monitor_service: VolumeMonitorService;
-let pattern_scan_service: PatternScanService;
 
 // 统计
 const stats = {
@@ -87,11 +80,9 @@ async function init_services(): Promise<void> {
   kline_5m_repository = new Kline5mRepository();
   kline_aggregator = new KlineAggregator();
   volume_monitor_service = new VolumeMonitorService();
-  pattern_scan_service = new PatternScanService(kline_aggregator);
 
   // 初始化服务
   await volume_monitor_service.init();
-  await pattern_scan_service.init();
 
   console.log('✅ 所有服务初始化完成');
 }
@@ -210,72 +201,6 @@ async function start_websocket(): Promise<void> {
   });
 }
 
-// ==================== API服务器 ====================
-function start_api_server(): void {
-  const app = express();
-
-  app.use(cors());
-  app.use(express.json());
-
-  // 注入服务实例
-  set_volume_monitor_repository(volume_monitor_service.get_repository());
-  set_pattern_scan_service(pattern_scan_service);
-
-  // 注册路由
-  app.use('/api/volume-monitor', volume_monitor_routes);
-  app.use('/api/pattern-scan', pattern_scan_routes);
-
-  // 健康检查
-  app.get('/health', (req, res) => {
-    res.json({
-      status: 'ok',
-      uptime: Math.round((Date.now() - stats.start_time) / 1000),
-      stats: {
-        symbols: stats.symbols_count,
-        klines_received: stats.klines_received,
-        volume_alerts: stats.volume_alerts,
-        monitored_symbols: volume_monitor_service.get_monitored_symbols().length
-      }
-    });
-  });
-
-  // 状态接口
-  app.get('/api/status', (req, res) => {
-    const uptime = Math.round((Date.now() - stats.start_time) / 1000);
-    const monitor_stats = volume_monitor_service.get_statistics();
-    const aggregator_stats = kline_aggregator.get_statistics();
-
-    res.json({
-      success: true,
-      data: {
-        uptime_seconds: uptime,
-        websocket: {
-          symbols_count: stats.symbols_count,
-          klines_received: stats.klines_received,
-          last_kline_time: stats.last_kline_time
-        },
-        aggregator: aggregator_stats,
-        volume_monitor: {
-          ...monitor_stats,
-          alerts_count: stats.volume_alerts
-        },
-        aggregated: {
-          '15m': stats.aggregated_15m,
-          '1h': stats.aggregated_1h,
-          '4h': stats.aggregated_4h
-        }
-      }
-    });
-  });
-
-  app.listen(CONFIG.api_port, () => {
-    console.log(`✅ API服务器启动: http://localhost:${CONFIG.api_port}`);
-    console.log(`   - 成交量监控: /api/volume-monitor/*`);
-    console.log(`   - 形态扫描: /api/pattern-scan/*`);
-    console.log(`   - 状态: /api/status`);
-  });
-}
-
 // ==================== 状态打印 ====================
 async function print_status(): Promise<void> {
   const uptime = Math.round((Date.now() - stats.start_time) / 60000);
@@ -314,15 +239,11 @@ async function main() {
   console.log(`   - K线周期: ${CONFIG.interval}`);
   console.log(`   - K线聚合: 5m → 15m/1h/4h`);
   console.log(`   - 成交量监控: 监控列表币种放量报警`);
-  console.log(`   - 形态扫描: 通过API手动触发`);
-  console.log(`   - API端口: ${CONFIG.api_port}`);
+  console.log('   - API已集成到主服务 (端口3000)');
   console.log('═'.repeat(70));
 
   // 初始化服务
   await init_services();
-
-  // 启动API服务器
-  start_api_server();
 
   // 启动 WebSocket
   await start_websocket();
