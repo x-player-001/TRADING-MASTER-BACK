@@ -140,6 +140,25 @@ async function ensure_table_exists(connection: any, table_name: string): Promise
       throw error;
     }
   }
+
+  // 检查并添加缺失的 interval 字段（兼容旧表结构）
+  try {
+    const [columns] = await connection.execute(
+      `SELECT COLUMN_NAME FROM information_schema.COLUMNS
+       WHERE TABLE_SCHEMA = DATABASE() AND TABLE_NAME = ? AND COLUMN_NAME = 'interval'`,
+      [table_name]
+    );
+
+    if ((columns as any[]).length === 0) {
+      console.log(`   ⚠️ 表 ${table_name} 缺少 interval 字段，正在添加...`);
+      await connection.execute(
+        `ALTER TABLE ${table_name} ADD COLUMN \`interval\` VARCHAR(10) NOT NULL DEFAULT '' AFTER symbol`
+      );
+      console.log(`   ✅ 已添加 interval 字段`);
+    }
+  } catch (error: any) {
+    console.error(`   ❌ 检查/添加 interval 字段失败:`, error.message);
+  }
 }
 
 // ==================== 从API拉取K线数据 ====================
