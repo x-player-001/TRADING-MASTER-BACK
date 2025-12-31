@@ -2,11 +2,14 @@
  * 形态扫描 API 路由
  *
  * 接口:
- * - POST /api/pattern-scan/start           启动扫描任务
- * - GET  /api/pattern-scan/tasks           获取任务列表
- * - GET  /api/pattern-scan/tasks/:task_id  获取任务状态
- * - GET  /api/pattern-scan/results/:task_id 获取扫描结果
- * - GET  /api/pattern-scan/latest          获取最新扫描结果
+ * - POST   /api/pattern-scan/start           启动扫描任务
+ * - GET    /api/pattern-scan/tasks           获取任务列表
+ * - GET    /api/pattern-scan/tasks/:task_id  获取任务状态
+ * - GET    /api/pattern-scan/results/:task_id 获取扫描结果
+ * - GET    /api/pattern-scan/latest          获取最新扫描结果
+ * - GET    /api/pattern-scan/pattern-types   获取支持的形态类型
+ * - DELETE /api/pattern-scan/tasks/cleanup   清理旧任务
+ * - DELETE /api/pattern-scan/all             删除所有扫描结果和任务
  */
 
 import { Router, Request, Response } from 'express';
@@ -251,12 +254,7 @@ router.get('/pattern-types', (req: Request, res: Response) => {
   const pattern_types = [
     { type: 'DOUBLE_BOTTOM', name: '双底 (W底)', description: '两个相近低点形成的底部形态' },
     { type: 'TRIPLE_BOTTOM', name: '三底', description: '三个相近低点形成的更强底部形态' },
-    { type: 'PULLBACK', name: '上涨回调', description: '主升浪后回调至斐波那契位置' },
-    { type: 'HEAD_SHOULDERS', name: '头肩底', description: '左肩、头部、右肩形成的反转形态' },
-    { type: 'TRIANGLE', name: '收敛三角', description: '高点递降、低点递升的整理形态' },
-    { type: 'ASCENDING_TRIANGLE', name: '上升三角', description: '水平阻力、上升支撑的看涨形态' },
-    { type: 'BULLISH_FLAG', name: '牛旗', description: '急涨后小幅回调的继续形态' },
-    { type: 'CUP_HANDLE', name: '杯柄', description: 'U型底部加小幅回调的形态' }
+    { type: 'PULLBACK', name: '上涨回调', description: '主升浪后回调至斐波那契位置' }
   ];
 
   res.json({
@@ -282,6 +280,39 @@ router.delete('/tasks/cleanup', async (req: Request, res: Response) => {
     });
   } catch (error: any) {
     logger.error('[PatternScan API] Cleanup tasks failed:', error);
+    res.status(500).json({
+      success: false,
+      error: error.message
+    });
+  }
+});
+
+/**
+ * DELETE /api/pattern-scan/all
+ * 删除所有扫描结果和任务
+ */
+router.delete('/all', async (req: Request, res: Response) => {
+  try {
+    const service = get_service();
+
+    // 检查是否有任务在运行
+    if (service.get_running_count() > 0) {
+      res.status(409).json({
+        success: false,
+        error: 'Cannot delete while a scan task is running'
+      });
+      return;
+    }
+
+    const result = await service.get_repository().delete_all();
+
+    res.json({
+      success: true,
+      data: result,
+      message: `Deleted ${result.deleted_results} results and ${result.deleted_tasks} tasks`
+    });
+  } catch (error: any) {
+    logger.error('[PatternScan API] Delete all failed:', error);
     res.status(500).json({
       success: false,
       error: error.message

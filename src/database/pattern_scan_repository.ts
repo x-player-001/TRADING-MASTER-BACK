@@ -13,16 +13,12 @@ import { v4 as uuidv4 } from 'uuid';
 
 /**
  * 形态类型
+ * 只保留三种核心形态
  */
 export type PatternType =
   | 'DOUBLE_BOTTOM'      // 双底
   | 'TRIPLE_BOTTOM'      // 三底
-  | 'PULLBACK'           // 上涨回调
-  | 'HEAD_SHOULDERS'     // 头肩底
-  | 'TRIANGLE'           // 收敛三角
-  | 'ASCENDING_TRIANGLE' // 上升三角
-  | 'BULLISH_FLAG'       // 牛旗
-  | 'CUP_HANDLE';        // 杯柄形态
+  | 'PULLBACK';          // 上涨回调
 
 /**
  * 扫描任务状态
@@ -383,6 +379,28 @@ export class PatternScanRepository extends BaseRepository {
         [days_to_keep]
       );
       return result.affectedRows;
+    });
+  }
+
+  /**
+   * 删除所有扫描结果和任务
+   */
+  async delete_all(): Promise<{ deleted_results: number; deleted_tasks: number }> {
+    return this.execute_with_connection(async (conn) => {
+      // 先删除结果（外键约束）
+      const [results_res] = await conn.execute<ResultSetHeader>(
+        'DELETE FROM pattern_scan_results'
+      );
+
+      // 再删除任务
+      const [tasks_res] = await conn.execute<ResultSetHeader>(
+        'DELETE FROM pattern_scan_tasks'
+      );
+
+      return {
+        deleted_results: results_res.affectedRows,
+        deleted_tasks: tasks_res.affectedRows
+      };
     });
   }
 
