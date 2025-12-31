@@ -78,14 +78,30 @@ function parse_args(): { intervals: string[]; limit: number; symbols: string[] |
 // ==================== 获取所有交易对 ====================
 async function get_all_symbols(): Promise<string[]> {
   const url = 'https://fapi.binance.com/fapi/v1/exchangeInfo';
-  const response = await axios.get(url);
-  return response.data.symbols
-    .filter((s: any) =>
-      s.status === 'TRADING' &&
-      s.contractType === 'PERPETUAL' &&
-      s.symbol.endsWith('USDT')
-    )
-    .map((s: any) => s.symbol);
+
+  for (let retry = 0; retry < 3; retry++) {
+    try {
+      console.log(`   正在请求币安API... (尝试 ${retry + 1}/3)`);
+      const response = await axios.get(url, { timeout: 30000 });
+      const symbols = response.data.symbols
+        .filter((s: any) =>
+          s.status === 'TRADING' &&
+          s.contractType === 'PERPETUAL' &&
+          s.symbol.endsWith('USDT')
+        )
+        .map((s: any) => s.symbol);
+      console.log(`   ✅ 获取成功`);
+      return symbols;
+    } catch (error: any) {
+      console.error(`   ❌ 请求失败: ${error.message}`);
+      if (retry < 2) {
+        console.log(`   等待 5 秒后重试...`);
+        await sleep(5000);
+      }
+    }
+  }
+
+  throw new Error('无法获取交易对列表');
 }
 
 // ==================== 确保表存在 ====================
@@ -350,8 +366,19 @@ async function main() {
   }
 }
 
+// 未捕获异常处理
+process.on('uncaughtException', (error) => {
+  console.error('\n❌ 未捕获异常:', error);
+  process.exit(1);
+});
+
+process.on('unhandledRejection', (reason, promise) => {
+  console.error('\n❌ 未处理的Promise拒绝:', reason);
+  process.exit(1);
+});
+
 // 运行
 main().catch(error => {
-  console.error('Fatal error:', error);
+  console.error('\n❌ Fatal error:', error);
   process.exit(1);
 });
