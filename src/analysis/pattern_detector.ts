@@ -159,6 +159,9 @@ export class PatternDetector {
 
   /**
    * 检测双底形态 (W底)
+   *
+   * 寻找潜在交易机会：当前价格在颈线下方，接近但未突破颈线
+   * 排除已经突破颈线的形态（错过的机会）
    */
   private detect_double_bottom(klines: KlineData[], swing_points: SwingPoint[]): PatternResult | null {
     const lows = swing_points.filter(p => p.type === 'LOW');
@@ -200,28 +203,47 @@ export class PatternDetector {
       const bottom_avg = (low1.price + low2.price) / 2;
       const target = neckline + (neckline - bottom_avg);  // 目标价 = 颈线 + (颈线 - 底部)
 
+      // ⚠️ 关键：只识别未突破颈线的形态（潜在交易机会）
+      // 当前价格必须低于颈线，已经突破的不算
+      if (current_price >= neckline) {
+        continue;
+      }
+
+      // 当前价格必须高于底部（在第二个底形成后反弹中）
+      if (current_price <= bottom_avg) {
+        continue;
+      }
+
+      // 计算当前价格距离颈线的比例
+      const distance_to_neckline_pct = (neckline - current_price) / neckline * 100;
+
       // 评分
       let score = 50;
 
       // 底部越接近越好
       score += Math.max(0, 20 - price_diff_pct * 10);
 
-      // 反弹越大越好
-      score += Math.min(20, rebound_pct * 2);
+      // 反弹幅度越大越好（形态越明显）
+      score += Math.min(15, rebound_pct * 1.5);
 
-      // 当前价格接近或突破颈线加分
-      if (current_price >= neckline) {
-        score += 10;
-      } else if (current_price >= neckline * 0.98) {
-        score += 5;
+      // 当前价格越接近颈线越好（即将突破）
+      if (distance_to_neckline_pct <= 2) {
+        score += 15;  // 距离颈线2%以内
+      } else if (distance_to_neckline_pct <= 5) {
+        score += 10;  // 距离颈线5%以内
+      } else if (distance_to_neckline_pct <= 10) {
+        score += 5;   // 距离颈线10%以内
       }
 
       score = Math.min(100, Math.round(score));
 
+      // 根据价格大小决定显示精度
+      const decimals = bottom_avg < 0.01 ? 6 : bottom_avg < 1 ? 4 : 2;
+
       return {
         pattern_type: 'DOUBLE_BOTTOM',
         score,
-        description: `双底形态: 底部${bottom_avg.toFixed(4)}, 颈线${neckline.toFixed(4)}, 反弹${rebound_pct.toFixed(1)}%`,
+        description: `双底形态: 底部${bottom_avg.toFixed(decimals)}, 颈线${neckline.toFixed(decimals)}, 距颈线${distance_to_neckline_pct.toFixed(1)}%`,
         key_levels: {
           support: bottom_avg,
           neckline,
@@ -237,6 +259,9 @@ export class PatternDetector {
 
   /**
    * 检测三底形态
+   *
+   * 寻找潜在交易机会：当前价格在颈线下方，接近但未突破颈线
+   * 排除已经突破颈线的形态（错过的机会）
    */
   private detect_triple_bottom(klines: KlineData[], swing_points: SwingPoint[]): PatternResult | null {
     const lows = swing_points.filter(p => p.type === 'LOW');
@@ -248,6 +273,7 @@ export class PatternDetector {
 
     // 找最近的三个低点
     const recent_lows = lows.slice(-4);
+    const current_price = klines[klines.length - 1].close;
 
     for (let i = 0; i < recent_lows.length - 2; i++) {
       const low1 = recent_lows[i];
@@ -278,7 +304,28 @@ export class PatternDetector {
       }
 
       const neckline = Math.max(...middle_highs.map(h => h.price));
-      const current_price = klines[klines.length - 1].close;
+
+      // 检查反弹幅度（颈线必须明显高于底部）
+      const rebound_pct = (neckline - avg_low) / avg_low * 100;
+      if (rebound_pct < this.config.min_rebound_pct) {
+        continue;
+      }
+
+      const target = neckline + (neckline - avg_low);
+
+      // ⚠️ 关键：只识别未突破颈线的形态（潜在交易机会）
+      // 当前价格必须低于颈线，已经突破的不算
+      if (current_price >= neckline) {
+        continue;
+      }
+
+      // 当前价格必须高于底部（在第三个底形成后反弹中）
+      if (current_price <= avg_low) {
+        continue;
+      }
+
+      // 计算当前价格距离颈线的比例
+      const distance_to_neckline_pct = (neckline - current_price) / neckline * 100;
 
       // 评分
       let score = 55;  // 三底比双底稍强
@@ -286,21 +333,24 @@ export class PatternDetector {
       // 底部越接近越好
       score += Math.max(0, 20 - diff_pct * 10);
 
-      // 当前价格接近或突破颈线加分
-      if (current_price >= neckline) {
-        score += 15;
-      } else if (current_price >= neckline * 0.98) {
-        score += 8;
+      // 当前价格越接近颈线越好（即将突破）
+      if (distance_to_neckline_pct <= 2) {
+        score += 15;  // 距离颈线2%以内
+      } else if (distance_to_neckline_pct <= 5) {
+        score += 10;  // 距离颈线5%以内
+      } else if (distance_to_neckline_pct <= 10) {
+        score += 5;   // 距离颈线10%以内
       }
 
       score = Math.min(100, Math.round(score));
 
-      const target = neckline + (neckline - avg_low);
+      // 根据价格大小决定显示精度
+      const decimals = avg_low < 0.01 ? 6 : avg_low < 1 ? 4 : 2;
 
       return {
         pattern_type: 'TRIPLE_BOTTOM',
         score,
-        description: `三底形态: 底部${avg_low.toFixed(4)}, 颈线${neckline.toFixed(4)}`,
+        description: `三底形态: 底部${avg_low.toFixed(decimals)}, 颈线${neckline.toFixed(decimals)}, 距颈线${distance_to_neckline_pct.toFixed(1)}%`,
         key_levels: {
           support: avg_low,
           neckline,
