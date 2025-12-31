@@ -7,7 +7,7 @@
  * 3. 支持动态加载监控列表
  */
 
-import { Kline5mData } from '@/database/kline_5m_repository';
+import { Kline5mData, Kline5mRepository } from '@/database/kline_5m_repository';
 import { VolumeMonitorRepository, VolumeMonitorSymbol, VolumeAlert } from '@/database/volume_monitor_repository';
 import { logger } from '@/utils/logger';
 
@@ -28,6 +28,7 @@ export interface VolumeCheckResult {
 
 export class VolumeMonitorService {
   private repository: VolumeMonitorRepository;
+  private kline_repository: Kline5mRepository;
 
   // 监控配置缓存: symbol -> config
   private config_cache: Map<string, VolumeMonitorSymbol> = new Map();
@@ -44,6 +45,7 @@ export class VolumeMonitorService {
 
   constructor() {
     this.repository = new VolumeMonitorRepository();
+    this.kline_repository = new Kline5mRepository();
   }
 
   /**
@@ -64,16 +66,55 @@ export class VolumeMonitorService {
 
   /**
    * 刷新监控配置
+   * 对于新增的币种，自动从数据库预加载 K 线缓存
    */
   async refresh_config(): Promise<void> {
     const symbols = await this.repository.get_enabled_symbols();
 
+    // 找出新增的币种
+    const new_symbols: string[] = [];
+    for (const sym of symbols) {
+      if (!this.config_cache.has(sym.symbol)) {
+        new_symbols.push(sym.symbol);
+      }
+    }
+
+    // 更新配置缓存
     this.config_cache.clear();
     for (const sym of symbols) {
       this.config_cache.set(sym.symbol, sym);
     }
 
-    logger.debug(`[VolumeMonitor] Refreshed config: ${symbols.length} symbols enabled`);
+    // 为新增币种预加载 K 线缓存
+    if (new_symbols.length > 0) {
+      await this.preload_kline_cache(new_symbols);
+    }
+
+    logger.debug(`[VolumeMonitor] Refreshed config: ${symbols.length} symbols enabled, ${new_symbols.length} new`);
+  }
+
+  /**
+   * 为指定币种预加载 K 线缓存
+   */
+  private async preload_kline_cache(symbols: string[]): Promise<void> {
+    for (const symbol of symbols) {
+      try {
+        // 从数据库加载最近的 K 线（lookback_bars + 10 作为缓冲）
+        const config = this.config_cache.get(symbol);
+        const limit = config ? config.lookback_bars + 10 : 30;
+
+        const klines = await this.kline_repository.get_recent_klines(symbol, limit);
+
+        if (klines.length > 0) {
+          this.kline_cache.set(symbol, klines);
+          logger.info(`[VolumeMonitor] Preloaded ${klines.length} klines for ${symbol}`);
+        } else {
+          logger.debug(`[VolumeMonitor] No klines found in DB for ${symbol}`);
+        }
+      } catch (error) {
+        logger.error(`[VolumeMonitor] Failed to preload klines for ${symbol}:`, error);
+      }
+    }
   }
 
   /**

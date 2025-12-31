@@ -35,6 +35,25 @@ export class Kline5mRepository {
   }
 
   /**
+   * 将数据库查询结果转换为正确的类型
+   * MySQL Decimal 类型会以字符串形式返回，需要转换为数字
+   */
+  private convert_row_types(row: any): Kline5mData {
+    return {
+      id: row.id,
+      symbol: row.symbol,
+      open_time: Number(row.open_time),
+      close_time: Number(row.close_time),
+      open: parseFloat(row.open),
+      high: parseFloat(row.high),
+      low: parseFloat(row.low),
+      close: parseFloat(row.close),
+      volume: parseFloat(row.volume),
+      created_at: row.created_at
+    };
+  }
+
+  /**
    * 获取日期对应的表名（使用 UTC 时间）
    * 注意：必须使用 UTC 时间，因为 K 线的 open_time 是 UTC 时间戳
    */
@@ -234,7 +253,7 @@ export class Kline5mRepository {
         LIMIT ?
       `;
       const [rows] = await connection.execute(sql, [symbol, limit]);
-      const result = rows as Kline5mData[];
+      const result = (rows as any[]).map(row => this.convert_row_types(row));
 
       // 如果不够，再查昨天的表
       if (result.length < limit) {
@@ -247,7 +266,7 @@ export class Kline5mRepository {
             LIMIT ?
           `;
           const [rows2] = await connection.execute(sql2, [symbol, remaining]);
-          result.push(...(rows2 as Kline5mData[]));
+          result.push(...(rows2 as any[]).map(row => this.convert_row_types(row)));
         } catch {
           // 昨天的表可能不存在
         }
@@ -301,7 +320,7 @@ export class Kline5mRepository {
             ORDER BY open_time
           `;
           const [rows] = await connection.execute(sql, [symbol, start_time, end_time]);
-          results.push(...(rows as Kline5mData[]));
+          results.push(...(rows as any[]).map(row => this.convert_row_types(row)));
         } catch (error: any) {
           // 表不存在则跳过
           if (error.code !== 'ER_NO_SUCH_TABLE') {
