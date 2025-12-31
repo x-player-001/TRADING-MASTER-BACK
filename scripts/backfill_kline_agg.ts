@@ -75,6 +75,13 @@ function parse_args(): { intervals: string[]; limit: number; symbols: string[] |
   return { intervals, limit, symbols };
 }
 
+// 请求头配置（绕过418错误）
+const REQUEST_HEADERS = {
+  'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36',
+  'Accept': 'application/json',
+  'Accept-Language': 'en-US,en;q=0.9'
+};
+
 // ==================== 获取所有交易对 ====================
 async function get_all_symbols(): Promise<string[]> {
   const url = 'https://fapi.binance.com/fapi/v1/exchangeInfo';
@@ -82,7 +89,7 @@ async function get_all_symbols(): Promise<string[]> {
   for (let retry = 0; retry < 3; retry++) {
     try {
       console.log(`   正在请求币安API... (尝试 ${retry + 1}/3)`);
-      const response = await axios.get(url, { timeout: 30000 });
+      const response = await axios.get(url, { timeout: 30000, headers: REQUEST_HEADERS });
       const symbols = response.data.symbols
         .filter((s: any) =>
           s.status === 'TRADING' &&
@@ -146,7 +153,9 @@ async function fetch_klines(
   for (let retry = 0; retry < CONFIG.max_retries; retry++) {
     try {
       const response = await axios.get(url, {
-        params: { symbol, interval, limit }
+        params: { symbol, interval, limit },
+        headers: REQUEST_HEADERS,
+        timeout: 30000
       });
 
       return response.data.map((k: any[]) => ({
