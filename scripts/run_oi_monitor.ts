@@ -49,7 +49,8 @@ async function main() {
     // 状态显示
     const print_status = () => {
       const status = oi_service.get_status();
-      console.log(`[${new Date().toLocaleString('zh-CN')}] OI监控: ${status.is_running ? '✅ 运行中' : '❌ 已停止'} | 监控币种: ${status.active_symbols_count}个 | 轮询间隔: ${status.polling_interval_seconds}秒`);
+      const interval_sec = Math.round((status.config?.polling_interval_ms || 60000) / 1000);
+      console.log(`[${new Date().toLocaleString('zh-CN')}] OI监控: ${status.is_running ? '✅ 运行中' : '❌ 已停止'} | 监控币种: ${status.active_symbols_count}个 | 轮询间隔: ${interval_sec}秒`);
     };
 
     // 立即打印状态
