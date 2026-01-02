@@ -222,7 +222,7 @@ router.get('/latest', async (req: Request, res: Response) => {
     const {
       pattern_type,
       min_score,
-      limit = '50'
+      limit = '500'
     } = req.query;
 
     const service = get_service();
