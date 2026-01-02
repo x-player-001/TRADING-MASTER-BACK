@@ -44,7 +44,14 @@ function parse_args(): { start_date: Date; end_date: Date; symbols: string[] | n
       start_date = new Date(args[i + 1] + 'T00:00:00Z');
       i++;
     } else if (args[i] === '--end' && args[i + 1]) {
-      end_date = new Date(args[i + 1] + 'T23:59:59Z');
+      // 如果指定的是今天，使用当前时间；否则使用当天结束时间
+      const end_date_str = args[i + 1];
+      const today_str = new Date().toISOString().slice(0, 10);
+      if (end_date_str === today_str) {
+        end_date = new Date();  // 使用当前时间
+      } else {
+        end_date = new Date(end_date_str + 'T23:59:59Z');
+      }
       i++;
     } else if (args[i] === '--symbols' && args[i + 1]) {
       symbols = args[i + 1].split(',').map(s => s.trim().toUpperCase());
