@@ -109,7 +109,7 @@ export class PatternScanRepository extends BaseRepository {
           id BIGINT PRIMARY KEY AUTO_INCREMENT,
           task_id VARCHAR(36) NOT NULL,
           symbol VARCHAR(20) NOT NULL,
-          pattern_type ENUM('DOUBLE_BOTTOM', 'TRIPLE_BOTTOM', 'PULLBACK', 'HEAD_SHOULDERS', 'TRIANGLE', 'ASCENDING_TRIANGLE', 'BULLISH_FLAG', 'CUP_HANDLE') NOT NULL,
+          pattern_type ENUM('DOUBLE_BOTTOM', 'TRIPLE_BOTTOM', 'PULLBACK', 'CONSOLIDATION') NOT NULL,
           score INT NOT NULL,
           description TEXT,
           key_levels JSON,
@@ -128,6 +128,21 @@ export class PatternScanRepository extends BaseRepository {
       try {
         await conn.execute(create_tasks_table);
         await conn.execute(create_results_table);
+
+        // 迁移：更新 pattern_type ENUM 以支持新类型
+        try {
+          await conn.execute(`
+            ALTER TABLE pattern_scan_results
+            MODIFY COLUMN pattern_type ENUM('DOUBLE_BOTTOM', 'TRIPLE_BOTTOM', 'PULLBACK', 'CONSOLIDATION') NOT NULL
+          `);
+          logger.info('Pattern type ENUM updated to include CONSOLIDATION');
+        } catch (alter_error: any) {
+          // 忽略已经是正确类型的情况
+          if (!alter_error.message?.includes('Duplicate')) {
+            logger.debug('Pattern type ENUM migration skipped or already up to date');
+          }
+        }
+
         logger.info('Pattern scan tables initialized successfully');
       } catch (error) {
         logger.error('Failed to initialize pattern scan tables', error);
