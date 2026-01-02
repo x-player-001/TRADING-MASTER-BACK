@@ -252,9 +252,10 @@ router.get('/latest', async (req: Request, res: Response) => {
  */
 router.get('/pattern-types', (req: Request, res: Response) => {
   const pattern_types = [
-    { type: 'DOUBLE_BOTTOM', name: '双底 (W底)', description: '两个相近低点形成的底部形态' },
-    { type: 'TRIPLE_BOTTOM', name: '三底', description: '三个相近低点形成的更强底部形态' },
-    { type: 'PULLBACK', name: '上涨回调', description: '主升浪后回调至斐波那契位置' }
+    { type: 'DOUBLE_BOTTOM', name: '双底 (W底)', description: '两个相近低点形成的底部形态，等待突破颈线' },
+    { type: 'TRIPLE_BOTTOM', name: '三底', description: '三个相近低点形成的更强底部形态，等待突破颈线' },
+    { type: 'PULLBACK', name: '上涨回调', description: '主升浪后回调至斐波那契位置企稳' },
+    { type: 'CONSOLIDATION', name: '横盘震荡', description: '窄幅区间长时间横盘，等待突破' }
   ];
 
   res.json({

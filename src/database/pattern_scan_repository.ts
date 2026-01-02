@@ -13,12 +13,13 @@ import { v4 as uuidv4 } from 'uuid';
 
 /**
  * 形态类型
- * 只保留三种核心形态
+ * 四种核心形态
  */
 export type PatternType =
   | 'DOUBLE_BOTTOM'      // 双底
   | 'TRIPLE_BOTTOM'      // 三底
-  | 'PULLBACK';          // 上涨回调
+  | 'PULLBACK'           // 上涨回调
+  | 'CONSOLIDATION';     // 横盘震荡
 
 /**
  * 扫描任务状态
@@ -54,6 +55,9 @@ export interface KeyLevels {
   entry?: number;              // 入场价
   swing_high?: number;         // 波段高点
   swing_low?: number;          // 波段低点
+  mid?: number;                // 区间中线
+  target_up?: number;          // 向上突破目标
+  target_down?: number;        // 向下突破目标
 }
 
 /**

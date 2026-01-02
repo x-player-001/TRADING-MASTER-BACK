@@ -5,6 +5,7 @@
  * - DOUBLE_BOTTOM: 双底 (W底)
  * - TRIPLE_BOTTOM: 三底
  * - PULLBACK: 上涨回调
+ * - CONSOLIDATION: 横盘震荡（窄幅区间长时间横盘）
  */
 
 import { PatternType, KeyLevels } from '@/database/pattern_scan_repository';
@@ -53,26 +54,28 @@ export interface PatternDetectorConfig {
   // 双底/三底配置
   bottom_tolerance_pct: number;     // 底部价差容忍度 (%)
   min_rebound_pct: number;          // 最小反弹幅度 (%)
+  max_distance_to_neckline_pct: number;  // 距颈线最大距离 (%)
 
   // 回调配置
   min_surge_pct: number;            // 最小涨幅 (%)
   max_retrace_ratio: number;        // 最大回撤比例 (0-1)
   min_retrace_ratio: number;        // 最小回撤比例 (0-1)
 
-  // 三角形配置
-  min_triangle_points: number;      // 最少需要的点数
-  max_convergence_bars: number;     // 最大收敛K线数
+  // 横盘震荡配置
+  consolidation_max_range_pct: number;   // 横盘最大振幅 (%)
+  consolidation_min_bars: number;        // 横盘最少K线数
 }
 
 const DEFAULT_CONFIG: PatternDetectorConfig = {
   swing_lookback: 5,
-  bottom_tolerance_pct: 2.0,
-  min_rebound_pct: 3.0,
-  min_surge_pct: 10.0,
+  bottom_tolerance_pct: 1.5,        // 收紧到1.5%
+  min_rebound_pct: 5.0,             // 提高到5%
+  max_distance_to_neckline_pct: 8,  // 距颈线不超过8%
+  min_surge_pct: 15.0,              // 提高到15%
   max_retrace_ratio: 0.618,
   min_retrace_ratio: 0.236,
-  min_triangle_points: 4,
-  max_convergence_bars: 50
+  consolidation_max_range_pct: 8,   // 横盘振幅不超过8%
+  consolidation_min_bars: 20        // 至少20根K线
 };
 
 export class PatternDetector {
@@ -84,7 +87,7 @@ export class PatternDetector {
 
   /**
    * 检测所有形态
-   * 只检测: 双底、三底、上涨回调
+   * 检测: 双底、三底、上涨回调、横盘震荡
    */
   detect_all(klines: KlineData[]): PatternResult[] {
     if (klines.length < 30) {
@@ -96,7 +99,7 @@ export class PatternDetector {
     // 识别波段点
     const swing_points = this.find_swing_points(klines);
 
-    // 只检测三种形态: 双底、三底、上涨回调
+    // 检测四种形态: 双底、三底、上涨回调、横盘震荡
     const double_bottom = this.detect_double_bottom(klines, swing_points);
     if (double_bottom) results.push(double_bottom);
 
@@ -105,6 +108,9 @@ export class PatternDetector {
 
     const pullback = this.detect_pullback(klines, swing_points);
     if (pullback) results.push(pullback);
+
+    const consolidation = this.detect_consolidation(klines);
+    if (consolidation) results.push(consolidation);
 
     return results;
   }
@@ -217,22 +223,27 @@ export class PatternDetector {
       // 计算当前价格距离颈线的比例
       const distance_to_neckline_pct = (neckline - current_price) / neckline * 100;
 
+      // 距颈线太远的不算（还没有明确的入场信号）
+      if (distance_to_neckline_pct > this.config.max_distance_to_neckline_pct) {
+        continue;
+      }
+
       // 评分
-      let score = 50;
+      let score = 60;
 
-      // 底部越接近越好
-      score += Math.max(0, 20 - price_diff_pct * 10);
+      // 底部越接近越好（满分15分）
+      score += Math.max(0, 15 - price_diff_pct * 10);
 
-      // 反弹幅度越大越好（形态越明显）
-      score += Math.min(15, rebound_pct * 1.5);
+      // 反弹幅度越大越好（满分15分）
+      score += Math.min(15, (rebound_pct - 5) * 2);
 
-      // 当前价格越接近颈线越好（即将突破）
+      // 当前价格越接近颈线越好（满分10分）
       if (distance_to_neckline_pct <= 2) {
-        score += 15;  // 距离颈线2%以内
+        score += 10;  // 距离颈线2%以内
       } else if (distance_to_neckline_pct <= 5) {
-        score += 10;  // 距离颈线5%以内
-      } else if (distance_to_neckline_pct <= 10) {
-        score += 5;   // 距离颈线10%以内
+        score += 6;   // 距离颈线5%以内
+      } else {
+        score += 3;   // 距离颈线8%以内
       }
 
       score = Math.min(100, Math.round(score));
@@ -327,19 +338,27 @@ export class PatternDetector {
       // 计算当前价格距离颈线的比例
       const distance_to_neckline_pct = (neckline - current_price) / neckline * 100;
 
+      // 距颈线太远的不算（还没有明确的入场信号）
+      if (distance_to_neckline_pct > this.config.max_distance_to_neckline_pct) {
+        continue;
+      }
+
       // 评分
-      let score = 55;  // 三底比双底稍强
+      let score = 65;  // 三底比双底稍强
 
-      // 底部越接近越好
-      score += Math.max(0, 20 - diff_pct * 10);
+      // 底部越接近越好（满分15分）
+      score += Math.max(0, 15 - diff_pct * 10);
 
-      // 当前价格越接近颈线越好（即将突破）
+      // 反弹幅度越大越好（满分10分）
+      score += Math.min(10, (rebound_pct - 5) * 1.5);
+
+      // 当前价格越接近颈线越好（满分10分）
       if (distance_to_neckline_pct <= 2) {
-        score += 15;  // 距离颈线2%以内
+        score += 10;  // 距离颈线2%以内
       } else if (distance_to_neckline_pct <= 5) {
-        score += 10;  // 距离颈线5%以内
-      } else if (distance_to_neckline_pct <= 10) {
-        score += 5;   // 距离颈线10%以内
+        score += 6;   // 距离颈线5%以内
+      } else {
+        score += 3;   // 距离颈线8%以内
       }
 
       score = Math.min(100, Math.round(score));
@@ -452,6 +471,88 @@ export class PatternDetector {
     }
 
     return null;
+  }
+
+  /**
+   * 检测横盘震荡形态
+   *
+   * 识别窄幅区间长时间横盘的币种，等待突破
+   * 条件：振幅小、持续时间长、当前价格在区间内
+   */
+  private detect_consolidation(klines: KlineData[]): PatternResult | null {
+    const min_bars = this.config.consolidation_min_bars;
+
+    if (klines.length < min_bars) {
+      return null;
+    }
+
+    // 取最近的K线分析
+    const recent_klines = klines.slice(-min_bars);
+    const current_price = klines[klines.length - 1].close;
+
+    // 计算区间高低点
+    let range_high = -Infinity;
+    let range_low = Infinity;
+
+    for (const k of recent_klines) {
+      if (k.high > range_high) range_high = k.high;
+      if (k.low < range_low) range_low = k.low;
+    }
+
+    // 计算振幅百分比
+    const range_pct = (range_high - range_low) / range_low * 100;
+
+    // 振幅必须在阈值内
+    if (range_pct > this.config.consolidation_max_range_pct) {
+      return null;
+    }
+
+    // 当前价格必须在区间内
+    if (current_price > range_high || current_price < range_low) {
+      return null;
+    }
+
+    // 计算当前价格在区间中的位置 (0=底部, 1=顶部)
+    const position_ratio = (current_price - range_low) / (range_high - range_low);
+
+    // 计算区间中线
+    const mid_price = (range_high + range_low) / 2;
+
+    // 评分
+    let score = 60;
+
+    // 振幅越小越好（满分20分）
+    score += Math.max(0, 20 - range_pct * 3);
+
+    // 接近区间边缘更好（即将突破，满分15分）
+    if (position_ratio >= 0.8 || position_ratio <= 0.2) {
+      score += 15;  // 接近突破位
+    } else if (position_ratio >= 0.6 || position_ratio <= 0.4) {
+      score += 8;   // 接近边缘
+    }
+
+    score = Math.min(100, Math.round(score));
+
+    // 根据价格大小决定显示精度
+    const decimals = range_low < 0.01 ? 6 : range_low < 1 ? 4 : 2;
+
+    // 判断当前趋向（接近上轨还是下轨）
+    const direction = position_ratio >= 0.5 ? '接近上轨' : '接近下轨';
+
+    return {
+      pattern_type: 'CONSOLIDATION',
+      score,
+      description: `横盘震荡: 区间${range_low.toFixed(decimals)}-${range_high.toFixed(decimals)}, 振幅${range_pct.toFixed(1)}%, ${direction}`,
+      key_levels: {
+        support: range_low,
+        resistance: range_high,
+        mid: mid_price,
+        target_up: range_high * 1.05,    // 向上突破目标 +5%
+        target_down: range_low * 0.95,   // 向下突破目标 -5%
+        stop_loss: position_ratio >= 0.5 ? range_low * 0.98 : range_high * 1.02
+      },
+      detected_at: klines[klines.length - 1].open_time
+    };
   }
 
   /**
