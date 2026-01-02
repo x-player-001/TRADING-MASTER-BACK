@@ -8,6 +8,9 @@
  * - GET    /api/pattern-scan/results/:task_id 获取扫描结果
  * - GET    /api/pattern-scan/latest          获取最新扫描结果
  * - GET    /api/pattern-scan/pattern-types   获取支持的形态类型
+ * - GET    /api/pattern-scan/blacklist       获取黑名单列表
+ * - POST   /api/pattern-scan/blacklist       添加币种到黑名单
+ * - DELETE /api/pattern-scan/blacklist/:symbol 从黑名单移除币种
  * - DELETE /api/pattern-scan/tasks/cleanup   清理旧任务
  * - DELETE /api/pattern-scan/all             删除所有扫描结果和任务
  */
@@ -281,6 +284,110 @@ router.delete('/tasks/cleanup', async (req: Request, res: Response) => {
     });
   } catch (error: any) {
     logger.error('[PatternScan API] Cleanup tasks failed:', error);
+    res.status(500).json({
+      success: false,
+      error: error.message
+    });
+  }
+});
+
+/**
+ * GET /api/pattern-scan/blacklist
+ * 获取黑名单列表
+ */
+router.get('/blacklist', (req: Request, res: Response) => {
+  try {
+    const service = get_service();
+    const blacklist = service.get_blacklist();
+
+    res.json({
+      success: true,
+      data: blacklist,
+      count: blacklist.length
+    });
+  } catch (error: any) {
+    logger.error('[PatternScan API] Get blacklist failed:', error);
+    res.status(500).json({
+      success: false,
+      error: error.message
+    });
+  }
+});
+
+/**
+ * POST /api/pattern-scan/blacklist
+ * 添加币种到黑名单
+ */
+router.post('/blacklist', (req: Request, res: Response): void => {
+  try {
+    const { symbol } = req.body;
+
+    if (!symbol || typeof symbol !== 'string') {
+      res.status(400).json({
+        success: false,
+        error: 'symbol is required'
+      });
+      return;
+    }
+
+    const service = get_service();
+    const upper_symbol = symbol.toUpperCase();
+
+    if (service.is_blacklisted(upper_symbol)) {
+      res.status(409).json({
+        success: false,
+        error: `${upper_symbol} is already in blacklist`
+      });
+      return;
+    }
+
+    service.add_to_blacklist(upper_symbol);
+
+    res.json({
+      success: true,
+      data: {
+        symbol: upper_symbol,
+        message: `${upper_symbol} added to blacklist`
+      }
+    });
+  } catch (error: any) {
+    logger.error('[PatternScan API] Add to blacklist failed:', error);
+    res.status(500).json({
+      success: false,
+      error: error.message
+    });
+  }
+});
+
+/**
+ * DELETE /api/pattern-scan/blacklist/:symbol
+ * 从黑名单移除币种
+ */
+router.delete('/blacklist/:symbol', (req: Request, res: Response): void => {
+  try {
+    const { symbol } = req.params;
+    const service = get_service();
+    const upper_symbol = symbol.toUpperCase();
+
+    if (!service.is_blacklisted(upper_symbol)) {
+      res.status(404).json({
+        success: false,
+        error: `${upper_symbol} is not in blacklist`
+      });
+      return;
+    }
+
+    service.remove_from_blacklist(upper_symbol);
+
+    res.json({
+      success: true,
+      data: {
+        symbol: upper_symbol,
+        message: `${upper_symbol} removed from blacklist`
+      }
+    });
+  } catch (error: any) {
+    logger.error('[PatternScan API] Remove from blacklist failed:', error);
     res.status(500).json({
       success: false,
       error: error.message
