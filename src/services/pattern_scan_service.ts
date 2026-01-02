@@ -24,6 +24,17 @@ export interface ScanRequest {
 }
 
 /**
+ * 黑名单配置 - 不扫描的币种
+ * 通常是稳定币、指数类、流动性差的币种
+ */
+const BLACKLIST: string[] = [
+  'USDCUSDT',      // 稳定币
+  'FDUSDUSDT',     // 稳定币
+  'BTCDOMUSDT',    // BTC市占率指数
+  'DEFIUSDT',      // DeFi指数
+];
+
+/**
  * 形态扫描服务
  */
 export class PatternScanService {
@@ -34,6 +45,9 @@ export class PatternScanService {
 
   // 当前运行的任务
   private running_tasks: Map<string, boolean> = new Map();
+
+  // 黑名单
+  private blacklist: Set<string> = new Set(BLACKLIST);
 
   constructor(aggregator?: KlineAggregator) {
     this.repository = new PatternScanRepository();
@@ -93,6 +107,12 @@ export class PatternScanService {
       const batch_results: Omit<PatternScanResult, 'id' | 'created_at'>[] = [];
 
       for (const symbol of symbols) {
+        // 黑名单过滤
+        if (this.blacklist.has(symbol)) {
+          scanned++;
+          continue;
+        }
+
         try {
           // 获取K线数据（仅从本地数据库）
           const klines = await this.get_klines_from_db_only(symbol, request.interval, request.lookback_bars);
@@ -422,5 +442,35 @@ export class PatternScanService {
    */
   get_repository(): PatternScanRepository {
     return this.repository;
+  }
+
+  /**
+   * 获取黑名单列表
+   */
+  get_blacklist(): string[] {
+    return Array.from(this.blacklist);
+  }
+
+  /**
+   * 添加到黑名单
+   */
+  add_to_blacklist(symbol: string): void {
+    this.blacklist.add(symbol.toUpperCase());
+    logger.info(`[PatternScan] Added ${symbol} to blacklist`);
+  }
+
+  /**
+   * 从黑名单移除
+   */
+  remove_from_blacklist(symbol: string): void {
+    this.blacklist.delete(symbol.toUpperCase());
+    logger.info(`[PatternScan] Removed ${symbol} from blacklist`);
+  }
+
+  /**
+   * 检查是否在黑名单中
+   */
+  is_blacklisted(symbol: string): boolean {
+    return this.blacklist.has(symbol.toUpperCase());
   }
 }
