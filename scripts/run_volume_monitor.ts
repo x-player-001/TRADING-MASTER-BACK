@@ -166,6 +166,11 @@ async function start_websocket(): Promise<void> {
   const symbols = await get_all_symbols();
   stats.symbols_count = symbols.length;
 
+  // 从数据库预加载历史K线（解决冷启动问题）
+  console.log(`\n📦 正在从数据库预加载历史K线...`);
+  const preload_result = await volume_monitor_service.preload_klines_from_db(symbols);
+  console.log(`✅ 预加载完成: ${preload_result.loaded} 个币种已加载历史数据`);
+
   console.log(`\n📡 正在订阅 ${symbols.length} 个合约的 ${CONFIG.interval} K线...`);
 
   // 构建订阅流
@@ -235,7 +240,8 @@ async function main() {
   console.log('\n📋 功能说明:');
   console.log(`   - K线周期: ${CONFIG.interval}`);
   console.log(`   - K线聚合: 5m → 15m/1h/4h`);
-  console.log(`   - 成交量监控: 所有币种 (放量≥3x + 阳线 + 上影线≤20%)`);
+  console.log(`   - 成交量监控: 所有币种 (放量≥3x + 阳线 + 上影线≤50%)`);
+  console.log('   - 启动时从数据库预加载历史K线（无冷启动延迟）');
   console.log('   - API已集成到主服务 (端口3000)');
   console.log('═'.repeat(70));
 

@@ -3,8 +3,9 @@
  *
  * 功能:
  * 1. 监控所有订阅币种的成交量变化
- * 2. 放量3倍以上 + 阳线 + 上影线不超过20% 时报警
+ * 2. 放量3倍以上 + 阳线 + 上影线不超过50% 时报警
  * 3. 支持黑名单过滤
+ * 4. 启动时从数据库预加载历史K线，避免冷启动延迟
  */
 
 import { Kline5mData, Kline5mRepository } from '@/database/kline_5m_repository';
@@ -32,9 +33,9 @@ export interface VolumeCheckResult {
  */
 const DEFAULT_CONFIG = {
   volume_multiplier: 3.0,        // 放量倍数阈值
-  lookback_bars: 20,             // 计算平均成交量的K线数
+  lookback_bars: 10,             // 计算平均成交量的K线数
   min_volume_usdt: 50000,        // 最小成交额（USDT）
-  max_upper_shadow_pct: 20,      // 上影线最大比例 (%)
+  max_upper_shadow_pct: 50,      // 上影线最大比例 (%)
 };
 
 /**
@@ -232,6 +233,46 @@ export class VolumeMonitorService {
    */
   init_kline_cache(symbol: string, klines: Kline5mData[]): void {
     this.kline_cache.set(symbol, klines.slice(-this.MAX_KLINE_CACHE_SIZE));
+  }
+
+  /**
+   * 从数据库预加载所有币种的历史K线
+   * 解决冷启动问题，避免需要等待 lookback_bars 根K线才能开始检测
+   * @param symbols 需要预加载的币种列表
+   */
+  async preload_klines_from_db(symbols: string[]): Promise<{ loaded: number; failed: number }> {
+    let loaded = 0;
+    let failed = 0;
+
+    // 需要加载的K线数量 (lookback_bars + 一些缓冲)
+    const klines_to_load = DEFAULT_CONFIG.lookback_bars + 5;
+
+    logger.info(`[VolumeMonitor] Preloading ${klines_to_load} klines for ${symbols.length} symbols from database...`);
+
+    for (const symbol of symbols) {
+      // 跳过黑名单
+      if (this.blacklist.has(symbol)) {
+        continue;
+      }
+
+      try {
+        // 从数据库获取最近的K线数据
+        const klines = await this.kline_repository.get_recent_klines(symbol, klines_to_load);
+
+        if (klines.length > 0) {
+          // 按时间升序排列（最早的在前）
+          klines.sort((a, b) => a.open_time - b.open_time);
+          this.kline_cache.set(symbol, klines);
+          loaded++;
+        }
+      } catch (error) {
+        failed++;
+        logger.debug(`[VolumeMonitor] Failed to preload klines for ${symbol}: ${error}`);
+      }
+    }
+
+    logger.info(`[VolumeMonitor] Preload complete: ${loaded} symbols loaded, ${failed} failed`);
+    return { loaded, failed };
   }
 
   /**
