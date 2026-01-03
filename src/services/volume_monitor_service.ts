@@ -4,7 +4,7 @@
  * 功能:
  * 1. 监控所有订阅币种的成交量变化
  * 2. 完结K线：放量≥5x + 阳线 + 上影线<50%，≥10x标记为重要
- * 3. 未完结K线：放量≥10x 递进报警（10x→15x→20x），上涨时上影线<50%，都标记为重要
+ * 3. 未完结K线：放量≥10x + 成交额≥1M，递进报警（10x→15x→20x），上涨时上影线<50%，都标记为重要
  * 4. 支持黑名单过滤
  * 5. 启动时从数据库预加载历史K线，避免冷启动延迟
  */
@@ -41,9 +41,10 @@ const DEFAULT_CONFIG = {
   important_threshold: 10,       // 重要信号阈值 (≥10x)
   // 未完结K线配置 (递进报警阈值)
   pending_thresholds: [10, 15, 20] as const,  // 10倍→15倍→20倍，最多报警3次
+  pending_min_volume_usdt: 1000000,  // 未完结K线最小成交额 1M USDT
   // 通用配置
   lookback_bars: 10,             // 计算平均成交量的K线数
-  min_volume_usdt: 50000,        // 最小成交额（USDT）
+  min_volume_usdt: 180000,       // 完结K线最小成交额 180K USDT
 };
 
 /**
@@ -213,11 +214,8 @@ export class VolumeMonitorService {
     const price_change_pct = ((kline.close - kline.open) / kline.open) * 100;
     const direction: 'UP' | 'DOWN' = price_change_pct >= 0 ? 'UP' : 'DOWN';
 
-    // 检查最小成交额
+    // 计算成交额
     const volume_usdt = current_volume * kline.close;
-    if (volume_usdt < DEFAULT_CONFIG.min_volume_usdt) {
-      return null;
-    }
 
     let should_alert = false;
     let alert_level: number | undefined;
@@ -226,6 +224,11 @@ export class VolumeMonitorService {
     if (is_final) {
       // 完结K线：清理未完结记录
       this.pending_alerts.delete(pending_key);
+
+      // 检查完结K线最小成交额
+      if (volume_usdt < DEFAULT_CONFIG.min_volume_usdt) {
+        return null;
+      }
 
       // 完结K线条件：放量≥3x + 阳线 + 上影线<50%
       const is_volume_surge = volume_ratio >= DEFAULT_CONFIG.volume_multiplier;
@@ -236,6 +239,11 @@ export class VolumeMonitorService {
       should_alert = is_volume_surge && is_bullish && is_low_upper_shadow;
       is_important = volume_ratio >= DEFAULT_CONFIG.important_threshold;
     } else {
+      // 未完结K线：检查最小成交额 (1M USDT)
+      if (volume_usdt < DEFAULT_CONFIG.pending_min_volume_usdt) {
+        return null;
+      }
+
       // 未完结K线：检查是否满足10x阈值
       const current_level = this.get_pending_alert_level(volume_ratio);
 
