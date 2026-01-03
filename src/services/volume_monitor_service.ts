@@ -3,8 +3,8 @@
  *
  * 功能:
  * 1. 监控所有订阅币种的成交量变化
- * 2. 完结K线：放量≥3x + 阳线 + 上影线<50%，≥10x标记为重要
- * 3. 未完结K线：放量≥10x 递进报警（10x→15x→20x），都标记为重要
+ * 2. 完结K线：放量≥5x + 阳线 + 上影线<50%，≥10x标记为重要
+ * 3. 未完结K线：放量≥10x 递进报警（10x→15x→20x），上涨时上影线<50%，都标记为重要
  * 4. 支持黑名单过滤
  * 5. 启动时从数据库预加载历史K线，避免冷启动延迟
  */
@@ -242,6 +242,14 @@ export class VolumeMonitorService {
       if (current_level === 0) {
         // 不满足最低阈值 (10x)
         return null;
+      }
+
+      // 上涨时检查上影线限制
+      if (direction === 'UP') {
+        const upper_shadow_pct = this.calculate_upper_shadow_pct(kline);
+        if (upper_shadow_pct >= DEFAULT_CONFIG.max_upper_shadow_pct) {
+          return null;
+        }
       }
 
       // 检查是否已经在该级别报过警
