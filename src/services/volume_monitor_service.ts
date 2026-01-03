@@ -43,7 +43,7 @@ const DEFAULT_CONFIG = {
   pending_thresholds: [10, 15, 20] as const,  // 10倍→15倍→20倍，最多报警3次
   pending_min_volume_usdt: 180000,   // 未完结K线最小成交额 180K USDT
   // 通用配置
-  lookback_bars: 10,             // 计算平均成交量的K线数
+  lookback_bars: 20,             // 计算平均成交量的K线数
   min_volume_usdt: 180000,       // 完结K线最小成交额 180K USDT
 };
 
