@@ -41,7 +41,7 @@ const DEFAULT_CONFIG = {
   important_threshold: 10,       // 重要信号阈值 (≥10x)
   // 未完结K线配置 (递进报警阈值)
   pending_thresholds: [10, 15, 20] as const,  // 10倍→15倍→20倍，最多报警3次
-  pending_min_volume_usdt: 1000000,  // 未完结K线最小成交额 1M USDT
+  pending_min_volume_usdt: 180000,   // 未完结K线最小成交额 180K USDT
   // 通用配置
   lookback_bars: 10,             // 计算平均成交量的K线数
   min_volume_usdt: 180000,       // 完结K线最小成交额 180K USDT
