@@ -46,7 +46,22 @@ export class DatabaseConfig {
         : `redis://${redis_config.host}:${redis_config.port}/${redis_config.db}`;
 
       this.redis_client = createClient({
-        url: redisUrl
+        url: redisUrl,
+        socket: {
+          connectTimeout: 5000,       // 连接超时5秒
+          reconnectStrategy: (retries) => {
+            if (retries > 3) {
+              console.error('[Redis] Max retries reached, giving up');
+              return new Error('Max retries reached');
+            }
+            return Math.min(retries * 500, 3000);  // 重试间隔
+          }
+        }
+      });
+
+      // 错误处理
+      this.redis_client.on('error', (err) => {
+        console.error('[Redis] Connection error:', err.message);
       });
 
       await this.redis_client.connect();
@@ -68,12 +83,22 @@ export class DatabaseConfig {
 
   static async close_connections(): Promise<void> {
     if (this.mysql_pool) {
-      await this.mysql_pool.end();
+      try {
+        await this.mysql_pool.end();
+      } catch (err) {
+        console.error('[MySQL] Error closing pool:', err);
+      }
       this.mysql_pool = null;
     }
 
     if (this.redis_client) {
-      await this.redis_client.quit();
+      try {
+        if (this.redis_client.isOpen) {
+          await this.redis_client.quit();
+        }
+      } catch (err) {
+        console.error('[Redis] Error closing connection:', err);
+      }
       this.redis_client = null;
     }
   }
