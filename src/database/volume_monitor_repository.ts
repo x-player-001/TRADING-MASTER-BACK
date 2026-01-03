@@ -277,13 +277,24 @@ export class VolumeMonitorRepository extends BaseRepository {
    */
   async get_alerts(options: {
     symbol?: string;
+    date?: string;  // 格式: YYYY-MM-DD
     start_time?: number;
     end_time?: number;
     min_ratio?: number;
     direction?: 'UP' | 'DOWN';
     limit?: number;
-  } = {}): Promise<VolumeAlert[]> {
+  } = {}): Promise<(VolumeAlert & { daily_alert_index?: number })[]> {
     return this.execute_with_connection(async (conn) => {
+      // 如果传入了日期参数，计算该日期的开始和结束时间戳
+      let date_start_time: number | undefined;
+      let date_end_time: number | undefined;
+
+      if (options.date) {
+        const date = new Date(options.date + 'T00:00:00+08:00'); // 北京时间
+        date_start_time = date.getTime();
+        date_end_time = date_start_time + 24 * 60 * 60 * 1000 - 1;
+      }
+
       let sql = 'SELECT * FROM volume_alerts WHERE 1=1';
       const params: any[] = [];
 
@@ -291,14 +302,24 @@ export class VolumeMonitorRepository extends BaseRepository {
         sql += ' AND symbol = ?';
         params.push(options.symbol.toUpperCase());
       }
-      if (options.start_time) {
+
+      // 优先使用 date 参数，否则使用 start_time/end_time
+      if (date_start_time !== undefined) {
+        sql += ' AND kline_time >= ?';
+        params.push(date_start_time);
+      } else if (options.start_time) {
         sql += ' AND kline_time >= ?';
         params.push(options.start_time);
       }
-      if (options.end_time) {
+
+      if (date_end_time !== undefined) {
+        sql += ' AND kline_time <= ?';
+        params.push(date_end_time);
+      } else if (options.end_time) {
         sql += ' AND kline_time <= ?';
         params.push(options.end_time);
       }
+
       if (options.min_ratio) {
         sql += ' AND volume_ratio >= ?';
         params.push(options.min_ratio);
@@ -308,15 +329,31 @@ export class VolumeMonitorRepository extends BaseRepository {
         params.push(options.direction);
       }
 
-      sql += ' ORDER BY created_at DESC';
-
-      if (options.limit) {
-        sql += ' LIMIT ?';
-        params.push(options.limit);
-      }
+      sql += ' ORDER BY kline_time ASC'; // 按时间升序，便于计算第几次报警
 
       const [rows] = await conn.execute<RowDataPacket[]>(sql, params);
-      return rows.map(row => this.map_to_alert(row));
+      const alerts = rows.map(row => this.map_to_alert(row));
+
+      // 计算每个币种当天的第几次报警
+      const symbol_count_map = new Map<string, number>();
+      const alerts_with_index = alerts.map(alert => {
+        const count = (symbol_count_map.get(alert.symbol) || 0) + 1;
+        symbol_count_map.set(alert.symbol, count);
+        return {
+          ...alert,
+          daily_alert_index: count
+        };
+      });
+
+      // 按时间倒序返回（最新的在前）
+      alerts_with_index.reverse();
+
+      // 应用 limit
+      if (options.limit && alerts_with_index.length > options.limit) {
+        return alerts_with_index.slice(0, options.limit);
+      }
+
+      return alerts_with_index;
     });
   }
 

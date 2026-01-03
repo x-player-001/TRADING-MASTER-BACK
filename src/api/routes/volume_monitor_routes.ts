@@ -256,11 +256,24 @@ router.post('/symbols/batch', async (req: Request, res: Response): Promise<void>
 /**
  * GET /api/volume-monitor/alerts
  * 查询放量报警记录
+ *
+ * 查询参数:
+ * - date: 日期 (格式: YYYY-MM-DD)，如 2026-01-03
+ * - symbol: 币种符号
+ * - start_time: 开始时间戳 (ms)
+ * - end_time: 结束时间戳 (ms)
+ * - min_ratio: 最小放量倍数
+ * - direction: 方向 (UP/DOWN)
+ * - limit: 返回数量限制
+ *
+ * 返回字段:
+ * - daily_alert_index: 该币种当天第几次报警
  */
 router.get('/alerts', async (req: Request, res: Response) => {
   try {
     const {
       symbol,
+      date,
       start_time,
       end_time,
       min_ratio,
@@ -271,6 +284,7 @@ router.get('/alerts', async (req: Request, res: Response) => {
     const repo = get_repository();
     const alerts = await repo.get_alerts({
       symbol: symbol as string,
+      date: date as string,  // 格式: YYYY-MM-DD
       start_time: start_time ? parseInt(start_time as string) : undefined,
       end_time: end_time ? parseInt(end_time as string) : undefined,
       min_ratio: min_ratio ? parseFloat(min_ratio as string) : undefined,
@@ -278,10 +292,29 @@ router.get('/alerts', async (req: Request, res: Response) => {
       limit: parseInt(limit as string)
     });
 
+    // 格式化返回数据
+    const formatted_alerts = alerts.map(alert => ({
+      symbol: alert.symbol.replace('USDT', ''),
+      kline_time: alert.kline_time,
+      current_volume: alert.current_volume,
+      avg_volume: alert.avg_volume,
+      volume_ratio: parseFloat(alert.volume_ratio.toFixed(2)),
+      price_change_pct: parseFloat(alert.price_change_pct.toFixed(2)),
+      direction: alert.direction,
+      current_price: alert.current_price,
+      daily_alert_index: alert.daily_alert_index,
+      created_at: alert.created_at
+    }));
+
     res.json({
       success: true,
-      data: alerts,
-      count: alerts.length
+      data: formatted_alerts,
+      count: formatted_alerts.length,
+      params: {
+        date: date || null,
+        symbol: symbol || null,
+        limit: parseInt(limit as string)
+      }
     });
   } catch (error: any) {
     logger.error('[VolumeMonitor API] Get alerts failed:', error);

@@ -182,7 +182,15 @@ export class OIRoutes {
   }
 
   /**
-   * 获取最近50条异动记录
+   * 获取最近异动记录
+   *
+   * 查询参数:
+   * - date: 日期 (格式: YYYY-MM-DD)
+   * - symbol: 币种符号
+   * - severity: 严重程度 (low/medium/high)
+   *
+   * 返回字段:
+   * - daily_alert_index: 该币种当天第几次报警
    */
   private async get_recent_anomalies(req: Request, res: Response): Promise<void> {
     try {
@@ -193,14 +201,15 @@ export class OIRoutes {
         order: 'DESC'
       };
 
-      // 如果传入了日期，计算该日期的开始和结束时间
+      // 如果传入了日期，计算该日期的开始和结束时间（使用北京时间）
       if (params.date) {
-        const date = new Date(params.date);
-        params.start_time = new Date(date.getFullYear(), date.getMonth(), date.getDate(), 0, 0, 0);
-        params.end_time = new Date(date.getFullYear(), date.getMonth(), date.getDate(), 23, 59, 59, 999);
+        const date = new Date(params.date + 'T00:00:00+08:00');
+        params.start_time = date;
+        params.end_time = new Date(date.getTime() + 24 * 60 * 60 * 1000 - 1);
       }
 
-      const anomalies = await this.oi_repository.get_anomaly_records(params);
+      // 传入 include_daily_index = true 来获取每个币种当天的第几次报警
+      const anomalies = await this.oi_repository.get_anomaly_records(params, true);
 
       // 格式化数据，添加显示友好的字段
       const formatted_data = anomalies.map(anomaly => ({
@@ -214,6 +223,8 @@ export class OIRoutes {
         anomaly_type: anomaly.anomaly_type,
         anomaly_time: anomaly.anomaly_time,
         threshold_value: anomaly.threshold_value,
+        // 当天第几次报警
+        daily_alert_index: anomaly.daily_alert_index,
         // 价格变化字段
         price_before: anomaly.price_before,
         price_after: anomaly.price_after,

@@ -772,10 +772,12 @@ export class OIRepository {
 
   /**
    * 查询异动记录
+   * @param params 查询参数
+   * @param include_daily_index 是否计算每个币种当天的第几次报警
    */
-  async get_anomaly_records(params: OIAnomalyQueryParams): Promise<OIAnomalyRecord[]> {
-    // 1. 尝试从缓存获取数据
-    if (this.cache_manager) {
+  async get_anomaly_records(params: OIAnomalyQueryParams, include_daily_index: boolean = false): Promise<(OIAnomalyRecord & { daily_alert_index?: number })[]> {
+    // 1. 尝试从缓存获取数据（仅在不需要计算daily_index时使用缓存）
+    if (this.cache_manager && !include_daily_index) {
       const cached_anomalies = await this.cache_manager.get_anomalies(params);
       if (cached_anomalies) {
         logger.debug(`[OIRepository] Using cached anomalies for params: ${JSON.stringify(params)}`);
@@ -813,12 +815,34 @@ export class OIRepository {
         conditions.push(params.end_time);
       }
 
-      sql += ` ORDER BY anomaly_time ${params.order || 'DESC'}`;
+      // 如果需要计算daily_index，先按时间升序获取
+      const query_order = include_daily_index ? 'ASC' : (params.order || 'DESC');
+      sql += ` ORDER BY anomaly_time ${query_order}`;
 
       const [rows] = await conn.execute<RowDataPacket[]>(sql, conditions);
-      const anomalies = rows as OIAnomalyRecord[];
+      let anomalies = rows as OIAnomalyRecord[];
 
-      // 3. 将查询结果存入缓存
+      // 3. 如果需要计算daily_index
+      if (include_daily_index) {
+        const symbol_count_map = new Map<string, number>();
+        const anomalies_with_index = anomalies.map(anomaly => {
+          const count = (symbol_count_map.get(anomaly.symbol) || 0) + 1;
+          symbol_count_map.set(anomaly.symbol, count);
+          return {
+            ...anomaly,
+            daily_alert_index: count
+          };
+        });
+
+        // 如果原始请求是DESC，需要反转结果
+        if (params.order === 'DESC' || !params.order) {
+          anomalies_with_index.reverse();
+        }
+
+        return anomalies_with_index;
+      }
+
+      // 4. 将查询结果存入缓存
       if (this.cache_manager && anomalies.length > 0) {
         await this.cache_manager.cache_anomalies(params, anomalies);
         logger.debug(`[OIRepository] Cached anomalies for params: ${JSON.stringify(params)}, count: ${anomalies.length}`);
