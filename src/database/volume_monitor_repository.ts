@@ -37,6 +37,7 @@ export interface VolumeAlert {
   price_change_pct: number;     // K线涨跌幅
   direction: 'UP' | 'DOWN';     // 放量方向
   current_price: number;
+  is_important: boolean;        // 是否为重要信号 (≥10x)
   created_at?: Date;
 }
 
@@ -75,18 +76,35 @@ export class VolumeMonitorRepository extends BaseRepository {
           price_change_pct DECIMAL(10,4) NOT NULL,
           direction ENUM('UP', 'DOWN') NOT NULL,
           current_price DECIMAL(20,8) NOT NULL,
+          is_important TINYINT(1) DEFAULT 0 COMMENT '是否为重要信号 (>=10x)',
           created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
 
           UNIQUE KEY uk_symbol_time (symbol, kline_time),
           INDEX idx_created_at (created_at),
           INDEX idx_volume_ratio (volume_ratio),
-          INDEX idx_direction (direction)
+          INDEX idx_direction (direction),
+          INDEX idx_is_important (is_important)
         ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COMMENT='放量报警记录'
+      `;
+
+      // 检查并添加 is_important 字段（兼容旧表）
+      const add_is_important_column = `
+        ALTER TABLE volume_alerts
+        ADD COLUMN IF NOT EXISTS is_important TINYINT(1) DEFAULT 0
+        COMMENT '是否为重要信号 (>=10x)'
       `;
 
       try {
         await conn.execute(create_symbols_table);
         await conn.execute(create_alerts_table);
+
+        // 尝试添加 is_important 字段（如果表已存在但没有此字段）
+        try {
+          await conn.execute(add_is_important_column);
+        } catch {
+          // 字段可能已存在，忽略错误
+        }
+
         logger.info('Volume monitor tables initialized successfully');
       } catch (error) {
         logger.error('Failed to initialize volume monitor tables', error);
@@ -255,8 +273,8 @@ export class VolumeMonitorRepository extends BaseRepository {
       const [result] = await conn.execute<ResultSetHeader>(
         `INSERT IGNORE INTO volume_alerts
          (symbol, kline_time, current_volume, avg_volume, volume_ratio,
-          price_change_pct, direction, current_price)
-         VALUES (?, ?, ?, ?, ?, ?, ?, ?)`,
+          price_change_pct, direction, current_price, is_important)
+         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)`,
         [
           alert.symbol,
           alert.kline_time,
@@ -265,7 +283,8 @@ export class VolumeMonitorRepository extends BaseRepository {
           alert.volume_ratio,
           alert.price_change_pct,
           alert.direction,
-          alert.current_price
+          alert.current_price,
+          alert.is_important ? 1 : 0
         ]
       );
       return result.insertId;
@@ -410,6 +429,7 @@ export class VolumeMonitorRepository extends BaseRepository {
       price_change_pct: parseFloat(row.price_change_pct),
       direction: row.direction,
       current_price: parseFloat(row.current_price),
+      is_important: row.is_important === 1,
       created_at: row.created_at
     };
   }

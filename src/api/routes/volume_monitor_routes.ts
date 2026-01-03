@@ -303,6 +303,7 @@ router.get('/alerts', async (req: Request, res: Response) => {
       direction: alert.direction,
       current_price: alert.current_price,
       daily_alert_index: alert.daily_alert_index,
+      is_important: alert.is_important,  // 从数据库读取
       created_at: alert.created_at
     }));
 

@@ -4,7 +4,9 @@
  * 功能:
  * 1. WebSocket 订阅所有合约的 5m K线
  * 2. 5m K线聚合为 15m/1h/4h 并存储
- * 3. 监控所有币种: 放量≥3x + 阳线 + 上影线≤20% 时报警
+ * 3. 监控所有币种成交量:
+ *    - 完结K线：放量≥3x + 阳线 + 上影线<50%，≥10x标记为重要
+ *    - 未完结K线：放量≥10x 递进报警（10x→15x→20x），都标记为重要
  *
  * 注意: API 接口已集成到主服务 (api_server.ts)
  * - 成交量监控: /api/volume-monitor/*
@@ -108,29 +110,29 @@ async function process_kline(symbol: string, kline: any, is_final: boolean): Pro
   stats.klines_received++;
   stats.last_kline_time = kline_data.open_time;
 
-  // 只处理完结的K线
+  // 1. 检查成交量激增（完结和未完结K线都检查）
+  const volume_result = await volume_monitor_service.process_kline(kline_data, is_final);
+  if (volume_result && volume_result.is_surge) {
+    stats.volume_alerts++;
+    print_volume_alert(volume_result);
+  }
+
+  // 只处理完结的K线进行存储和聚合
   if (!is_final) {
     return;
   }
 
-  // 1. 保存5m K线到数据库
+  // 2. 保存5m K线到数据库
   kline_5m_repository.add_kline(kline_data).catch(err => {
     console.error(`Failed to save 5m kline for ${symbol}:`, err.message);
   });
 
-  // 2. 聚合K线
+  // 3. 聚合K线
   const aggregated = kline_aggregator.process_5m_kline(kline_data);
   for (const agg of aggregated) {
     if (agg.interval === '15m') stats.aggregated_15m++;
     else if (agg.interval === '1h') stats.aggregated_1h++;
     else if (agg.interval === '4h') stats.aggregated_4h++;
-  }
-
-  // 3. 检查成交量激增（只检查监控列表中的币种）
-  const volume_result = await volume_monitor_service.process_kline(kline_data);
-  if (volume_result && volume_result.is_surge) {
-    stats.volume_alerts++;
-    print_volume_alert(volume_result);
   }
 }
 
@@ -140,13 +142,19 @@ function print_volume_alert(result: VolumeCheckResult): void {
   const change_str = result.price_change_pct >= 0
     ? `+${result.price_change_pct.toFixed(2)}%`
     : `${result.price_change_pct.toFixed(2)}%`;
-  const shadow_str = result.upper_shadow_pct !== undefined
-    ? ` 上影线${result.upper_shadow_pct.toFixed(0)}%`
-    : '';
 
-  console.log(`\n🔊 [${time_str}] ${result.symbol} 放量阳线 🟢`);
+  // 根据涨跌方向显示不同颜色
+  const direction_emoji = result.direction === 'UP' ? '🟢' : '🔴';
+  const direction_text = result.direction === 'UP' ? '放量上涨' : '放量下跌';
+
+  // 显示报警级别和是否完结
+  const level_str = result.alert_level ? `Lv${result.alert_level}` : '';
+  const final_str = result.is_final ? '✅' : '⏳';
+  const important_str = result.is_important ? '⭐ 重要' : '';
+
+  console.log(`\n🔊 [${time_str}] ${result.symbol} ${direction_text} ${direction_emoji} ${final_str} ${level_str} ${important_str}`);
   console.log(`   📊 成交量: ${result.current_volume.toFixed(2)} (${result.volume_ratio.toFixed(1)}x)`);
-  console.log(`   💰 价格: ${result.current_price.toFixed(4)} (${change_str}${shadow_str})`);
+  console.log(`   💰 价格: ${result.current_price.toFixed(4)} (${change_str})`);
 }
 
 // ==================== WebSocket ====================
@@ -221,14 +229,20 @@ async function print_status(): Promise<void> {
     // 忽略错误
   }
 
+  // 清理过期的未完结报警记录
+  volume_monitor_service.cleanup_pending_alerts();
+
+  const pending_thresholds = monitor_stats.config.pending_thresholds.join('x/') + 'x';
+
   console.log(`\n📊 [${get_current_time()}] 状态报告`);
   console.log(`   运行时间: ${uptime} 分钟`);
   console.log(`   订阅币种: ${stats.symbols_count}`);
   console.log(`   缓存币种: ${monitor_stats.cached_symbols} (黑名单: ${monitor_stats.blacklist_count})`);
+  console.log(`   待处理报警: ${monitor_stats.pending_alerts_count}`);
   console.log(`   K线接收: ${stats.klines_received}`);
   console.log(`   K线入库: ${db_stats.today_count} (${db_stats.today_symbols}币种, 缓冲${db_stats.buffer_size})`);
   console.log(`   聚合K线: 15m=${stats.aggregated_15m}, 1h=${stats.aggregated_1h}, 4h=${stats.aggregated_4h}`);
-  console.log(`   放量报警: ${stats.volume_alerts} (≥${monitor_stats.config.volume_multiplier}x 阳线 上影≤${monitor_stats.config.max_upper_shadow_pct}%)`);
+  console.log(`   放量报警: ${stats.volume_alerts} (完结≥${monitor_stats.config.volume_multiplier}x, 未完结≥${pending_thresholds})`);
 }
 
 // ==================== 主函数 ====================
@@ -240,7 +254,9 @@ async function main() {
   console.log('\n📋 功能说明:');
   console.log(`   - K线周期: ${CONFIG.interval}`);
   console.log(`   - K线聚合: 5m → 15m/1h/4h`);
-  console.log(`   - 成交量监控: 所有币种 (放量≥3x + 阳线 + 上影线≤50%)`);
+  console.log('   - 成交量监控:');
+  console.log('     · 完结K线: 放量≥3x + 阳线 + 上影线<50%，≥10x标记⭐重要');
+  console.log('     · 未完结K线: 放量≥10x 递进报警 10x→15x→20x，都标记⭐重要');
   console.log('   - 启动时从数据库预加载历史K线（无冷启动延迟）');
   console.log('   - API已集成到主服务 (端口3000)');
   console.log('═'.repeat(70));

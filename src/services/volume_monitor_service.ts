@@ -3,9 +3,10 @@
  *
  * 功能:
  * 1. 监控所有订阅币种的成交量变化
- * 2. 放量3倍以上 + 阳线 + 上影线不超过50% 时报警
- * 3. 支持黑名单过滤
- * 4. 启动时从数据库预加载历史K线，避免冷启动延迟
+ * 2. 完结K线：放量≥3x + 阳线 + 上影线<50%，≥10x标记为重要
+ * 3. 未完结K线：放量≥10x 递进报警（10x→15x→20x），都标记为重要
+ * 4. 支持黑名单过滤
+ * 5. 启动时从数据库预加载历史K线，避免冷启动延迟
  */
 
 import { Kline5mData, Kline5mRepository } from '@/database/kline_5m_repository';
@@ -25,17 +26,24 @@ export interface VolumeCheckResult {
   direction: 'UP' | 'DOWN';
   current_price: number;
   kline_time: number;
-  upper_shadow_pct?: number;   // 上影线比例
+  is_final: boolean;          // 是否为完结K线
+  alert_level?: number;       // 报警级别 (未完结: 1=10x, 2=15x, 3=20x)
+  is_important: boolean;      // 是否为重要信号 (未完结K线或完结K线≥10x)
 }
 
 /**
  * 默认监控配置
  */
 const DEFAULT_CONFIG = {
-  volume_multiplier: 3.0,        // 放量倍数阈值
+  // 完结K线配置
+  volume_multiplier: 5.0,        // 放量倍数阈值
+  max_upper_shadow_pct: 50,      // 上影线最大比例 (%)
+  important_threshold: 10,       // 重要信号阈值 (≥10x)
+  // 未完结K线配置 (递进报警阈值)
+  pending_thresholds: [10, 15, 20] as const,  // 10倍→15倍→20倍，最多报警3次
+  // 通用配置
   lookback_bars: 10,             // 计算平均成交量的K线数
   min_volume_usdt: 50000,        // 最小成交额（USDT）
-  max_upper_shadow_pct: 50,      // 上影线最大比例 (%)
 };
 
 /**
@@ -45,6 +53,16 @@ const BLACKLIST: string[] = [
   'USDCUSDT',
   'FDUSDUSDT',
 ];
+
+/**
+ * 未完结K线报警记录
+ * key: symbol_openTime
+ * value: 已触发的最高报警级别 (1=3x, 2=5x, 3=10x)
+ */
+interface PendingAlertRecord {
+  alert_level: number;       // 已触发的最高级别
+  last_ratio: number;        // 上次报警时的倍数
+}
 
 export class VolumeMonitorService {
   private repository: VolumeMonitorRepository;
@@ -58,6 +76,9 @@ export class VolumeMonitorService {
 
   // 黑名单
   private blacklist: Set<string> = new Set(BLACKLIST);
+
+  // 未完结K线报警记录: "symbol_openTime" -> PendingAlertRecord
+  private pending_alerts: Map<string, PendingAlertRecord> = new Map();
 
   constructor() {
     this.repository = new VolumeMonitorRepository();
@@ -80,6 +101,7 @@ export class VolumeMonitorService {
   stop(): void {
     // 清理缓存
     this.kline_cache.clear();
+    this.pending_alerts.clear();
   }
 
   /**
@@ -126,13 +148,30 @@ export class VolumeMonitorService {
   }
 
   /**
+   * 获取未完结K线的报警级别
+   * @returns 报警级别 (1=10x, 2=15x, 3=20x)，如果不满足任何阈值返回0
+   */
+  private get_pending_alert_level(volume_ratio: number): number {
+    const thresholds = DEFAULT_CONFIG.pending_thresholds;
+    for (let i = thresholds.length - 1; i >= 0; i--) {
+      if (volume_ratio >= thresholds[i]) {
+        return i + 1;  // 1, 2, 3
+      }
+    }
+    return 0;
+  }
+
+  /**
    * 处理K线数据，检测成交量激增
-   * 条件：放量3倍以上 + 阳线 + 上影线不超过20%
-   * @param kline 完结的K线数据
+   * - 完结K线：放量≥3x + 阳线 + 上影线<50%，≥10x标记为重要
+   * - 未完结K线：放量≥10x 递进报警（10x→15x→20x），都标记为重要
+   * @param kline K线数据
+   * @param is_final 是否为完结K线
    * @returns 如果触发报警，返回检测结果
    */
-  async process_kline(kline: Kline5mData): Promise<VolumeCheckResult | null> {
+  async process_kline(kline: Kline5mData, is_final: boolean = true): Promise<VolumeCheckResult | null> {
     const symbol = kline.symbol;
+    const pending_key = `${symbol}_${kline.open_time}`;
 
     // 黑名单过滤
     if (this.blacklist.has(symbol)) {
@@ -174,28 +213,70 @@ export class VolumeMonitorService {
     const price_change_pct = ((kline.close - kline.open) / kline.open) * 100;
     const direction: 'UP' | 'DOWN' = price_change_pct >= 0 ? 'UP' : 'DOWN';
 
-    // 计算上影线比例
-    const upper_shadow_pct = this.calculate_upper_shadow_pct(kline);
-
     // 检查最小成交额
     const volume_usdt = current_volume * kline.close;
     if (volume_usdt < DEFAULT_CONFIG.min_volume_usdt) {
       return null;
     }
 
-    // 报警条件:
-    // 1. 放量3倍以上
-    // 2. 阳线 (收盘价 > 开盘价)
-    // 3. 上影线不超过20%
-    const is_volume_surge = volume_ratio >= DEFAULT_CONFIG.volume_multiplier;
-    const is_bullish = kline.close > kline.open;
-    const is_low_upper_shadow = upper_shadow_pct <= DEFAULT_CONFIG.max_upper_shadow_pct;
+    let should_alert = false;
+    let alert_level: number | undefined;
+    let is_important = false;
 
-    const is_surge = is_volume_surge && is_bullish && is_low_upper_shadow;
+    if (is_final) {
+      // 完结K线：清理未完结记录
+      this.pending_alerts.delete(pending_key);
+
+      // 完结K线条件：放量≥3x + 阳线 + 上影线<50%
+      const is_volume_surge = volume_ratio >= DEFAULT_CONFIG.volume_multiplier;
+      const is_bullish = kline.close > kline.open;
+      const upper_shadow_pct = this.calculate_upper_shadow_pct(kline);
+      const is_low_upper_shadow = upper_shadow_pct < DEFAULT_CONFIG.max_upper_shadow_pct;
+
+      should_alert = is_volume_surge && is_bullish && is_low_upper_shadow;
+      is_important = volume_ratio >= DEFAULT_CONFIG.important_threshold;
+    } else {
+      // 未完结K线：检查是否满足10x阈值
+      const current_level = this.get_pending_alert_level(volume_ratio);
+
+      if (current_level === 0) {
+        // 不满足最低阈值 (10x)
+        return null;
+      }
+
+      // 检查是否已经在该级别报过警
+      const existing = this.pending_alerts.get(pending_key);
+
+      if (!existing) {
+        // 首次报警
+        should_alert = true;
+        alert_level = current_level;
+        this.pending_alerts.set(pending_key, {
+          alert_level: current_level,
+          last_ratio: volume_ratio
+        });
+      } else if (current_level > existing.alert_level) {
+        // 升级报警（从10x升到15x，或从15x升到20x）
+        should_alert = true;
+        alert_level = current_level;
+        this.pending_alerts.set(pending_key, {
+          alert_level: current_level,
+          last_ratio: volume_ratio
+        });
+      }
+      // 如果 current_level <= existing.alert_level，不再报警
+
+      // 未完结K线报警都标记为重要
+      is_important = true;
+    }
+
+    if (!should_alert) {
+      return null;
+    }
 
     const result: VolumeCheckResult = {
       symbol,
-      is_surge,
+      is_surge: true,
       current_volume,
       avg_volume,
       volume_ratio,
@@ -203,29 +284,54 @@ export class VolumeMonitorService {
       direction,
       current_price: kline.close,
       kline_time: kline.open_time,
-      upper_shadow_pct
+      is_final,
+      alert_level,
+      is_important
     };
 
-    // 如果触发报警，保存到数据库
-    if (is_surge) {
-      try {
-        await this.repository.save_alert({
-          symbol,
-          kline_time: kline.open_time,
-          current_volume,
-          avg_volume,
-          volume_ratio,
-          price_change_pct,
-          direction,
-          current_price: kline.close
-        });
-      } catch (error) {
-        // 可能是重复报警，忽略
-        logger.debug(`[VolumeMonitor] Alert already exists or save failed: ${symbol}`);
+    // 保存报警到数据库
+    try {
+      await this.repository.save_alert({
+        symbol,
+        kline_time: kline.open_time,
+        current_volume,
+        avg_volume,
+        volume_ratio,
+        price_change_pct,
+        direction,
+        current_price: kline.close,
+        is_important
+      });
+    } catch (error) {
+      // 可能是重复报警，忽略（对于完结K线的重复检测）
+      logger.debug(`[VolumeMonitor] Alert save failed or duplicate: ${symbol}`);
+    }
+
+    return result;
+  }
+
+  /**
+   * 清理过期的未完结K线报警记录
+   * 建议每5分钟调用一次，清理超过10分钟的记录
+   */
+  cleanup_pending_alerts(): number {
+    const now = Date.now();
+    const max_age = 10 * 60 * 1000; // 10分钟
+    let cleaned = 0;
+
+    for (const [key] of this.pending_alerts) {
+      const parts = key.split('_');
+      const open_time = parseInt(parts[parts.length - 1]);
+      if (now - open_time > max_age) {
+        this.pending_alerts.delete(key);
+        cleaned++;
       }
     }
 
-    return is_surge ? result : null;
+    if (cleaned > 0) {
+      logger.debug(`[VolumeMonitor] Cleaned ${cleaned} expired pending alert records`);
+    }
+    return cleaned;
   }
 
   /**
@@ -309,11 +415,13 @@ export class VolumeMonitorService {
   get_statistics(): {
     cached_symbols: number;
     blacklist_count: number;
+    pending_alerts_count: number;
     config: typeof DEFAULT_CONFIG;
   } {
     return {
       cached_symbols: this.kline_cache.size,
       blacklist_count: this.blacklist.size,
+      pending_alerts_count: this.pending_alerts.size,
       config: DEFAULT_CONFIG
     };
   }
