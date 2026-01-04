@@ -6,6 +6,7 @@ import { MarketSentimentManager } from './market_sentiment_manager';
 import { TradingSystem } from '../trading/trading_system';
 import { SignalGenerator } from '../trading/signal_generator';
 import { TradingMode } from '../types/trading_types';
+import { TelegramService, MessagePriority } from './telegram_service';
 import { logger } from '../utils/logger';
 import {
   ContractSymbolConfig,
@@ -79,10 +80,17 @@ export class OIPollingService {
     medium: 15   // 默认15%
   };
 
+  // Telegram 推送服务
+  private telegram: TelegramService;
+
+  // OI变化推送阈值
+  private readonly OI_PUSH_THRESHOLD = 8;  // OI变化>=8%时推送
+
   constructor() {
     this.binance_api = new BinanceFuturesAPI(this.config.max_concurrent_requests);
     this.oi_repository = new OIRepository();
     this.signal_generator = new SignalGenerator();
+    this.telegram = TelegramService.getInstance();
   }
 
   /**
@@ -726,6 +734,11 @@ export class OIPollingService {
           );
         }
 
+        // 发送 Telegram 推送（OI变化>=8%时推送）
+        if (Math.abs(anomaly.percent_change) >= this.OI_PUSH_THRESHOLD) {
+          this.send_telegram_oi_alert(anomaly);
+        }
+
         // 如果交易系统已启用，处理该异动
         if (this.trading_system && saved_record) {
           try {
@@ -835,6 +848,29 @@ export class OIPollingService {
 
     logger.info('[OIPolling] Manual poll triggered');
     await this.poll();
+  }
+
+  /**
+   * 发送 OI 异动 Telegram 报警
+   */
+  private send_telegram_oi_alert(anomaly: OIAnomalyDetectionResult): void {
+    const direction = anomaly.percent_change > 0 ? 'UP' : 'DOWN';
+    const direction_text = anomaly.percent_change > 0 ? 'OI增加' : 'OI减少';
+    const price_info = anomaly.price_change_percent !== undefined
+      ? `价格${anomaly.price_change_percent >= 0 ? '+' : ''}${anomaly.price_change_percent.toFixed(2)}%`
+      : '';
+
+    this.telegram.send_alert({
+      symbol: anomaly.symbol,
+      message: `${direction_text} ${Math.abs(anomaly.percent_change).toFixed(2)}% [${anomaly.period_minutes}分钟]`,
+      price: anomaly.price_after,
+      change_pct: anomaly.price_change_percent,
+      direction,
+      is_important: anomaly.severity === 'high',
+      extra_info: price_info ? `${price_info} | 严重程度: ${anomaly.severity}` : `严重程度: ${anomaly.severity}`
+    }, MessagePriority.HIGH).catch(err => {
+      logger.debug(`[OIPolling] Telegram send failed: ${err.message}`);
+    });
   }
 
   /**

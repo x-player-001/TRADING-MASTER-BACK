@@ -4,13 +4,16 @@
  * 功能:
  * 1. 监控所有订阅币种的成交量变化
  * 2. 完结K线：放量≥5x + 阳线 + 上影线<50%，≥10x标记为重要
- * 3. 未完结K线：放量≥10x + 成交额≥1M，递进报警（10x→15x→20x），上涨时上影线<50%，都标记为重要
+ * 3. 未完结K线：
+ *    - 上涨：放量≥10x + 成交额≥180K，递进报警（10x→15x→20x），上影线<50%，都标记为重要
+ *    - 下跌：放量≥20x + 成交额≥180K，无递进报警，标记为重要
  * 4. 支持黑名单过滤
  * 5. 启动时从数据库预加载历史K线，避免冷启动延迟
  */
 
 import { Kline5mData, Kline5mRepository } from '@/database/kline_5m_repository';
 import { VolumeMonitorRepository, VolumeAlert } from '@/database/volume_monitor_repository';
+import { TelegramService, MessagePriority } from '@/services/telegram_service';
 import { logger } from '@/utils/logger';
 
 /**
@@ -40,7 +43,8 @@ const DEFAULT_CONFIG = {
   max_upper_shadow_pct: 50,      // 上影线最大比例 (%)
   important_threshold: 10,       // 重要信号阈值 (≥10x)
   // 未完结K线配置 (递进报警阈值)
-  pending_thresholds: [10, 15, 20] as const,  // 10倍→15倍→20倍，最多报警3次
+  pending_thresholds: [10, 15, 20] as const,  // 上涨时: 10倍→15倍→20倍，最多报警3次
+  pending_down_threshold: 20,    // 下跌时: 固定20倍门槛，无递进报警
   pending_min_volume_usdt: 180000,   // 未完结K线最小成交额 180K USDT
   // 通用配置
   lookback_bars: 20,             // 计算平均成交量的K线数
@@ -81,9 +85,13 @@ export class VolumeMonitorService {
   // 未完结K线报警记录: "symbol_openTime" -> PendingAlertRecord
   private pending_alerts: Map<string, PendingAlertRecord> = new Map();
 
+  // Telegram 推送服务
+  private telegram: TelegramService;
+
   constructor() {
     this.repository = new VolumeMonitorRepository();
     this.kline_repository = new Kline5mRepository();
+    this.telegram = TelegramService.getInstance();
   }
 
   /**
@@ -239,48 +247,65 @@ export class VolumeMonitorService {
       should_alert = is_volume_surge && is_bullish && is_low_upper_shadow;
       is_important = volume_ratio >= DEFAULT_CONFIG.important_threshold;
     } else {
-      // 未完结K线：检查最小成交额 (1M USDT)
+      // 未完结K线：检查最小成交额
       if (volume_usdt < DEFAULT_CONFIG.pending_min_volume_usdt) {
         return null;
       }
 
-      // 未完结K线：检查是否满足10x阈值
-      const current_level = this.get_pending_alert_level(volume_ratio);
-
-      if (current_level === 0) {
-        // 不满足最低阈值 (10x)
-        return null;
-      }
-
-      // 上涨时检查上影线限制
       if (direction === 'UP') {
+        // 上涨：递进报警 10x→15x→20x，检查上影线
+        const current_level = this.get_pending_alert_level(volume_ratio);
+
+        if (current_level === 0) {
+          // 不满足最低阈值 (10x)
+          return null;
+        }
+
+        // 上涨时检查上影线限制
         const upper_shadow_pct = this.calculate_upper_shadow_pct(kline);
         if (upper_shadow_pct >= DEFAULT_CONFIG.max_upper_shadow_pct) {
           return null;
         }
-      }
 
-      // 检查是否已经在该级别报过警
-      const existing = this.pending_alerts.get(pending_key);
+        // 检查是否已经在该级别报过警
+        const existing = this.pending_alerts.get(pending_key);
 
-      if (!existing) {
-        // 首次报警
-        should_alert = true;
-        alert_level = current_level;
-        this.pending_alerts.set(pending_key, {
-          alert_level: current_level,
-          last_ratio: volume_ratio
-        });
-      } else if (current_level > existing.alert_level) {
-        // 升级报警（从10x升到15x，或从15x升到20x）
-        should_alert = true;
-        alert_level = current_level;
-        this.pending_alerts.set(pending_key, {
-          alert_level: current_level,
-          last_ratio: volume_ratio
-        });
+        if (!existing) {
+          // 首次报警
+          should_alert = true;
+          alert_level = current_level;
+          this.pending_alerts.set(pending_key, {
+            alert_level: current_level,
+            last_ratio: volume_ratio
+          });
+        } else if (current_level > existing.alert_level) {
+          // 升级报警（从10x升到15x，或从15x升到20x）
+          should_alert = true;
+          alert_level = current_level;
+          this.pending_alerts.set(pending_key, {
+            alert_level: current_level,
+            last_ratio: volume_ratio
+          });
+        }
+        // 如果 current_level <= existing.alert_level，不再报警
+      } else {
+        // 下跌：固定20x门槛，无递进报警
+        if (volume_ratio < DEFAULT_CONFIG.pending_down_threshold) {
+          return null;
+        }
+
+        // 检查是否已经报过警（下跌只报一次）
+        const existing = this.pending_alerts.get(pending_key);
+        if (!existing) {
+          should_alert = true;
+          alert_level = 1;  // 下跌只有一个级别
+          this.pending_alerts.set(pending_key, {
+            alert_level: 1,
+            last_ratio: volume_ratio
+          });
+        }
+        // 下跌不做递进报警
       }
-      // 如果 current_level <= existing.alert_level，不再报警
 
       // 未完结K线报警都标记为重要
       is_important = true;
@@ -318,6 +343,11 @@ export class VolumeMonitorService {
         current_price: kline.close,
         is_important
       });
+
+      // 发送 Telegram 推送（只推送重要信号）
+      if (is_important) {
+        this.send_telegram_alert(result);
+      }
     } catch (error) {
       // 可能是重复报警，忽略（对于完结K线的重复检测）
       logger.debug(`[VolumeMonitor] Alert save failed or duplicate: ${symbol}`);
@@ -416,6 +446,26 @@ export class VolumeMonitorService {
     limit?: number;
   } = {}): Promise<VolumeAlert[]> {
     return this.repository.get_alerts(options);
+  }
+
+  /**
+   * 发送 Telegram 报警
+   */
+  private send_telegram_alert(result: VolumeCheckResult): void {
+    const final_tag = result.is_final ? '完结' : '未完结';
+    const level_tag = result.alert_level ? `Lv${result.alert_level}` : '';
+
+    this.telegram.send_alert({
+      symbol: result.symbol,
+      message: `放量${result.volume_ratio.toFixed(1)}x ${final_tag} ${level_tag}`,
+      price: result.current_price,
+      change_pct: result.price_change_pct,
+      volume_ratio: result.volume_ratio,
+      direction: result.direction,
+      is_important: result.is_important
+    }, MessagePriority.HIGH).catch(err => {
+      logger.debug(`[VolumeMonitor] Telegram send failed: ${err.message}`);
+    });
   }
 
   /**
