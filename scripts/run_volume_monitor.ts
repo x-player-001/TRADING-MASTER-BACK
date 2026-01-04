@@ -8,7 +8,7 @@
  *    - 完结K线：放量≥5x + 阳线 + 上影线<50%，≥10x标记为重要
  *    - 未完结K线(上涨)：放量≥10x 递进报警（10x→15x→20x），上影线<50%，都标记为重要
  *    - 未完结K线(下跌)：放量≥20x，无递进报警，标记为重要
- * 4. 倒锤头穿越EMA120形态检测：下影线>50%，上影线<20%，最低价<EMA120<收盘价
+ * 4. 倒锤头穿越EMA120形态检测（仅完结K线）：下影线>50%，上影线<20%，最低价<EMA120<收盘价
  *
  * 注意: API 接口已集成到主服务 (api_server.ts)
  * - 成交量监控: /api/volume-monitor/*
@@ -120,16 +120,16 @@ async function process_kline(symbol: string, kline: any, is_final: boolean): Pro
     print_volume_alert(volume_result);
   }
 
-  // 2. 检测倒锤头穿越EMA120形态（完结和未完结K线都检查）
+  // 只处理完结的K线进行存储和聚合
+  if (!is_final) {
+    return;
+  }
+
+  // 2. 检测倒锤头穿越EMA120形态（只在K线完结时检查）
   const hammer_result = volume_monitor_service.check_hammer_cross_ema(kline_data, is_final);
   if (hammer_result) {
     stats.hammer_alerts++;
     print_hammer_alert(hammer_result, is_final);
-  }
-
-  // 只处理完结的K线进行存储和聚合
-  if (!is_final) {
-    return;
   }
 
   // 2. 保存5m K线到数据库
@@ -269,7 +269,7 @@ async function print_status(): Promise<void> {
   console.log(`   K线入库: ${db_stats.today_count} (${db_stats.today_symbols}币种, 缓冲${db_stats.buffer_size})`);
   console.log(`   聚合K线: 15m=${stats.aggregated_15m}, 1h=${stats.aggregated_1h}, 4h=${stats.aggregated_4h}`);
   console.log(`   放量报警: ${stats.volume_alerts} (完结≥${monitor_stats.config.volume_multiplier}x, 未完结≥${pending_thresholds})`);
-  console.log(`   倒锤头报警: ${stats.hammer_alerts} (下影线≥50%, 上影线<20%, 穿越EMA120)`);
+  console.log(`   倒锤头报警: ${stats.hammer_alerts} (仅完结K线, 下影线≥50%, 上影线<20%, 穿越EMA120)`);
 }
 
 // ==================== 主函数 ====================
@@ -285,7 +285,7 @@ async function main() {
   console.log('     · 完结K线: 放量≥5x + 阳线 + 上影线<50%，≥10x标记⭐重要');
   console.log('     · 未完结K线(上涨): 放量≥10x 递进报警 10x→15x→20x，上影线<50%，标记⭐重要');
   console.log('     · 未完结K线(下跌): 放量≥20x，无递进报警，标记⭐重要');
-  console.log('   - 倒锤头形态监控:');
+  console.log('   - 倒锤头形态监控（仅完结K线）:');
   console.log('     · 下影线≥50%，上影线<20%');
   console.log('     · 穿越EMA120：最低价<EMA120<收盘价');
   console.log('   - 启动时从数据库预加载历史K线（无冷启动延迟）');
