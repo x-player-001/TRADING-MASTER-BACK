@@ -8,6 +8,7 @@
  *    - 完结K线：放量≥5x + 阳线 + 上影线<50%，≥10x标记为重要
  *    - 未完结K线(上涨)：放量≥10x 递进报警（10x→15x→20x），上影线<50%，都标记为重要
  *    - 未完结K线(下跌)：放量≥20x，无递进报警，标记为重要
+ * 4. 倒锤头穿越EMA120形态检测：下影线>50%，上影线<20%，最低价<EMA120<收盘价
  *
  * 注意: API 接口已集成到主服务 (api_server.ts)
  * - 成交量监控: /api/volume-monitor/*
@@ -26,7 +27,7 @@ import axios from 'axios';
 import { ConfigManager } from '@/core/config/config_manager';
 import { Kline5mRepository, Kline5mData } from '@/database/kline_5m_repository';
 import { KlineAggregator } from '@/core/data/kline_aggregator';
-import { VolumeMonitorService, VolumeCheckResult } from '@/services/volume_monitor_service';
+import { VolumeMonitorService, VolumeCheckResult, HammerCrossResult } from '@/services/volume_monitor_service';
 
 // ==================== 配置 ====================
 const CONFIG = {
@@ -55,6 +56,7 @@ const stats = {
   symbols_count: 0,
   klines_received: 0,
   volume_alerts: 0,
+  hammer_alerts: 0,
   aggregated_15m: 0,
   aggregated_1h: 0,
   aggregated_4h: 0,
@@ -118,6 +120,13 @@ async function process_kline(symbol: string, kline: any, is_final: boolean): Pro
     print_volume_alert(volume_result);
   }
 
+  // 2. 检测倒锤头穿越EMA120形态（完结和未完结K线都检查）
+  const hammer_result = volume_monitor_service.check_hammer_cross_ema(kline_data, is_final);
+  if (hammer_result) {
+    stats.hammer_alerts++;
+    print_hammer_alert(hammer_result, is_final);
+  }
+
   // 只处理完结的K线进行存储和聚合
   if (!is_final) {
     return;
@@ -155,6 +164,21 @@ function print_volume_alert(result: VolumeCheckResult): void {
 
   console.log(`\n🔊 [${time_str}] ${result.symbol} ${direction_text} ${direction_emoji} ${final_str} ${level_str} ${important_str}`);
   console.log(`   📊 成交量: ${result.current_volume.toFixed(2)} (${result.volume_ratio.toFixed(1)}x)`);
+  console.log(`   💰 价格: ${result.current_price.toFixed(4)} (${change_str})`);
+}
+
+// ==================== 倒锤头报警打印 ====================
+function print_hammer_alert(result: HammerCrossResult, is_final: boolean): void {
+  const time_str = format_beijing_time(result.kline_time);
+  const change_str = result.price_change_pct >= 0
+    ? `+${result.price_change_pct.toFixed(2)}%`
+    : `${result.price_change_pct.toFixed(2)}%`;
+
+  const final_str = is_final ? '✅' : '⏳';
+
+  console.log(`\n🔨 [${time_str}] ${result.symbol} 倒锤头穿越EMA120 🟢 ${final_str} ⭐ 重要`);
+  console.log(`   📈 EMA120: ${result.ema120.toFixed(4)}`);
+  console.log(`   📊 下影线: ${result.lower_shadow_pct.toFixed(1)}% | 上影线: ${result.upper_shadow_pct.toFixed(1)}%`);
   console.log(`   💰 价格: ${result.current_price.toFixed(4)} (${change_str})`);
 }
 
@@ -232,6 +256,7 @@ async function print_status(): Promise<void> {
 
   // 清理过期的未完结报警记录
   volume_monitor_service.cleanup_pending_alerts();
+  volume_monitor_service.cleanup_hammer_alerts();
 
   const pending_thresholds = monitor_stats.config.pending_thresholds.join('x/') + 'x';
 
@@ -244,6 +269,7 @@ async function print_status(): Promise<void> {
   console.log(`   K线入库: ${db_stats.today_count} (${db_stats.today_symbols}币种, 缓冲${db_stats.buffer_size})`);
   console.log(`   聚合K线: 15m=${stats.aggregated_15m}, 1h=${stats.aggregated_1h}, 4h=${stats.aggregated_4h}`);
   console.log(`   放量报警: ${stats.volume_alerts} (完结≥${monitor_stats.config.volume_multiplier}x, 未完结≥${pending_thresholds})`);
+  console.log(`   倒锤头报警: ${stats.hammer_alerts} (下影线≥50%, 上影线<20%, 穿越EMA120)`);
 }
 
 // ==================== 主函数 ====================
@@ -259,6 +285,9 @@ async function main() {
   console.log('     · 完结K线: 放量≥5x + 阳线 + 上影线<50%，≥10x标记⭐重要');
   console.log('     · 未完结K线(上涨): 放量≥10x 递进报警 10x→15x→20x，上影线<50%，标记⭐重要');
   console.log('     · 未完结K线(下跌): 放量≥20x，无递进报警，标记⭐重要');
+  console.log('   - 倒锤头形态监控:');
+  console.log('     · 下影线≥50%，上影线<20%');
+  console.log('     · 穿越EMA120：最低价<EMA120<收盘价');
   console.log('   - 启动时从数据库预加载历史K线（无冷启动延迟）');
   console.log('   - API已集成到主服务 (端口3000)');
   console.log('═'.repeat(70));

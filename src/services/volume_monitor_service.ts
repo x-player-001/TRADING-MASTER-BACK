@@ -7,8 +7,9 @@
  * 3. 未完结K线：
  *    - 上涨：放量≥10x + 成交额≥180K，递进报警（10x→15x→20x），上影线<50%，都标记为重要
  *    - 下跌：放量≥20x + 成交额≥180K，无递进报警，标记为重要
- * 4. 支持黑名单过滤
- * 5. 启动时从数据库预加载历史K线，避免冷启动延迟
+ * 4. 倒锤头穿越EMA120形态检测：下影线>50%，上影线<20%，最低价<EMA120<收盘价
+ * 5. 支持黑名单过滤
+ * 6. 启动时从数据库预加载历史K线，避免冷启动延迟
  */
 
 import { Kline5mData, Kline5mRepository } from '@/database/kline_5m_repository';
@@ -35,6 +36,19 @@ export interface VolumeCheckResult {
 }
 
 /**
+ * 倒锤头穿越EMA检测结果
+ */
+export interface HammerCrossResult {
+  symbol: string;
+  kline_time: number;
+  current_price: number;
+  ema120: number;
+  lower_shadow_pct: number;   // 下影线比例
+  upper_shadow_pct: number;   // 上影线比例
+  price_change_pct: number;   // K线涨跌幅
+}
+
+/**
  * 默认监控配置
  */
 const DEFAULT_CONFIG = {
@@ -49,6 +63,10 @@ const DEFAULT_CONFIG = {
   // 通用配置
   lookback_bars: 20,             // 计算平均成交量的K线数
   min_volume_usdt: 180000,       // 完结K线最小成交额 180K USDT
+  // 倒锤头穿越EMA120配置
+  hammer_ema_period: 120,        // EMA周期
+  hammer_min_lower_shadow: 50,   // 下影线最小比例 (%)
+  hammer_max_upper_shadow: 20,   // 上影线最大比例 (%)
 };
 
 /**
@@ -76,8 +94,8 @@ export class VolumeMonitorService {
   // K线缓存: symbol -> klines[]
   private kline_cache: Map<string, Kline5mData[]> = new Map();
 
-  // 缓存大小限制
-  private readonly MAX_KLINE_CACHE_SIZE = 100;
+  // 缓存大小限制 (需要支持EMA120计算，至少130根)
+  private readonly MAX_KLINE_CACHE_SIZE = 150;
 
   // 黑名单
   private blacklist: Set<string> = new Set(BLACKLIST);
@@ -91,6 +109,9 @@ export class VolumeMonitorService {
   // 当天报警计数: symbol -> count (每天重置)
   private daily_alert_count: Map<string, number> = new Map();
   private daily_alert_date: string = '';  // 当前统计的日期 YYYY-MM-DD
+
+  // 倒锤头形态报警记录: "symbol_openTime" -> true (避免同一根K线重复报警)
+  private hammer_alerts: Map<string, boolean> = new Map();
 
   constructor() {
     this.repository = new VolumeMonitorRepository();
@@ -115,6 +136,7 @@ export class VolumeMonitorService {
     // 清理缓存
     this.kline_cache.clear();
     this.pending_alerts.clear();
+    this.hammer_alerts.clear();
   }
 
   /**
@@ -158,6 +180,44 @@ export class VolumeMonitorService {
 
     if (total_range === 0) return 0;
     return (upper_shadow / total_range) * 100;
+  }
+
+  /**
+   * 计算下影线比例
+   * 下影线 = (min(开盘价, 收盘价) - 最低价) / K线振幅 * 100
+   */
+  private calculate_lower_shadow_pct(kline: Kline5mData): number {
+    const body_bottom = Math.min(kline.open, kline.close);
+    const lower_shadow = body_bottom - kline.low;
+    const total_range = kline.high - kline.low;
+
+    if (total_range === 0) return 0;
+    return (lower_shadow / total_range) * 100;
+  }
+
+  /**
+   * 计算EMA (指数移动平均线)
+   * @param prices 价格数组（按时间升序）
+   * @param period EMA周期
+   * @returns EMA值，如果数据不足返回null
+   */
+  private calculate_ema(prices: number[], period: number): number | null {
+    if (prices.length < period) {
+      return null;
+    }
+
+    // EMA 乘数: 2 / (period + 1)
+    const multiplier = 2 / (period + 1);
+
+    // 使用前period个价格的SMA作为初始EMA
+    let ema = prices.slice(0, period).reduce((sum, p) => sum + p, 0) / period;
+
+    // 从第period个价格开始计算EMA
+    for (let i = period; i < prices.length; i++) {
+      ema = (prices[i] - ema) * multiplier + ema;
+    }
+
+    return ema;
   }
 
   /**
@@ -400,8 +460,8 @@ export class VolumeMonitorService {
     let loaded = 0;
     let failed = 0;
 
-    // 需要加载的K线数量 (lookback_bars + 一些缓冲)
-    const klines_to_load = DEFAULT_CONFIG.lookback_bars + 5;
+    // 需要加载的K线数量 (EMA120需要至少120根 + 一些缓冲)
+    const klines_to_load = Math.max(DEFAULT_CONFIG.lookback_bars, DEFAULT_CONFIG.hammer_ema_period) + 10;
 
     logger.info(`[VolumeMonitor] Preloading ${klines_to_load} klines for ${symbols.length} symbols from database...`);
 
@@ -502,6 +562,143 @@ export class VolumeMonitorService {
     }, MessagePriority.HIGH).catch(err => {
       logger.debug(`[VolumeMonitor] Telegram send failed: ${err.message}`);
     });
+  }
+
+  /**
+   * 检测倒锤头穿越EMA120形态
+   * 条件：
+   * 1. 下影线 > 50%
+   * 2. 上影线 < 20%
+   * 3. 最低价 < EMA120 < 收盘价 (穿越)
+   *
+   * @param kline K线数据
+   * @param is_final 是否为完结K线
+   * @returns 如果检测到形态，返回结果
+   */
+  check_hammer_cross_ema(kline: Kline5mData, is_final: boolean): HammerCrossResult | null {
+    const symbol = kline.symbol;
+    const alert_key = `${symbol}_${kline.open_time}`;
+
+    // 黑名单过滤
+    if (this.blacklist.has(symbol)) {
+      return null;
+    }
+
+    // 检查是否已经报过警
+    if (this.hammer_alerts.has(alert_key)) {
+      return null;
+    }
+
+    // 获取K线缓存
+    const cache = this.kline_cache.get(symbol);
+    if (!cache || cache.length < DEFAULT_CONFIG.hammer_ema_period) {
+      return null;
+    }
+
+    // 计算EMA120
+    const close_prices = cache.map(k => k.close);
+    const ema120 = this.calculate_ema(close_prices, DEFAULT_CONFIG.hammer_ema_period);
+    if (ema120 === null) {
+      return null;
+    }
+
+    // 计算影线比例
+    const lower_shadow_pct = this.calculate_lower_shadow_pct(kline);
+    const upper_shadow_pct = this.calculate_upper_shadow_pct(kline);
+
+    // 检查倒锤头条件
+    const is_lower_shadow_ok = lower_shadow_pct >= DEFAULT_CONFIG.hammer_min_lower_shadow;
+    const is_upper_shadow_ok = upper_shadow_pct <= DEFAULT_CONFIG.hammer_max_upper_shadow;
+
+    // 检查穿越EMA120条件：最低价 < EMA120 < 收盘价
+    const is_cross_ema = kline.low < ema120 && kline.close > ema120;
+
+    if (!is_lower_shadow_ok || !is_upper_shadow_ok || !is_cross_ema) {
+      return null;
+    }
+
+    // 记录已报警，避免重复
+    this.hammer_alerts.set(alert_key, true);
+
+    const price_change_pct = ((kline.close - kline.open) / kline.open) * 100;
+
+    const result: HammerCrossResult = {
+      symbol,
+      kline_time: kline.open_time,
+      current_price: kline.close,
+      ema120,
+      lower_shadow_pct,
+      upper_shadow_pct,
+      price_change_pct
+    };
+
+    // 保存形态报警到数据库
+    this.repository.save_pattern_alert({
+      symbol,
+      kline_time: kline.open_time,
+      pattern_type: 'HAMMER_CROSS_EMA',
+      current_price: kline.close,
+      price_change_pct,
+      ema120,
+      lower_shadow_pct,
+      upper_shadow_pct,
+      is_final
+    }).catch(err => {
+      logger.debug(`[VolumeMonitor] Pattern alert save failed: ${err.message}`);
+    });
+
+    // 发送 Telegram 推送
+    this.send_hammer_telegram_alert(result, is_final);
+
+    logger.info(`[VolumeMonitor] 🔨 Hammer cross EMA120: ${symbol} @ ${kline.close.toFixed(4)}, EMA120=${ema120.toFixed(4)}, 下影线=${lower_shadow_pct.toFixed(1)}%`);
+
+    return result;
+  }
+
+  /**
+   * 发送倒锤头形态 Telegram 报警
+   */
+  private send_hammer_telegram_alert(result: HammerCrossResult, is_final: boolean): void {
+    const final_tag = is_final ? '完结' : '未完结';
+
+    // 获取当天第几次报警
+    const alert_index = this.get_and_increment_daily_alert_count(result.symbol);
+
+    this.telegram.send_alert({
+      symbol: result.symbol,
+      message: `🔨 倒锤头穿越EMA120 ${final_tag} [今日第${alert_index}次]`,
+      price: result.current_price,
+      change_pct: result.price_change_pct,
+      direction: 'UP',
+      is_important: true,
+      extra_info: `EMA120: ${result.ema120.toFixed(4)} | 下影线: ${result.lower_shadow_pct.toFixed(1)}% | 上影线: ${result.upper_shadow_pct.toFixed(1)}%`
+    }, MessagePriority.HIGH).catch(err => {
+      logger.debug(`[VolumeMonitor] Telegram send failed: ${err.message}`);
+    });
+  }
+
+  /**
+   * 清理过期的倒锤头报警记录
+   * 建议每5分钟调用一次，清理超过10分钟的记录
+   */
+  cleanup_hammer_alerts(): number {
+    const now = Date.now();
+    const max_age = 10 * 60 * 1000; // 10分钟
+    let cleaned = 0;
+
+    for (const [key] of this.hammer_alerts) {
+      const parts = key.split('_');
+      const open_time = parseInt(parts[parts.length - 1]);
+      if (now - open_time > max_age) {
+        this.hammer_alerts.delete(key);
+        cleaned++;
+      }
+    }
+
+    if (cleaned > 0) {
+      logger.debug(`[VolumeMonitor] Cleaned ${cleaned} expired hammer alert records`);
+    }
+    return cleaned;
   }
 
   /**

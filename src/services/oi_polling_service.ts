@@ -90,6 +90,11 @@ export class OIPollingService {
   private daily_alert_count: Map<string, number> = new Map();
   private daily_alert_date: string = '';  // 当前统计的日期 YYYY-MM-DD
 
+  // 每小时报警记录: symbol -> 报警时间戳数组 (用于限频)
+  private hourly_alert_timestamps: Map<string, number[]> = new Map();
+  private readonly HOURLY_ALERT_LIMIT = 5;  // 每小时最多5次报警
+  private readonly HOURLY_COOLDOWN_MS = 60 * 60 * 1000;  // 1小时冷却时间
+
   constructor() {
     this.binance_api = new BinanceFuturesAPI(this.config.max_concurrent_requests);
     this.oi_repository = new OIRepository();
@@ -855,6 +860,44 @@ export class OIPollingService {
   }
 
   /**
+   * 检查币种是否在每小时报警冷却中
+   * @returns true 表示在冷却中，不应发送报警
+   */
+  private is_in_hourly_cooldown(symbol: string): boolean {
+    const now = Date.now();
+    const timestamps = this.hourly_alert_timestamps.get(symbol) || [];
+
+    // 过滤出最近1小时内的报警记录
+    const recent_timestamps = timestamps.filter(ts => now - ts < this.HOURLY_COOLDOWN_MS);
+
+    // 更新记录（清理过期的）
+    if (recent_timestamps.length !== timestamps.length) {
+      this.hourly_alert_timestamps.set(symbol, recent_timestamps);
+    }
+
+    // 如果最近1小时内报警次数 >= 5，则在冷却中
+    return recent_timestamps.length >= this.HOURLY_ALERT_LIMIT;
+  }
+
+  /**
+   * 记录报警时间戳（用于每小时限频）
+   */
+  private record_hourly_alert(symbol: string): void {
+    const timestamps = this.hourly_alert_timestamps.get(symbol) || [];
+    timestamps.push(Date.now());
+    this.hourly_alert_timestamps.set(symbol, timestamps);
+  }
+
+  /**
+   * 获取币种当前小时内的报警次数
+   */
+  private get_hourly_alert_count(symbol: string): number {
+    const now = Date.now();
+    const timestamps = this.hourly_alert_timestamps.get(symbol) || [];
+    return timestamps.filter(ts => now - ts < this.HOURLY_COOLDOWN_MS).length;
+  }
+
+  /**
    * 获取当天的报警次数并递增
    * 每天自动重置计数
    */
@@ -878,20 +921,36 @@ export class OIPollingService {
 
   /**
    * 发送 OI 异动 Telegram 报警
+   * 每个币种每小时最多发送5次报警，超过后进入冷却
    */
   private send_telegram_oi_alert(anomaly: OIAnomalyDetectionResult): void {
+    // 检查是否在每小时冷却中
+    if (this.is_in_hourly_cooldown(anomaly.symbol)) {
+      logger.debug(`[OIPolling] ${anomaly.symbol} in hourly cooldown, skip telegram push`);
+      return;
+    }
+
     const direction = anomaly.percent_change > 0 ? 'UP' : 'DOWN';
     const direction_text = anomaly.percent_change > 0 ? 'OI增加' : 'OI减少';
     const price_info = anomaly.price_change_percent !== undefined
       ? `价格${anomaly.price_change_percent >= 0 ? '+' : ''}${anomaly.price_change_percent.toFixed(2)}%`
       : '';
 
+    // 记录本次报警时间戳
+    this.record_hourly_alert(anomaly.symbol);
+
     // 获取当天第几次报警
     const alert_index = this.get_and_increment_daily_alert_count(anomaly.symbol);
 
+    // 获取当前小时内的报警次数
+    const hourly_count = this.get_hourly_alert_count(anomaly.symbol);
+    const hourly_info = hourly_count >= this.HOURLY_ALERT_LIMIT
+      ? `[本小时${hourly_count}/${this.HOURLY_ALERT_LIMIT}次-即将冷却]`
+      : `[本小时${hourly_count}/${this.HOURLY_ALERT_LIMIT}次]`;
+
     this.telegram.send_alert({
       symbol: anomaly.symbol,
-      message: `${direction_text} ${Math.abs(anomaly.percent_change).toFixed(2)}% [${anomaly.period_minutes}分钟] [今日第${alert_index}次]`,
+      message: `${direction_text} ${Math.abs(anomaly.percent_change).toFixed(2)}% [${anomaly.period_minutes}分钟] [今日第${alert_index}次] ${hourly_info}`,
       price: anomaly.price_after,
       change_pct: anomaly.price_change_percent,
       direction,
