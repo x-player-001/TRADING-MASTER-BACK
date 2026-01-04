@@ -455,6 +455,12 @@ export class VolumeMonitorService {
     const final_tag = result.is_final ? '完结' : '未完结';
     const level_tag = result.alert_level ? `Lv${result.alert_level}` : '';
 
+    // 计算成交额 (USDT)
+    const volume_usdt = result.current_volume * result.current_price;
+    const volume_str = volume_usdt >= 1000000
+      ? `${(volume_usdt / 1000000).toFixed(2)}M`
+      : `${(volume_usdt / 1000).toFixed(0)}K`;
+
     this.telegram.send_alert({
       symbol: result.symbol,
       message: `放量${result.volume_ratio.toFixed(1)}x ${final_tag} ${level_tag}`,
@@ -462,7 +468,8 @@ export class VolumeMonitorService {
       change_pct: result.price_change_pct,
       volume_ratio: result.volume_ratio,
       direction: result.direction,
-      is_important: result.is_important
+      is_important: result.is_important,
+      extra_info: `成交额: ${volume_str} USDT`
     }, MessagePriority.HIGH).catch(err => {
       logger.debug(`[VolumeMonitor] Telegram send failed: ${err.message}`);
     });
