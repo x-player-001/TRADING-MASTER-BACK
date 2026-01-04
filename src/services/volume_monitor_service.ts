@@ -88,6 +88,10 @@ export class VolumeMonitorService {
   // Telegram 推送服务
   private telegram: TelegramService;
 
+  // 当天报警计数: symbol -> count (每天重置)
+  private daily_alert_count: Map<string, number> = new Map();
+  private daily_alert_date: string = '';  // 当前统计的日期 YYYY-MM-DD
+
   constructor() {
     this.repository = new VolumeMonitorRepository();
     this.kline_repository = new Kline5mRepository();
@@ -449,11 +453,36 @@ export class VolumeMonitorService {
   }
 
   /**
+   * 获取当天的报警次数并递增
+   * 每天自动重置计数
+   */
+  private get_and_increment_daily_alert_count(symbol: string): number {
+    // 获取当前北京时间日期
+    const now = new Date();
+    const beijing_date = new Date(now.getTime() + 8 * 60 * 60 * 1000);
+    const today = beijing_date.toISOString().split('T')[0];
+
+    // 如果日期变了，重置计数
+    if (today !== this.daily_alert_date) {
+      this.daily_alert_count.clear();
+      this.daily_alert_date = today;
+    }
+
+    // 递增并返回当前计数
+    const count = (this.daily_alert_count.get(symbol) || 0) + 1;
+    this.daily_alert_count.set(symbol, count);
+    return count;
+  }
+
+  /**
    * 发送 Telegram 报警
    */
   private send_telegram_alert(result: VolumeCheckResult): void {
     const final_tag = result.is_final ? '完结' : '未完结';
     const level_tag = result.alert_level ? `Lv${result.alert_level}` : '';
+
+    // 获取当天第几次报警
+    const alert_index = this.get_and_increment_daily_alert_count(result.symbol);
 
     // 计算成交额 (USDT)
     const volume_usdt = result.current_volume * result.current_price;
@@ -463,7 +492,7 @@ export class VolumeMonitorService {
 
     this.telegram.send_alert({
       symbol: result.symbol,
-      message: `放量${result.volume_ratio.toFixed(1)}x ${final_tag} ${level_tag}`,
+      message: `放量${result.volume_ratio.toFixed(1)}x ${final_tag} ${level_tag} [今日第${alert_index}次]`,
       price: result.current_price,
       change_pct: result.price_change_pct,
       volume_ratio: result.volume_ratio,

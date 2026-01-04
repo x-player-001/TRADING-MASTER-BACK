@@ -86,6 +86,10 @@ export class OIPollingService {
   // OI变化推送阈值
   private readonly OI_PUSH_THRESHOLD = 8;  // OI变化>=8%时推送
 
+  // 当天报警计数: symbol -> count (每天重置)
+  private daily_alert_count: Map<string, number> = new Map();
+  private daily_alert_date: string = '';  // 当前统计的日期 YYYY-MM-DD
+
   constructor() {
     this.binance_api = new BinanceFuturesAPI(this.config.max_concurrent_requests);
     this.oi_repository = new OIRepository();
@@ -851,6 +855,28 @@ export class OIPollingService {
   }
 
   /**
+   * 获取当天的报警次数并递增
+   * 每天自动重置计数
+   */
+  private get_and_increment_daily_alert_count(symbol: string): number {
+    // 获取当前北京时间日期
+    const now = new Date();
+    const beijing_date = new Date(now.getTime() + 8 * 60 * 60 * 1000);
+    const today = beijing_date.toISOString().split('T')[0];
+
+    // 如果日期变了，重置计数
+    if (today !== this.daily_alert_date) {
+      this.daily_alert_count.clear();
+      this.daily_alert_date = today;
+    }
+
+    // 递增并返回当前计数
+    const count = (this.daily_alert_count.get(symbol) || 0) + 1;
+    this.daily_alert_count.set(symbol, count);
+    return count;
+  }
+
+  /**
    * 发送 OI 异动 Telegram 报警
    */
   private send_telegram_oi_alert(anomaly: OIAnomalyDetectionResult): void {
@@ -860,9 +886,12 @@ export class OIPollingService {
       ? `价格${anomaly.price_change_percent >= 0 ? '+' : ''}${anomaly.price_change_percent.toFixed(2)}%`
       : '';
 
+    // 获取当天第几次报警
+    const alert_index = this.get_and_increment_daily_alert_count(anomaly.symbol);
+
     this.telegram.send_alert({
       symbol: anomaly.symbol,
-      message: `${direction_text} ${Math.abs(anomaly.percent_change).toFixed(2)}% [${anomaly.period_minutes}分钟]`,
+      message: `${direction_text} ${Math.abs(anomaly.percent_change).toFixed(2)}% [${anomaly.period_minutes}分钟] [今日第${alert_index}次]`,
       price: anomaly.price_after,
       change_pct: anomaly.price_change_percent,
       direction,
