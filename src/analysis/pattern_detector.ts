@@ -60,6 +60,7 @@ export interface PatternDetectorConfig {
   min_surge_pct: number;            // 最小涨幅 (%)
   max_retrace_ratio: number;        // 最大回撤比例 (0-1)
   min_retrace_ratio: number;        // 最小回撤比例 (0-1)
+  min_bars_from_high: number;       // 距离高点最少K线数
 
   // 横盘震荡配置
   consolidation_max_range_pct: number;   // 横盘最大振幅 (%)
@@ -71,9 +72,10 @@ const DEFAULT_CONFIG: PatternDetectorConfig = {
   bottom_tolerance_pct: 1.5,        // 收紧到1.5%
   min_rebound_pct: 5.0,             // 提高到5%
   max_distance_to_neckline_pct: 8,  // 距颈线不超过8%
-  min_surge_pct: 15.0,              // 提高到15%
+  min_surge_pct: 20.0,              // 最小涨幅20%
   max_retrace_ratio: 0.618,
   min_retrace_ratio: 0.236,
+  min_bars_from_high: 20,           // 距离高点最少20根K线
   consolidation_max_range_pct: 8,   // 横盘振幅不超过8%
   consolidation_min_bars: 20        // 至少20根K线
 };
@@ -398,6 +400,8 @@ export class PatternDetector {
     const recent_lows = lows.slice(-3);
     const recent_highs = highs.slice(-3);
 
+    const current_index = klines.length - 1;
+
     for (const low of recent_lows) {
       for (const high of recent_highs) {
         // 高点必须在低点之后
@@ -406,6 +410,10 @@ export class PatternDetector {
         // 计算涨幅
         const surge_pct = (high.price - low.price) / low.price * 100;
         if (surge_pct < this.config.min_surge_pct) continue;
+
+        // 检查当前K线距离高点的距离
+        const bars_from_high = current_index - high.index;
+        if (bars_from_high < this.config.min_bars_from_high) continue;
 
         // 检查当前价格的回撤位置
         const current_price = klines[klines.length - 1].close;
