@@ -54,25 +54,25 @@ export class Kline5mRepository {
   }
 
   /**
-   * 获取日期对应的表名（使用 UTC 时间）
-   * 注意：必须使用 UTC 时间，因为 K 线的 open_time 是 UTC 时间戳
+   * 获取日期对应的表名（使用本地时间，即北京时间）
+   * 服务器运行在香港/北京时区，直接使用本地时间分表
    */
   private get_table_name(date?: Date): string {
     const d = date || new Date();
-    const year = d.getUTCFullYear();
-    const month = String(d.getUTCMonth() + 1).padStart(2, '0');
-    const day = String(d.getUTCDate()).padStart(2, '0');
+    const year = d.getFullYear();
+    const month = String(d.getMonth() + 1).padStart(2, '0');
+    const day = String(d.getDate()).padStart(2, '0');
     return `kline_5m_${year}${month}${day}`;
   }
 
   /**
-   * 根据时间戳获取表名（使用 UTC 时间）
+   * 根据时间戳获取表名（使用本地时间，即北京时间）
    */
   private get_table_name_from_timestamp(ts: number): string {
     const d = new Date(ts);
-    const year = d.getUTCFullYear();
-    const month = String(d.getUTCMonth() + 1).padStart(2, '0');
-    const day = String(d.getUTCDate()).padStart(2, '0');
+    const year = d.getFullYear();
+    const month = String(d.getMonth() + 1).padStart(2, '0');
+    const day = String(d.getDate()).padStart(2, '0');
     return `kline_5m_${year}${month}${day}`;
   }
 
@@ -236,7 +236,7 @@ export class Kline5mRepository {
 
   /**
    * 查询某币种最近N根K线
-   * 注意：使用 UTC 时间计算表名
+   * 注意：使用本地时间（北京时间）计算表名
    */
   async get_recent_klines(symbol: string, limit: number = 50): Promise<Kline5mData[]> {
     const connection = await DatabaseConfig.get_mysql_connection();
@@ -287,7 +287,7 @@ export class Kline5mRepository {
 
   /**
    * 查询指定时间范围的K线
-   * 注意：时间戳参数是毫秒级 UTC 时间
+   * 注意：时间戳参数是毫秒级，使用本地时间（北京时间）计算分表
    */
   async get_klines_by_time_range(
     symbol: string,
@@ -297,7 +297,7 @@ export class Kline5mRepository {
     const connection = await DatabaseConfig.get_mysql_connection();
 
     try {
-      // 计算涉及的 UTC 日期（使用时间戳计算，避免本地时区问题）
+      // 计算涉及的日期（使用本地时间即北京时间计算分表）
       const tables = new Set<string>();
       const ONE_DAY_MS = 24 * 60 * 60 * 1000;
 
