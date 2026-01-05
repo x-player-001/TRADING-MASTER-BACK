@@ -3,6 +3,9 @@
  *
  * 接口:
  * - POST   /api/pattern-scan/start           启动扫描任务
+ * - POST   /api/pattern-scan/pullback        扫描上涨回调形态（自定义参数）
+ * - POST   /api/pattern-scan/consolidation   扫描横盘震荡形态（自定义参数）
+ * - POST   /api/pattern-scan/double-bottom   扫描双底形态（自定义参数）
  * - GET    /api/pattern-scan/tasks           获取任务列表
  * - GET    /api/pattern-scan/tasks/:task_id  获取任务状态
  * - GET    /api/pattern-scan/results/:task_id 获取扫描结果
@@ -96,6 +99,253 @@ router.post('/start', async (req: Request, res: Response): Promise<void> => {
     });
   } catch (error: any) {
     logger.error('[PatternScan API] Start scan failed:', error);
+    res.status(500).json({
+      success: false,
+      error: error.message
+    });
+  }
+});
+
+/**
+ * POST /api/pattern-scan/pullback
+ * 扫描上涨回调形态（自定义参数，同步返回结果）
+ *
+ * 请求体参数:
+ * - interval: K线周期 (5m, 15m, 1h, 4h)，默认 1h
+ * - lookback_bars: 分析的K线数量，默认 100
+ * - min_surge_pct: 最小上涨幅度 (%)，默认 20
+ * - max_retrace_pct: 最大回调幅度 (%)，默认 50
+ */
+router.post('/pullback', async (req: Request, res: Response): Promise<void> => {
+  try {
+    const {
+      interval = '1h',
+      lookback_bars = 100,
+      min_surge_pct = 20,
+      max_retrace_pct = 50
+    } = req.body;
+
+    // 验证参数
+    const valid_intervals = ['5m', '15m', '1h', '4h'];
+    if (!valid_intervals.includes(interval)) {
+      res.status(400).json({
+        success: false,
+        error: `Invalid interval. Valid options: ${valid_intervals.join(', ')}`
+      });
+      return;
+    }
+
+    if (lookback_bars < 30 || lookback_bars > 500) {
+      res.status(400).json({
+        success: false,
+        error: 'lookback_bars must be between 30 and 500'
+      });
+      return;
+    }
+
+    if (min_surge_pct < 5 || min_surge_pct > 200) {
+      res.status(400).json({
+        success: false,
+        error: 'min_surge_pct must be between 5 and 200'
+      });
+      return;
+    }
+
+    if (max_retrace_pct < 10 || max_retrace_pct > 100) {
+      res.status(400).json({
+        success: false,
+        error: 'max_retrace_pct must be between 10 and 100'
+      });
+      return;
+    }
+
+    const service = get_service();
+
+    // 执行扫描
+    const results = await service.scan_pullback({
+      interval,
+      lookback_bars,
+      min_surge_pct,
+      max_retrace_pct
+    });
+
+    res.json({
+      success: true,
+      data: {
+        params: {
+          interval,
+          lookback_bars,
+          min_surge_pct,
+          max_retrace_pct
+        },
+        results,
+        count: results.length
+      }
+    });
+  } catch (error: any) {
+    logger.error('[PatternScan API] Pullback scan failed:', error);
+    res.status(500).json({
+      success: false,
+      error: error.message
+    });
+  }
+});
+
+/**
+ * POST /api/pattern-scan/consolidation
+ * 扫描横盘震荡形态（自定义参数，同步返回结果）
+ *
+ * 请求体参数:
+ * - interval: K线周期 (5m, 15m, 1h, 4h)，默认 1h
+ * - min_bars: 最小横盘K线数量，默认 20
+ * - max_range_pct: 最大震荡幅度 (%)，默认 10
+ * - require_fake_breakdown: 是否要求有向下假突破，默认 false
+ */
+router.post('/consolidation', async (req: Request, res: Response): Promise<void> => {
+  try {
+    const {
+      interval = '1h',
+      min_bars = 20,
+      max_range_pct = 10,
+      require_fake_breakdown = false
+    } = req.body;
+
+    // 验证参数
+    const valid_intervals = ['5m', '15m', '1h', '4h'];
+    if (!valid_intervals.includes(interval)) {
+      res.status(400).json({
+        success: false,
+        error: `Invalid interval. Valid options: ${valid_intervals.join(', ')}`
+      });
+      return;
+    }
+
+    if (min_bars < 10 || min_bars > 200) {
+      res.status(400).json({
+        success: false,
+        error: 'min_bars must be between 10 and 200'
+      });
+      return;
+    }
+
+    if (max_range_pct < 1 || max_range_pct > 50) {
+      res.status(400).json({
+        success: false,
+        error: 'max_range_pct must be between 1 and 50'
+      });
+      return;
+    }
+
+    const service = get_service();
+
+    // 执行扫描
+    const results = await service.scan_consolidation({
+      interval,
+      min_bars,
+      max_range_pct,
+      require_fake_breakdown: !!require_fake_breakdown
+    });
+
+    res.json({
+      success: true,
+      data: {
+        params: {
+          interval,
+          min_bars,
+          max_range_pct,
+          require_fake_breakdown
+        },
+        results,
+        count: results.length
+      }
+    });
+  } catch (error: any) {
+    logger.error('[PatternScan API] Consolidation scan failed:', error);
+    res.status(500).json({
+      success: false,
+      error: error.message
+    });
+  }
+});
+
+/**
+ * POST /api/pattern-scan/double-bottom
+ * 扫描双底形态（自定义参数，同步返回结果）
+ *
+ * 请求体参数:
+ * - interval: K线周期 (5m, 15m, 1h, 4h)，默认 1h
+ * - lookback_bars: 分析的K线数量，默认 100
+ * - min_bars_between: 两个底之间最小K线数量，默认 10
+ * - bottom_tolerance_pct: 底部价差容忍度 (%)，默认 2
+ */
+router.post('/double-bottom', async (req: Request, res: Response): Promise<void> => {
+  try {
+    const {
+      interval = '1h',
+      lookback_bars = 100,
+      min_bars_between = 10,
+      bottom_tolerance_pct = 2
+    } = req.body;
+
+    // 验证参数
+    const valid_intervals = ['5m', '15m', '1h', '4h'];
+    if (!valid_intervals.includes(interval)) {
+      res.status(400).json({
+        success: false,
+        error: `Invalid interval. Valid options: ${valid_intervals.join(', ')}`
+      });
+      return;
+    }
+
+    if (lookback_bars < 30 || lookback_bars > 500) {
+      res.status(400).json({
+        success: false,
+        error: 'lookback_bars must be between 30 and 500'
+      });
+      return;
+    }
+
+    if (min_bars_between < 5 || min_bars_between > 100) {
+      res.status(400).json({
+        success: false,
+        error: 'min_bars_between must be between 5 and 100'
+      });
+      return;
+    }
+
+    if (bottom_tolerance_pct < 0.5 || bottom_tolerance_pct > 10) {
+      res.status(400).json({
+        success: false,
+        error: 'bottom_tolerance_pct must be between 0.5 and 10'
+      });
+      return;
+    }
+
+    const service = get_service();
+
+    // 执行扫描
+    const results = await service.scan_double_bottom({
+      interval,
+      lookback_bars,
+      min_bars_between,
+      bottom_tolerance_pct
+    });
+
+    res.json({
+      success: true,
+      data: {
+        params: {
+          interval,
+          lookback_bars,
+          min_bars_between,
+          bottom_tolerance_pct
+        },
+        results,
+        count: results.length
+      }
+    });
+  } catch (error: any) {
+    logger.error('[PatternScan API] Double bottom scan failed:', error);
     res.status(500).json({
       success: false,
       error: error.message

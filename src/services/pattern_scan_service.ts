@@ -24,6 +24,53 @@ export interface ScanRequest {
 }
 
 /**
+ * 回调扫描请求参数
+ */
+export interface PullbackScanRequest {
+  interval: string;           // K线周期: 5m, 15m, 1h, 4h
+  lookback_bars: number;      // 分析的K线数量
+  min_surge_pct: number;      // 最小上涨幅度 (%)
+  max_retrace_pct: number;    // 最大回调幅度 (%)
+}
+
+/**
+ * 横盘扫描请求参数
+ */
+export interface ConsolidationScanRequest {
+  interval: string;               // K线周期: 5m, 15m, 1h, 4h
+  min_bars: number;               // 最小横盘K线数量
+  max_range_pct: number;          // 最大震荡幅度 (%)
+  require_fake_breakdown: boolean; // 是否要求有向下假突破
+}
+
+/**
+ * 双底扫描请求参数
+ */
+export interface DoubleBottomScanRequest {
+  interval: string;               // K线周期: 5m, 15m, 1h, 4h
+  lookback_bars: number;          // 分析的K线数量
+  min_bars_between: number;       // 两个底之间最小K线数量
+  bottom_tolerance_pct: number;   // 底部价差容忍度 (%)
+}
+
+/**
+ * 通用扫描结果
+ */
+export interface PatternScanResultItem {
+  symbol: string;
+  score: number;
+  description: string;
+  key_levels: any;
+  kline_interval: string;
+  detected_at: number;
+}
+
+/**
+ * 回调扫描结果 (兼容旧接口)
+ */
+export interface PullbackScanResult extends PatternScanResultItem {}
+
+/**
  * 黑名单配置 - 不扫描的币种
  * 通常是稳定币、指数类、流动性差的币种
  */
@@ -472,5 +519,229 @@ export class PatternScanService {
    */
   is_blacklisted(symbol: string): boolean {
     return this.blacklist.has(symbol.toUpperCase());
+  }
+
+  /**
+   * 扫描上涨回调形态（同步执行，直接返回结果）
+   *
+   * @param request 扫描参数
+   * @returns 符合条件的币种列表
+   */
+  async scan_pullback(request: PullbackScanRequest): Promise<PullbackScanResult[]> {
+    const results: PullbackScanResult[] = [];
+
+    // 从数据库获取有数据的交易对
+    const symbols = await this.get_symbols_from_db(request.interval);
+
+    if (symbols.length === 0) {
+      logger.warn(`[PatternScan] Pullback scan: 数据库中没有 ${request.interval} K线数据`);
+      return results;
+    }
+
+    logger.info(`[PatternScan] Pullback scan: Scanning ${symbols.length} symbols (surge>=${request.min_surge_pct}%, retrace<=${request.max_retrace_pct}%)`);
+
+    for (const symbol of symbols) {
+      // 黑名单过滤
+      if (this.blacklist.has(symbol)) {
+        continue;
+      }
+
+      try {
+        // 获取K线数据
+        const klines = await this.get_klines_from_db_only(symbol, request.interval, request.lookback_bars);
+
+        if (klines.length < 30) {
+          continue;
+        }
+
+        // 转换为PatternDetector需要的格式
+        const kline_data: KlineData[] = klines.map(k => ({
+          open_time: k.open_time,
+          close_time: k.close_time,
+          open: k.open,
+          high: k.high,
+          low: k.low,
+          close: k.close,
+          volume: k.volume
+        }));
+
+        // 使用自定义参数检测回调形态
+        const pattern = this.detector.detect_pullback_custom(
+          kline_data,
+          request.min_surge_pct,
+          request.max_retrace_pct
+        );
+
+        if (pattern) {
+          results.push({
+            symbol,
+            score: pattern.score,
+            description: pattern.description,
+            key_levels: pattern.key_levels,
+            kline_interval: request.interval,
+            detected_at: pattern.detected_at
+          });
+        }
+      } catch (error) {
+        logger.debug(`[PatternScan] Pullback scan failed for ${symbol}: ${error}`);
+      }
+    }
+
+    // 按评分降序排序
+    results.sort((a, b) => b.score - a.score);
+
+    logger.info(`[PatternScan] Pullback scan completed: ${results.length} patterns found`);
+
+    return results;
+  }
+
+  /**
+   * 扫描横盘震荡形态（同步执行，直接返回结果）
+   *
+   * @param request 扫描参数
+   * @returns 符合条件的币种列表
+   */
+  async scan_consolidation(request: ConsolidationScanRequest): Promise<PatternScanResultItem[]> {
+    const results: PatternScanResultItem[] = [];
+
+    // 从数据库获取有数据的交易对
+    const symbols = await this.get_symbols_from_db(request.interval);
+
+    if (symbols.length === 0) {
+      logger.warn(`[PatternScan] Consolidation scan: 数据库中没有 ${request.interval} K线数据`);
+      return results;
+    }
+
+    const fake_desc = request.require_fake_breakdown ? ', 要求假突破' : '';
+    logger.info(`[PatternScan] Consolidation scan: Scanning ${symbols.length} symbols (bars>=${request.min_bars}, range<=${request.max_range_pct}%${fake_desc})`);
+
+    for (const symbol of symbols) {
+      // 黑名单过滤
+      if (this.blacklist.has(symbol)) {
+        continue;
+      }
+
+      try {
+        // 获取K线数据
+        const klines = await this.get_klines_from_db_only(symbol, request.interval, request.min_bars + 20);
+
+        if (klines.length < request.min_bars) {
+          continue;
+        }
+
+        // 转换为PatternDetector需要的格式
+        const kline_data: KlineData[] = klines.map(k => ({
+          open_time: k.open_time,
+          close_time: k.close_time,
+          open: k.open,
+          high: k.high,
+          low: k.low,
+          close: k.close,
+          volume: k.volume
+        }));
+
+        // 使用自定义参数检测横盘形态
+        const pattern = this.detector.detect_consolidation_custom(
+          kline_data,
+          request.min_bars,
+          request.max_range_pct,
+          request.require_fake_breakdown
+        );
+
+        if (pattern) {
+          results.push({
+            symbol,
+            score: pattern.score,
+            description: pattern.description,
+            key_levels: pattern.key_levels,
+            kline_interval: request.interval,
+            detected_at: pattern.detected_at
+          });
+        }
+      } catch (error) {
+        logger.debug(`[PatternScan] Consolidation scan failed for ${symbol}: ${error}`);
+      }
+    }
+
+    // 按评分降序排序
+    results.sort((a, b) => b.score - a.score);
+
+    logger.info(`[PatternScan] Consolidation scan completed: ${results.length} patterns found`);
+
+    return results;
+  }
+
+  /**
+   * 扫描双底形态（同步执行，直接返回结果）
+   *
+   * @param request 扫描参数
+   * @returns 符合条件的币种列表
+   */
+  async scan_double_bottom(request: DoubleBottomScanRequest): Promise<PatternScanResultItem[]> {
+    const results: PatternScanResultItem[] = [];
+
+    // 从数据库获取有数据的交易对
+    const symbols = await this.get_symbols_from_db(request.interval);
+
+    if (symbols.length === 0) {
+      logger.warn(`[PatternScan] Double bottom scan: 数据库中没有 ${request.interval} K线数据`);
+      return results;
+    }
+
+    logger.info(`[PatternScan] Double bottom scan: Scanning ${symbols.length} symbols (min_bars_between>=${request.min_bars_between}, tolerance<=${request.bottom_tolerance_pct}%)`);
+
+    for (const symbol of symbols) {
+      // 黑名单过滤
+      if (this.blacklist.has(symbol)) {
+        continue;
+      }
+
+      try {
+        // 获取K线数据
+        const klines = await this.get_klines_from_db_only(symbol, request.interval, request.lookback_bars);
+
+        if (klines.length < 30) {
+          continue;
+        }
+
+        // 转换为PatternDetector需要的格式
+        const kline_data: KlineData[] = klines.map(k => ({
+          open_time: k.open_time,
+          close_time: k.close_time,
+          open: k.open,
+          high: k.high,
+          low: k.low,
+          close: k.close,
+          volume: k.volume
+        }));
+
+        // 使用自定义参数检测双底形态
+        const pattern = this.detector.detect_double_bottom_custom(
+          kline_data,
+          request.min_bars_between,
+          request.bottom_tolerance_pct
+        );
+
+        if (pattern) {
+          results.push({
+            symbol,
+            score: pattern.score,
+            description: pattern.description,
+            key_levels: pattern.key_levels,
+            kline_interval: request.interval,
+            detected_at: pattern.detected_at
+          });
+        }
+      } catch (error) {
+        logger.debug(`[PatternScan] Double bottom scan failed for ${symbol}: ${error}`);
+      }
+    }
+
+    // 按评分降序排序
+    results.sort((a, b) => b.score - a.score);
+
+    logger.info(`[PatternScan] Double bottom scan completed: ${results.length} patterns found`);
+
+    return results;
   }
 }

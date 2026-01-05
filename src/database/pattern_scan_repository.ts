@@ -58,6 +58,10 @@ export interface KeyLevels {
   mid?: number;                // 区间中线
   target_up?: number;          // 向上突破目标
   target_down?: number;        // 向下突破目标
+  has_fake_breakdown?: boolean; // 是否有假突破
+  bars_between?: number;       // 两底间隔K线数
+  low1_price?: number;         // 第一个底价格
+  low2_price?: number;         // 第二个底价格
 }
 
 /**
