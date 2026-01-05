@@ -34,6 +34,7 @@ import { KlineAggregator } from '@/core/data/kline_aggregator';
 import { VolumeMonitorService, VolumeCheckResult, HammerCrossResult } from '@/services/volume_monitor_service';
 import { OrderBookMonitorService } from '@/services/orderbook_monitor_service';
 import { BinanceDepthUpdate } from '@/types/orderbook_types';
+import { set_orderbook_service } from '@/api/routes/orderbook_monitor_routes';
 
 // ==================== 配置 ====================
 const CONFIG = {
@@ -99,6 +100,9 @@ async function init_services(): Promise<void> {
   // 初始化服务
   await volume_monitor_service.init();
   await orderbook_monitor_service.init();
+
+  // 注入服务实例到 API 路由（使 /api/orderbook/snapshot 接口可用）
+  set_orderbook_service(orderbook_monitor_service);
 
   console.log('✅ 所有服务初始化完成');
 }
