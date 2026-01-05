@@ -19,8 +19,10 @@ import { BoundaryAlertRoutes } from './routes/boundary_alert_routes';
 import { SRLevelRoutes } from './routes/sr_level_routes';
 import volume_monitor_routes, { set_volume_monitor_repository } from './routes/volume_monitor_routes';
 import pattern_scan_routes, { set_pattern_scan_service } from './routes/pattern_scan_routes';
+import orderbook_monitor_routes from './routes/orderbook_monitor_routes';
 import { VolumeMonitorRepository } from '@/database/volume_monitor_repository';
 import { PatternScanService } from '@/services/pattern_scan_service';
+import { OrderBookAlertRepository } from '@/database/orderbook_alert_repository';
 
 /**
  * HTTP API服务器
@@ -167,6 +169,7 @@ export class APIServer {
           sr: '/api/sr/*',
           'volume-monitor': '/api/volume-monitor/*',
           'pattern-scan': '/api/pattern-scan/*',
+          orderbook: '/api/orderbook/*',
           status: '/api/status'
         },
         timestamp: new Date().toISOString()
@@ -220,6 +223,9 @@ export class APIServer {
 
     // 形态扫描路由
     this.app.use('/api/pattern-scan', pattern_scan_routes);
+
+    // 订单簿监控路由
+    this.app.use('/api/orderbook', orderbook_monitor_routes);
 
     // 系统状态
     this.app.get('/api/status', async (req: Request, res: Response) => {
