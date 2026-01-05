@@ -122,13 +122,13 @@ export interface OrderBookMonitorConfig {
  * 默认配置
  */
 export const DEFAULT_ORDERBOOK_CONFIG: OrderBookMonitorConfig = {
-  big_order_multiplier: 10,
-  big_order_min_value_usdt: 50000,
-  imbalance_ratio_high: 2.0,
-  imbalance_ratio_low: 0.5,
-  imbalance_min_total_value: 500000,
+  big_order_multiplier: 15,
+  big_order_min_value_usdt: 200000,
+  imbalance_ratio_high: 3.0,
+  imbalance_ratio_low: 0.33,
+  imbalance_min_total_value: 1000000,
   withdrawal_min_ratio: 0.8,
-  withdrawal_min_value_usdt: 100000,
+  withdrawal_min_value_usdt: 500000,
   cooldown_ms: 5 * 60 * 1000,
   warmup_snapshots: 3
 };
