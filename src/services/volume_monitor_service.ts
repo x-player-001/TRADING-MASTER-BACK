@@ -49,7 +49,7 @@ export interface HammerCrossResult {
 }
 
 /**
- * 完美倒锤头检测结果（独立检测，不依赖EMA）
+ * 完美倒锤头检测结果（独立检测，不依赖EMA，仅完结K线）
  */
 export interface PerfectHammerResult {
   symbol: string;
@@ -710,14 +710,14 @@ export class VolumeMonitorService {
   }
 
   /**
-   * 检测完美倒锤头形态（独立检测，不依赖EMA）
+   * 检测完美倒锤头形态（独立检测，不依赖EMA，仅完结K线）
    * 条件：
    * 1. K线为阳线 (close > open)
    * 2. 下影线 >= 70%
    * 3. 上影线 <= 5%
    *
    * @param kline K线数据
-   * @param is_final 是否为完结K线
+   * @param is_final 是否为完结K线（仅完结K线触发）
    * @returns 如果检测到形态，返回结果
    */
   check_perfect_hammer(kline: Kline5mData, is_final: boolean): PerfectHammerResult | null {
