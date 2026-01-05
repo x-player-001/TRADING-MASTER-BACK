@@ -19,10 +19,13 @@ import { BoundaryAlertRoutes } from './routes/boundary_alert_routes';
 import { SRLevelRoutes } from './routes/sr_level_routes';
 import volume_monitor_routes, { set_volume_monitor_repository } from './routes/volume_monitor_routes';
 import pattern_scan_routes, { set_pattern_scan_service } from './routes/pattern_scan_routes';
-import orderbook_monitor_routes from './routes/orderbook_monitor_routes';
+import orderbook_monitor_routes, { set_orderbook_service } from './routes/orderbook_monitor_routes';
 import { VolumeMonitorRepository } from '@/database/volume_monitor_repository';
 import { PatternScanService } from '@/services/pattern_scan_service';
-import { OrderBookAlertRepository } from '@/database/orderbook_alert_repository';
+import { OrderBookMonitorService } from '@/services/orderbook_monitor_service';
+import { BinanceDepthUpdate } from '@/types/orderbook_types';
+import WebSocket from 'ws';
+import axios from 'axios';
 
 /**
  * HTTP API服务器
@@ -47,6 +50,8 @@ export class APIServer {
   private monitoring_manager: MonitoringManager;
   private volume_monitor_repository: VolumeMonitorRepository;
   private pattern_scan_service: PatternScanService;
+  private orderbook_monitor_service: OrderBookMonitorService;
+  private ws_depth: WebSocket | null = null;
 
   constructor(oi_data_manager: OIDataManager, port: number = 3000) {
     this.app = express();
@@ -67,9 +72,11 @@ export class APIServer {
     this.monitoring_manager = MonitoringManager.getInstance();
     this.volume_monitor_repository = new VolumeMonitorRepository();
     this.pattern_scan_service = new PatternScanService();
+    this.orderbook_monitor_service = new OrderBookMonitorService();
     this.setup_middleware();
     this.setup_routes();
     this.init_volume_monitor_services();
+    this.init_orderbook_monitor_service();
   }
 
   /**
@@ -85,6 +92,87 @@ export class APIServer {
     } catch (error) {
       logger.error('[APIServer] Failed to init volume monitor services:', error);
     }
+  }
+
+  /**
+   * 初始化订单簿监控服务
+   */
+  private async init_orderbook_monitor_service(): Promise<void> {
+    try {
+      await this.orderbook_monitor_service.init();
+      set_orderbook_service(this.orderbook_monitor_service);
+
+      // 获取所有交易对并启动 WebSocket
+      const symbols = await this.get_all_futures_symbols();
+      this.start_depth_websocket(symbols);
+
+      logger.info('[APIServer] OrderBook monitor service initialized');
+    } catch (error) {
+      logger.error('[APIServer] Failed to init orderbook monitor service:', error);
+    }
+  }
+
+  /**
+   * 获取所有U本位合约交易对
+   */
+  private async get_all_futures_symbols(): Promise<string[]> {
+    try {
+      const url = 'https://fapi.binance.com/fapi/v1/exchangeInfo';
+      const response = await axios.get(url);
+      return response.data.symbols
+        .filter((s: any) =>
+          s.status === 'TRADING' &&
+          s.contractType === 'PERPETUAL' &&
+          s.symbol.endsWith('USDT')
+        )
+        .map((s: any) => s.symbol);
+    } catch (error) {
+      logger.error('[APIServer] Failed to get futures symbols:', error);
+      return [];
+    }
+  }
+
+  /**
+   * 启动订单簿 WebSocket 连接
+   */
+  private start_depth_websocket(symbols: string[]): void {
+    if (symbols.length === 0) {
+      logger.warn('[APIServer] No symbols to subscribe for orderbook');
+      return;
+    }
+
+    logger.info(`[APIServer] Subscribing to ${symbols.length} orderbook streams...`);
+
+    // 构建订阅流: symbol@depth20@500ms
+    const streams = symbols.map(s => `${s.toLowerCase()}@depth20@500ms`).join('/');
+    const ws_url = `wss://fstream.binance.com/stream?streams=${streams}`;
+
+    this.ws_depth = new WebSocket(ws_url);
+
+    this.ws_depth.on('open', () => {
+      logger.info('[APIServer] OrderBook WebSocket connected');
+    });
+
+    this.ws_depth.on('message', async (data: Buffer) => {
+      try {
+        const msg = JSON.parse(data.toString());
+        if (msg.data && msg.data.e === 'depthUpdate') {
+          const depth_data: BinanceDepthUpdate = msg.data;
+          await this.orderbook_monitor_service.process_depth_update(depth_data);
+        }
+      } catch (error) {
+        // 静默处理解析错误，避免日志过多
+      }
+    });
+
+    this.ws_depth.on('error', (error) => {
+      logger.error('[APIServer] OrderBook WebSocket error:', error);
+    });
+
+    this.ws_depth.on('close', () => {
+      logger.warn('[APIServer] OrderBook WebSocket disconnected, reconnecting in 5s...');
+      setTimeout(() => this.start_depth_websocket(symbols), 5000);
+    });
   }
 
   /**
@@ -303,6 +391,17 @@ export class APIServer {
    * 停止服务器
    */
   async stop(): Promise<void> {
+    // 关闭订单簿 WebSocket
+    if (this.ws_depth) {
+      this.ws_depth.close();
+      this.ws_depth = null;
+    }
+
+    // 停止订单簿监控服务
+    if (this.orderbook_monitor_service) {
+      this.orderbook_monitor_service.stop();
+    }
+
     return new Promise((resolve) => {
       if (this.server) {
         this.server.close(() => {

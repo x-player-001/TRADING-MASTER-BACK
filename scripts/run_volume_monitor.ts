@@ -1,5 +1,5 @@
 /**
- * 成交量 + 订单簿监控脚本
+ * 成交量监控脚本
  *
  * 功能:
  * 1. WebSocket 订阅所有合约的 5m K线
@@ -9,14 +9,10 @@
  *    - 未完结K线(上涨)：放量≥10x 递进报警（10x→15x→20x），上影线<50%，都标记为重要
  *    - 未完结K线(下跌)：放量≥20x，无递进报警，标记为重要
  * 4. 倒锤头穿越EMA120形态检测（仅完结K线）：下影线>50%，上影线<20%，最低价<EMA120<收盘价，前20根K线最低价都在EMA120之上
- * 5. 订单簿数据收集（第二个WebSocket连接）:
- *    - 实时收集所有币种订单簿快照
- *    - 提供 API 查询: GET /api/orderbook/snapshot/:symbol
  *
- * 注意: API 接口已集成到主服务 (api_server.ts)
- * - 成交量监控: /api/volume-monitor/*
- * - 形态扫描: /api/pattern-scan/*
- * - 订单簿监控: /api/orderbook/*
+ * 注意:
+ * - API 接口已集成到主服务 (api_server.ts): /api/volume-monitor/*, /api/pattern-scan/*
+ * - 订单簿监控已移至主服务 (api_server.ts): /api/orderbook/*
  *
  * 运行命令:
  * npx ts-node -r tsconfig-paths/register scripts/run_volume_monitor.ts
@@ -32,9 +28,6 @@ import { ConfigManager } from '@/core/config/config_manager';
 import { Kline5mRepository, Kline5mData } from '@/database/kline_5m_repository';
 import { KlineAggregator } from '@/core/data/kline_aggregator';
 import { VolumeMonitorService, VolumeCheckResult, HammerCrossResult } from '@/services/volume_monitor_service';
-import { OrderBookMonitorService } from '@/services/orderbook_monitor_service';
-import { BinanceDepthUpdate } from '@/types/orderbook_types';
-import { set_orderbook_service } from '@/api/routes/orderbook_monitor_routes';
 
 // ==================== 配置 ====================
 const CONFIG = {
@@ -53,11 +46,9 @@ const CONFIG = {
 
 // ==================== 全局变量 ====================
 let ws_kline: WebSocket | null = null;
-let ws_depth: WebSocket | null = null;
 let kline_5m_repository: Kline5mRepository;
 let kline_aggregator: KlineAggregator;
 let volume_monitor_service: VolumeMonitorService;
-let orderbook_monitor_service: OrderBookMonitorService;
 
 // 统计
 const stats = {
@@ -69,8 +60,7 @@ const stats = {
   aggregated_15m: 0,
   aggregated_1h: 0,
   aggregated_4h: 0,
-  last_kline_time: 0,
-  depth_received: 0
+  last_kline_time: 0
 };
 
 // ==================== 工具函数 ====================
@@ -95,14 +85,9 @@ async function init_services(): Promise<void> {
   kline_5m_repository = new Kline5mRepository();
   kline_aggregator = new KlineAggregator();
   volume_monitor_service = new VolumeMonitorService();
-  orderbook_monitor_service = new OrderBookMonitorService();
 
   // 初始化服务
   await volume_monitor_service.init();
-  await orderbook_monitor_service.init();
-
-  // 注入服务实例到 API 路由（使 /api/orderbook/snapshot 接口可用）
-  set_orderbook_service(orderbook_monitor_service);
 
   console.log('✅ 所有服务初始化完成');
 }
@@ -249,50 +234,10 @@ async function start_kline_websocket(symbols: string[]): Promise<void> {
   });
 }
 
-async function start_depth_websocket(symbols: string[]): Promise<void> {
-  console.log(`\n📚 正在订阅 ${symbols.length} 个合约的订单簿...`);
-
-  // 构建订阅流: symbol@depth20@500ms
-  const streams = symbols.map(s => `${s.toLowerCase()}@depth20@500ms`).join('/');
-  const ws_url = `wss://fstream.binance.com/stream?streams=${streams}`;
-
-  ws_depth = new WebSocket(ws_url);
-
-  ws_depth.on('open', () => {
-    console.log('✅ 订单簿 WebSocket 连接成功');
-  });
-
-  ws_depth.on('message', async (data: Buffer) => {
-    try {
-      const msg = JSON.parse(data.toString());
-      if (msg.data && msg.data.e === 'depthUpdate') {
-        stats.depth_received++;
-
-        const depth_data: BinanceDepthUpdate = msg.data;
-        // 处理订单簿数据（更新缓存，用于实时查询API）
-        // 报警功能暂时禁用，只保留数据收集
-        await orderbook_monitor_service.process_depth_update(depth_data);
-      }
-    } catch (error) {
-      console.error('处理订单簿消息失败:', error);
-    }
-  });
-
-  ws_depth.on('error', (error) => {
-    console.error('订单簿 WebSocket 错误:', error);
-  });
-
-  ws_depth.on('close', () => {
-    console.log('⚠️ 订单簿 WebSocket 连接断开，5秒后重连...');
-    setTimeout(() => start_depth_websocket(symbols), 5000);
-  });
-}
-
 // ==================== 状态打印 ====================
 async function print_status(): Promise<void> {
   const uptime = Math.round((Date.now() - stats.start_time) / 60000);
   const monitor_stats = volume_monitor_service.get_statistics();
-  const orderbook_stats = orderbook_monitor_service.get_statistics();
 
   // 获取5m K线入库统计
   let db_stats = { today_count: 0, today_symbols: 0, buffer_size: 0 };
@@ -305,24 +250,20 @@ async function print_status(): Promise<void> {
   // 清理过期的未完结报警记录
   volume_monitor_service.cleanup_pending_alerts();
   volume_monitor_service.cleanup_hammer_alerts();
-  orderbook_monitor_service.cleanup_cooldown();
-
-  const pending_thresholds = monitor_stats.config.pending_thresholds.join('x/') + 'x';
 
   console.log(`\n📊 [${get_current_time()}] 状态报告`);
   console.log(`   运行时间: ${uptime} 分钟`);
   console.log(`   订阅币种: ${stats.symbols_count}`);
-  console.log(`   K线接收: ${stats.klines_received} | 订单簿接收: ${stats.depth_received}`);
+  console.log(`   K线接收: ${stats.klines_received}`);
   console.log(`   K线入库: ${db_stats.today_count} (${db_stats.today_symbols}币种)`);
   console.log(`   聚合K线: 15m=${stats.aggregated_15m}, 1h=${stats.aggregated_1h}, 4h=${stats.aggregated_4h}`);
   console.log(`   放量报警: ${stats.volume_alerts} | 倒锤头报警: ${stats.hammer_alerts}`);
-  console.log(`   订单簿缓存: ${orderbook_stats.symbols_cached} 个币种`);
 }
 
 // ==================== 主函数 ====================
 async function main() {
   console.log('═'.repeat(70));
-  console.log('        成交量 + 订单簿监控系统');
+  console.log('        成交量监控系统');
   console.log('═'.repeat(70));
 
   console.log('\n📋 功能说明:');
@@ -336,10 +277,8 @@ async function main() {
   console.log('     · 下影线≥50%，上影线<20%');
   console.log('     · 穿越EMA120：最低价<EMA120<收盘价');
   console.log('     · 前20根K线最低价都在EMA120之上（首次下探）');
-  console.log('   - 订单簿数据收集（第二个WebSocket）:');
-  console.log('     · 实时收集所有币种订单簿快照');
-  console.log('     · API查询: GET /api/orderbook/snapshot/:symbol');
   console.log('   - API已集成到主服务 (端口3000)');
+  console.log('   - 订单簿监控已移至主服务');
   console.log('═'.repeat(70));
 
   // 初始化服务
@@ -354,9 +293,8 @@ async function main() {
   const preload_result = await volume_monitor_service.preload_klines_from_db(symbols);
   console.log(`✅ 预加载完成: ${preload_result.loaded} 个币种已加载历史数据`);
 
-  // 启动两个 WebSocket 连接
+  // 启动 K线 WebSocket 连接
   await start_kline_websocket(symbols);
-  await start_depth_websocket(symbols);
 
   // 定期打印状态
   setInterval(print_status, CONFIG.status_interval_ms);
@@ -368,13 +306,9 @@ async function main() {
     if (ws_kline) {
       ws_kline.close();
     }
-    if (ws_depth) {
-      ws_depth.close();
-    }
 
     // 停止服务
     volume_monitor_service.stop();
-    orderbook_monitor_service.stop();
     kline_aggregator.stop_flush_timer();
     kline_5m_repository.stop_flush_timer();
 
