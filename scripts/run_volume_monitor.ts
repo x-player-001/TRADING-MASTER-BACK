@@ -9,10 +9,9 @@
  *    - 未完结K线(上涨)：放量≥10x 递进报警（10x→15x→20x），上影线<50%，都标记为重要
  *    - 未完结K线(下跌)：放量≥20x，无递进报警，标记为重要
  * 4. 倒锤头穿越EMA120形态检测（仅完结K线）：下影线>50%，上影线<20%，最低价<EMA120<收盘价，前20根K线最低价都在EMA120之上
- * 5. 订单簿监控（第二个WebSocket连接）:
- *    - 大单检测：挂单量超过平均值15倍且价值≥20万U
- *    - 买卖失衡：买/卖比值>3或<0.33
- *    - 撤单检测：大单消失80%以上且价值≥50万U
+ * 5. 订单簿数据收集（第二个WebSocket连接）:
+ *    - 实时收集所有币种订单簿快照
+ *    - 提供 API 查询: GET /api/orderbook/snapshot/:symbol
  *
  * 注意: API 接口已集成到主服务 (api_server.ts)
  * - 成交量监控: /api/volume-monitor/*
@@ -34,7 +33,7 @@ import { Kline5mRepository, Kline5mData } from '@/database/kline_5m_repository';
 import { KlineAggregator } from '@/core/data/kline_aggregator';
 import { VolumeMonitorService, VolumeCheckResult, HammerCrossResult } from '@/services/volume_monitor_service';
 import { OrderBookMonitorService } from '@/services/orderbook_monitor_service';
-import { OrderBookAlert, OrderBookAlertType, BinanceDepthUpdate } from '@/types/orderbook_types';
+import { BinanceDepthUpdate } from '@/types/orderbook_types';
 
 // ==================== 配置 ====================
 const CONFIG = {
@@ -70,12 +69,7 @@ const stats = {
   aggregated_1h: 0,
   aggregated_4h: 0,
   last_kline_time: 0,
-  // 订单簿统计
-  depth_received: 0,
-  orderbook_alerts: 0,
-  big_order_alerts: 0,
-  imbalance_alerts: 0,
-  withdrawal_alerts: 0
+  depth_received: 0
 };
 
 // ==================== 工具函数 ====================
@@ -199,36 +193,6 @@ function print_hammer_alert(result: HammerCrossResult, is_final: boolean): void 
   console.log(`   💰 价格: ${result.current_price.toFixed(4)} (${change_str})`);
 }
 
-// ==================== 订单簿报警打印 ====================
-function print_orderbook_alert(alert: OrderBookAlert): void {
-  const time_str = format_beijing_time(alert.alert_time);
-  const important_str = alert.is_important ? '⭐ 重要' : '';
-
-  switch (alert.alert_type) {
-    case OrderBookAlertType.BIG_ORDER:
-      const side_emoji = alert.side === 'BID' ? '🟢 买单墙' : '🔴 卖单墙';
-      console.log(`\n📊 [${time_str}] ${alert.symbol} ${side_emoji} ${important_str}`);
-      console.log(`   💰 价格: ${alert.order_price?.toFixed(4)}`);
-      console.log(`   📦 数量: ${alert.order_qty?.toFixed(2)} (${alert.order_ratio?.toFixed(1)}x)`);
-      console.log(`   💵 价值: ${((alert.order_value_usdt || 0) / 1000).toFixed(0)}K USDT`);
-      break;
-
-    case OrderBookAlertType.IMBALANCE:
-      const ratio = alert.imbalance_ratio || 0;
-      const bias_emoji = ratio > 1 ? '🟢 买盘强势' : '🔴 卖盘强势';
-      console.log(`\n⚖️ [${time_str}] ${alert.symbol} ${bias_emoji} ${important_str}`);
-      console.log(`   📊 比值: ${ratio.toFixed(2)} (买/卖)`);
-      console.log(`   💰 当前价: ${alert.current_price.toFixed(4)}`);
-      break;
-
-    case OrderBookAlertType.WITHDRAWAL:
-      const withdraw_emoji = alert.side === 'BID' ? '🔴 买单撤销' : '🟢 卖单撤销';
-      console.log(`\n❌ [${time_str}] ${alert.symbol} ${withdraw_emoji} ${important_str}`);
-      console.log(`   💰 价格: ${alert.order_price?.toFixed(4)}`);
-      console.log(`   📉 撤单: ${alert.withdrawn_qty?.toFixed(2)} (${((alert.withdrawn_value_usdt || 0) / 1000).toFixed(0)}K USDT)`);
-      break;
-  }
-}
 
 // ==================== WebSocket ====================
 async function get_all_symbols(): Promise<string[]> {
@@ -301,21 +265,9 @@ async function start_depth_websocket(symbols: string[]): Promise<void> {
         stats.depth_received++;
 
         const depth_data: BinanceDepthUpdate = msg.data;
-        const alerts = await orderbook_monitor_service.process_depth_update(depth_data);
-
-        for (const alert of alerts) {
-          stats.orderbook_alerts++;
-
-          if (alert.alert_type === OrderBookAlertType.BIG_ORDER) {
-            stats.big_order_alerts++;
-          } else if (alert.alert_type === OrderBookAlertType.IMBALANCE) {
-            stats.imbalance_alerts++;
-          } else if (alert.alert_type === OrderBookAlertType.WITHDRAWAL) {
-            stats.withdrawal_alerts++;
-          }
-
-          print_orderbook_alert(alert);
-        }
+        // 处理订单簿数据（更新缓存，用于实时查询API）
+        // 报警功能暂时禁用，只保留数据收集
+        await orderbook_monitor_service.process_depth_update(depth_data);
       }
     } catch (error) {
       console.error('处理订单簿消息失败:', error);
@@ -360,8 +312,7 @@ async function print_status(): Promise<void> {
   console.log(`   K线入库: ${db_stats.today_count} (${db_stats.today_symbols}币种)`);
   console.log(`   聚合K线: 15m=${stats.aggregated_15m}, 1h=${stats.aggregated_1h}, 4h=${stats.aggregated_4h}`);
   console.log(`   放量报警: ${stats.volume_alerts} | 倒锤头报警: ${stats.hammer_alerts}`);
-  console.log(`   订单簿报警: ${stats.orderbook_alerts} (大单: ${stats.big_order_alerts}, 失衡: ${stats.imbalance_alerts}, 撤单: ${stats.withdrawal_alerts})`);
-  console.log(`   订单簿冷启动: ${orderbook_stats.symbols_warmed_up} 个币种`);
+  console.log(`   订单簿缓存: ${orderbook_stats.symbols_cached} 个币种`);
 }
 
 // ==================== 主函数 ====================
@@ -381,10 +332,9 @@ async function main() {
   console.log('     · 下影线≥50%，上影线<20%');
   console.log('     · 穿越EMA120：最低价<EMA120<收盘价');
   console.log('     · 前20根K线最低价都在EMA120之上（首次下探）');
-  console.log('   - 订单簿监控（第二个WebSocket）:');
-  console.log('     · 大单检测: 挂单量≥平均值15x 且价值≥20万U');
-  console.log('     · 买卖失衡: 买/卖比值>3或<0.33');
-  console.log('     · 撤单检测: 大单消失≥80% 且价值≥50万U');
+  console.log('   - 订单簿数据收集（第二个WebSocket）:');
+  console.log('     · 实时收集所有币种订单簿快照');
+  console.log('     · API查询: GET /api/orderbook/snapshot/:symbol');
   console.log('   - API已集成到主服务 (端口3000)');
   console.log('═'.repeat(70));
 

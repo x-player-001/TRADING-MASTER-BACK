@@ -527,6 +527,25 @@ export class OrderBookMonitorService {
   }
 
   /**
+   * 获取指定币种的最新订单簿快照
+   */
+  get_snapshot(symbol: string): OrderBookSnapshot | null {
+    const upper_symbol = symbol.toUpperCase();
+    const history = this.snapshot_cache.get(upper_symbol);
+    if (!history || history.length === 0) {
+      return null;
+    }
+    return history[history.length - 1];
+  }
+
+  /**
+   * 获取所有已缓存的币种列表
+   */
+  get_cached_symbols(): string[] {
+    return Array.from(this.snapshot_cache.keys());
+  }
+
+  /**
    * 停止服务
    */
   stop(): void {

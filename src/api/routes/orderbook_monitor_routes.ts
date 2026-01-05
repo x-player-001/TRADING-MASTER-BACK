@@ -2,6 +2,8 @@
  * 订单簿监控 API 路由
  *
  * 接口:
+ * - GET  /api/orderbook/snapshot/:symbol 获取实时订单簿快照
+ * - GET  /api/orderbook/symbols          获取已缓存的币种列表
  * - GET  /api/orderbook/alerts           查询报警记录
  * - GET  /api/orderbook/alerts/recent    查询最近报警
  * - GET  /api/orderbook/statistics       获取统计数据
@@ -169,6 +171,97 @@ router.get('/statistics', async (req: Request, res: Response) => {
     });
   } catch (error: any) {
     logger.error('[OrderBook API] Get statistics failed:', error);
+    res.status(500).json({
+      success: false,
+      error: error.message
+    });
+  }
+});
+
+/**
+ * GET /api/orderbook/snapshot/:symbol
+ * 获取指定币种的实时订单簿快照
+ */
+router.get('/snapshot/:symbol', async (req: Request, res: Response) => {
+  try {
+    if (!service) {
+      res.status(400).json({
+        success: false,
+        error: 'OrderBook monitor service not initialized'
+      });
+      return;
+    }
+
+    const symbol = req.params.symbol.toUpperCase();
+    const snapshot = service.get_snapshot(symbol);
+
+    if (!snapshot) {
+      res.status(404).json({
+        success: false,
+        error: `No snapshot found for ${symbol}`,
+        available_symbols: service.get_cached_symbols().slice(0, 20)
+      });
+      return;
+    }
+
+    // 格式化输出
+    res.json({
+      success: true,
+      data: {
+        symbol: snapshot.symbol,
+        timestamp: snapshot.timestamp,
+        current_price: snapshot.current_price,
+        bids: snapshot.bids.map(l => ({
+          price: l.price,
+          qty: parseFloat(l.qty.toFixed(4)),
+          value_usdt: Math.round(l.value)
+        })),
+        asks: snapshot.asks.map(l => ({
+          price: l.price,
+          qty: parseFloat(l.qty.toFixed(4)),
+          value_usdt: Math.round(l.value)
+        })),
+        summary: {
+          bid_total_qty: parseFloat(snapshot.bid_total_qty.toFixed(4)),
+          ask_total_qty: parseFloat(snapshot.ask_total_qty.toFixed(4)),
+          bid_total_value: Math.round(snapshot.bid_total_value),
+          ask_total_value: Math.round(snapshot.ask_total_value),
+          imbalance_ratio: parseFloat((snapshot.bid_total_qty / snapshot.ask_total_qty).toFixed(4))
+        }
+      }
+    });
+  } catch (error: any) {
+    logger.error('[OrderBook API] Get snapshot failed:', error);
+    res.status(500).json({
+      success: false,
+      error: error.message
+    });
+  }
+});
+
+/**
+ * GET /api/orderbook/symbols
+ * 获取所有已缓存的币种列表
+ */
+router.get('/symbols', async (req: Request, res: Response) => {
+  try {
+    if (!service) {
+      res.status(400).json({
+        success: false,
+        error: 'OrderBook monitor service not initialized'
+      });
+      return;
+    }
+
+    const symbols = service.get_cached_symbols();
+
+    res.json({
+      success: true,
+      data: symbols,
+      count: symbols.length
+    });
+  } catch (error: any) {
+    logger.error('[OrderBook API] Get symbols failed:', error);
     res.status(500).json({
       success: false,
       error: error.message
