@@ -570,7 +570,7 @@ export class VolumeMonitorService {
    * 1. 下影线 > 50%
    * 2. 上影线 < 20%
    * 3. 最低价 < EMA120 < 收盘价 (穿越)
-   * 4. 前10根K线的最低价都在EMA120之上（首次下探EMA120）
+   * 4. 前20根K线的最低价都在EMA120之上（首次下探EMA120）
    *
    * @param kline K线数据
    * @param is_final 是否为完结K线
@@ -618,14 +618,14 @@ export class VolumeMonitorService {
       return null;
     }
 
-    // 检查前10根K线的最低价是否都在EMA120之上（首次下探）
-    // 需要至少有10根历史K线（不包括当前K线）
-    const lookback_bars = 10;
+    // 检查前20根K线的最低价是否都在EMA120之上（首次下探）
+    // 需要至少有20根历史K线（不包括当前K线）
+    const lookback_bars = 20;
     if (cache.length < lookback_bars + 1) {
       return null;
     }
 
-    // 获取前10根K线（不包括当前K线，当前K线是cache的最后一根）
+    // 获取前20根K线（不包括当前K线，当前K线是cache的最后一根）
     const prev_klines = cache.slice(-lookback_bars - 1, -1);
     const all_above_ema = prev_klines.every(k => k.low > ema120);
 

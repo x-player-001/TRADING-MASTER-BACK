@@ -8,7 +8,7 @@
  *    - 完结K线：放量≥5x + 阳线 + 上影线<50%，≥10x标记为重要
  *    - 未完结K线(上涨)：放量≥10x 递进报警（10x→15x→20x），上影线<50%，都标记为重要
  *    - 未完结K线(下跌)：放量≥20x，无递进报警，标记为重要
- * 4. 倒锤头穿越EMA120形态检测（仅完结K线）：下影线>50%，上影线<20%，最低价<EMA120<收盘价，前10根K线最低价都在EMA120之上
+ * 4. 倒锤头穿越EMA120形态检测（仅完结K线）：下影线>50%，上影线<20%，最低价<EMA120<收盘价，前20根K线最低价都在EMA120之上
  *
  * 注意: API 接口已集成到主服务 (api_server.ts)
  * - 成交量监控: /api/volume-monitor/*
@@ -269,7 +269,7 @@ async function print_status(): Promise<void> {
   console.log(`   K线入库: ${db_stats.today_count} (${db_stats.today_symbols}币种, 缓冲${db_stats.buffer_size})`);
   console.log(`   聚合K线: 15m=${stats.aggregated_15m}, 1h=${stats.aggregated_1h}, 4h=${stats.aggregated_4h}`);
   console.log(`   放量报警: ${stats.volume_alerts} (完结≥${monitor_stats.config.volume_multiplier}x, 未完结≥${pending_thresholds})`);
-  console.log(`   倒锤头报警: ${stats.hammer_alerts} (仅完结K线, 下影线≥50%, 上影线<20%, 穿越EMA120, 前10根K线在EMA上方)`);
+  console.log(`   倒锤头报警: ${stats.hammer_alerts} (仅完结K线, 下影线≥50%, 上影线<20%, 穿越EMA120, 前20根K线在EMA上方)`);
 }
 
 // ==================== 主函数 ====================
@@ -288,7 +288,7 @@ async function main() {
   console.log('   - 倒锤头形态监控（仅完结K线）:');
   console.log('     · 下影线≥50%，上影线<20%');
   console.log('     · 穿越EMA120：最低价<EMA120<收盘价');
-  console.log('     · 前10根K线最低价都在EMA120之上（首次下探）');
+  console.log('     · 前20根K线最低价都在EMA120之上（首次下探）');
   console.log('   - 启动时从数据库预加载历史K线（无冷启动延迟）');
   console.log('   - API已集成到主服务 (端口3000)');
   console.log('═'.repeat(70));
