@@ -96,17 +96,18 @@ export class APIServer {
 
   /**
    * 初始化订单簿监控服务
+   * 暂时禁用订单簿 WebSocket 订阅
    */
   private async init_orderbook_monitor_service(): Promise<void> {
     try {
       await this.orderbook_monitor_service.init();
       set_orderbook_service(this.orderbook_monitor_service);
 
-      // 获取所有交易对并启动 WebSocket
-      const symbols = await this.get_all_futures_symbols();
-      this.start_depth_websocket(symbols);
+      // 暂时禁用订单簿 WebSocket 订阅
+      // const symbols = await this.get_all_futures_symbols();
+      // this.start_depth_websocket(symbols);
 
-      logger.info('[APIServer] OrderBook monitor service initialized');
+      logger.info('[APIServer] OrderBook monitor service initialized (WebSocket disabled)');
     } catch (error) {
       logger.error('[APIServer] Failed to init orderbook monitor service:', error);
     }

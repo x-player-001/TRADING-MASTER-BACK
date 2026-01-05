@@ -48,10 +48,10 @@ export interface PatternAlert {
   id?: number;
   symbol: string;
   kline_time: number;
-  pattern_type: 'HAMMER_CROSS_EMA';  // 形态类型
+  pattern_type: 'HAMMER_CROSS_EMA' | 'PERFECT_HAMMER';  // 形态类型
   current_price: number;
   price_change_pct: number;
-  ema120: number;                    // EMA120值
+  ema120: number;                    // EMA120值（完美倒锤头时为0）
   lower_shadow_pct: number;          // 下影线百分比
   upper_shadow_pct: number;          // 上影线百分比
   is_final: boolean;                 // 是否为完结K线
@@ -110,10 +110,10 @@ export class VolumeMonitorRepository extends BaseRepository {
           id BIGINT PRIMARY KEY AUTO_INCREMENT,
           symbol VARCHAR(20) NOT NULL,
           kline_time BIGINT NOT NULL,
-          pattern_type VARCHAR(30) NOT NULL COMMENT '形态类型: HAMMER_CROSS_EMA',
+          pattern_type VARCHAR(30) NOT NULL COMMENT '形态类型: HAMMER_CROSS_EMA, PERFECT_HAMMER',
           current_price DECIMAL(20,8) NOT NULL,
           price_change_pct DECIMAL(10,4) NOT NULL,
-          ema120 DECIMAL(20,8) NOT NULL COMMENT 'EMA120值',
+          ema120 DECIMAL(20,8) NOT NULL COMMENT 'EMA120值（完美倒锤头时为0）',
           lower_shadow_pct DECIMAL(10,4) NOT NULL COMMENT '下影线百分比',
           upper_shadow_pct DECIMAL(10,4) NOT NULL COMMENT '上影线百分比',
           is_final TINYINT(1) DEFAULT 0 COMMENT '是否为完结K线',

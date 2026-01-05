@@ -49,6 +49,18 @@ export interface HammerCrossResult {
 }
 
 /**
+ * 完美倒锤头检测结果（独立检测，不依赖EMA）
+ */
+export interface PerfectHammerResult {
+  symbol: string;
+  kline_time: number;
+  current_price: number;
+  lower_shadow_pct: number;   // 下影线比例
+  upper_shadow_pct: number;   // 上影线比例
+  price_change_pct: number;   // K线涨跌幅
+}
+
+/**
  * 默认监控配置
  */
 const DEFAULT_CONFIG = {
@@ -113,6 +125,9 @@ export class VolumeMonitorService {
   // 倒锤头形态报警记录: "symbol_openTime" -> true (避免同一根K线重复报警)
   private hammer_alerts: Map<string, boolean> = new Map();
 
+  // 完美倒锤头报警记录: "symbol_openTime" -> true (独立的报警记录)
+  private perfect_hammer_alerts: Map<string, boolean> = new Map();
+
   constructor() {
     this.repository = new VolumeMonitorRepository();
     this.kline_repository = new Kline5mRepository();
@@ -137,6 +152,7 @@ export class VolumeMonitorService {
     this.kline_cache.clear();
     this.pending_alerts.clear();
     this.hammer_alerts.clear();
+    this.perfect_hammer_alerts.clear();
   }
 
   /**
@@ -691,6 +707,127 @@ export class VolumeMonitorService {
     }, MessagePriority.HIGH).catch(err => {
       logger.debug(`[VolumeMonitor] Telegram send failed: ${err.message}`);
     });
+  }
+
+  /**
+   * 检测完美倒锤头形态（独立检测，不依赖EMA）
+   * 条件：
+   * 1. K线为阳线 (close > open)
+   * 2. 下影线 >= 70%
+   * 3. 上影线 <= 5%
+   *
+   * @param kline K线数据
+   * @param is_final 是否为完结K线
+   * @returns 如果检测到形态，返回结果
+   */
+  check_perfect_hammer(kline: Kline5mData, is_final: boolean): PerfectHammerResult | null {
+    const symbol = kline.symbol;
+    const alert_key = `${symbol}_${kline.open_time}`;
+
+    // 黑名单过滤
+    if (this.blacklist.has(symbol)) {
+      return null;
+    }
+
+    // 检查是否已经报过警
+    if (this.perfect_hammer_alerts.has(alert_key)) {
+      return null;
+    }
+
+    // 计算影线比例
+    const lower_shadow_pct = this.calculate_lower_shadow_pct(kline);
+    const upper_shadow_pct = this.calculate_upper_shadow_pct(kline);
+
+    // 检查完美倒锤头条件
+    const is_bullish = kline.close > kline.open;                 // 阳线
+    const is_lower_shadow_ok = lower_shadow_pct >= 70;           // 下影线 >= 70%
+    const is_upper_shadow_ok = upper_shadow_pct <= 5;            // 上影线 <= 5%
+
+    if (!is_bullish || !is_lower_shadow_ok || !is_upper_shadow_ok) {
+      return null;
+    }
+
+    // 记录已报警，避免重复
+    this.perfect_hammer_alerts.set(alert_key, true);
+
+    const price_change_pct = ((kline.close - kline.open) / kline.open) * 100;
+
+    const result: PerfectHammerResult = {
+      symbol,
+      kline_time: kline.open_time,
+      current_price: kline.close,
+      lower_shadow_pct,
+      upper_shadow_pct,
+      price_change_pct
+    };
+
+    // 保存形态报警到数据库
+    this.repository.save_pattern_alert({
+      symbol,
+      kline_time: kline.open_time,
+      pattern_type: 'PERFECT_HAMMER',
+      current_price: kline.close,
+      price_change_pct,
+      ema120: 0,  // 不依赖EMA
+      lower_shadow_pct,
+      upper_shadow_pct,
+      is_final
+    }).catch(err => {
+      logger.debug(`[VolumeMonitor] Pattern alert save failed: ${err.message}`);
+    });
+
+    // 发送 Telegram 推送
+    this.send_perfect_hammer_telegram_alert(result, is_final);
+
+    logger.info(`[VolumeMonitor] ⭐🔨 Perfect Hammer: ${symbol} @ ${kline.close.toFixed(4)}, 下影线=${lower_shadow_pct.toFixed(1)}%, 上影线=${upper_shadow_pct.toFixed(1)}%`);
+
+    return result;
+  }
+
+  /**
+   * 发送完美倒锤头形态 Telegram 报警
+   */
+  private send_perfect_hammer_telegram_alert(result: PerfectHammerResult, is_final: boolean): void {
+    const final_tag = is_final ? '完结' : '未完结';
+
+    // 获取当天第几次报警
+    const alert_index = this.get_and_increment_daily_alert_count(result.symbol);
+
+    this.telegram.send_alert({
+      symbol: result.symbol,
+      message: `⭐🔨 完美倒锤头 ${final_tag} [今日第${alert_index}次]`,
+      price: result.current_price,
+      change_pct: result.price_change_pct,
+      direction: 'UP',
+      is_important: true,
+      extra_info: `下影线: ${result.lower_shadow_pct.toFixed(1)}% | 上影线: ${result.upper_shadow_pct.toFixed(1)}%`
+    }, MessagePriority.HIGH).catch(err => {
+      logger.debug(`[VolumeMonitor] Telegram send failed: ${err.message}`);
+    });
+  }
+
+  /**
+   * 清理过期的完美倒锤头报警记录
+   * 建议每5分钟调用一次，清理超过10分钟的记录
+   */
+  cleanup_perfect_hammer_alerts(): number {
+    const now = Date.now();
+    const max_age = 10 * 60 * 1000; // 10分钟
+    let cleaned = 0;
+
+    for (const [key] of this.perfect_hammer_alerts) {
+      const parts = key.split('_');
+      const open_time = parseInt(parts[parts.length - 1]);
+      if (now - open_time > max_age) {
+        this.perfect_hammer_alerts.delete(key);
+        cleaned++;
+      }
+    }
+
+    if (cleaned > 0) {
+      logger.debug(`[VolumeMonitor] Cleaned ${cleaned} expired perfect hammer alert records`);
+    }
+    return cleaned;
   }
 
   /**
