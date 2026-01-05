@@ -715,6 +715,7 @@ export class VolumeMonitorService {
    * 1. K线为阳线 (close > open)
    * 2. 下影线 >= 70%
    * 3. 上影线 <= 5%
+   * 4. 当前K线最低价是最近10根K线的最低价
    *
    * @param kline K线数据
    * @param is_final 是否为完结K线（仅完结K线触发）
@@ -734,6 +735,12 @@ export class VolumeMonitorService {
       return null;
     }
 
+    // 获取K线缓存，检查是否有足够的历史数据
+    const cache = this.kline_cache.get(symbol);
+    if (!cache || cache.length < 10) {
+      return null;
+    }
+
     // 计算影线比例
     const lower_shadow_pct = this.calculate_lower_shadow_pct(kline);
     const upper_shadow_pct = this.calculate_upper_shadow_pct(kline);
@@ -744,6 +751,13 @@ export class VolumeMonitorService {
     const is_upper_shadow_ok = upper_shadow_pct <= 5;            // 上影线 <= 5%
 
     if (!is_bullish || !is_lower_shadow_ok || !is_upper_shadow_ok) {
+      return null;
+    }
+
+    // 检查当前K线最低价是否是最近10根K线的最低价
+    const recent_10_klines = cache.slice(-10);
+    const min_low_in_recent = Math.min(...recent_10_klines.map(k => k.low));
+    if (kline.low > min_low_in_recent) {
       return null;
     }
 
