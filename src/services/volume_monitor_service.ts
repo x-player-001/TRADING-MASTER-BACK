@@ -715,7 +715,7 @@ export class VolumeMonitorService {
    * 1. K线为阳线 (close > open)
    * 2. 下影线 >= 70%
    * 3. 上影线 <= 5%
-   * 4. 当前K线最低价是最近10根K线的最低价
+   * 4. 当前K线最低价是最近20根K线的最低价
    *
    * @param kline K线数据
    * @param is_final 是否为完结K线（仅完结K线触发）
@@ -737,7 +737,7 @@ export class VolumeMonitorService {
 
     // 获取K线缓存，检查是否有足够的历史数据
     const cache = this.kline_cache.get(symbol);
-    if (!cache || cache.length < 10) {
+    if (!cache || cache.length < 20) {
       return null;
     }
 
@@ -754,9 +754,9 @@ export class VolumeMonitorService {
       return null;
     }
 
-    // 检查当前K线最低价是否是最近10根K线的最低价
-    const recent_10_klines = cache.slice(-10);
-    const min_low_in_recent = Math.min(...recent_10_klines.map(k => k.low));
+    // 检查当前K线最低价是否是最近20根K线的最低价
+    const recent_20_klines = cache.slice(-20);
+    const min_low_in_recent = Math.min(...recent_20_klines.map(k => k.low));
     if (kline.low > min_low_in_recent) {
       return null;
     }
