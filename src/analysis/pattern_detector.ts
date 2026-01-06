@@ -873,8 +873,13 @@ export class PatternDetector {
           const neckline = Math.max(...middle_highs.map(h => h.price));
           const bottom_avg = (low1.price + low2.price) / 2;
 
-          // 检查回调幅度（从上涨高点到W底底部的回调）
-          const retrace_pct = (high1.price - bottom_avg) / high1.price * 100;
+          // W底底部必须高于起涨点（不能跌破起涨点）
+          if (bottom_avg <= low0.price) continue;
+
+          // 检查回调幅度（回调了这波涨幅的多少）
+          const surge_amount = high1.price - low0.price;
+          const retrace_amount = high1.price - bottom_avg;
+          const retrace_pct = (retrace_amount / surge_amount) * 100;
           if (retrace_pct > max_retrace_pct) continue;
 
           // 检查W底的反弹幅度（颈线相对底部至少要有一定反弹）
@@ -888,11 +893,14 @@ export class PatternDetector {
           // 2. 必须高于底部
           if (current_price < bottom_avg) continue;
 
-          // 3. 距离底部不能太远
+          // 3. 当前价格必须高于起涨点（不能跌破起涨点）
+          if (current_price <= low0.price) continue;
+
+          // 4. 距离底部不能太远
           const distance_to_bottom_pct = (current_price - bottom_avg) / bottom_avg * 100;
           if (distance_to_bottom_pct > max_distance_to_bottom_pct) continue;
 
-          // 4. 第二个底必须是最近的（确保W底刚形成）
+          // 5. 第二个底必须是最近的（确保W底刚形成）
           if (low2.index < klines.length - 30) continue;
 
           // 计算距颈线的距离
