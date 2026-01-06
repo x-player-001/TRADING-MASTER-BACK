@@ -13,13 +13,14 @@ import { v4 as uuidv4 } from 'uuid';
 
 /**
  * 形态类型
- * 四种核心形态
+ * 五种核心形态
  */
 export type PatternType =
   | 'DOUBLE_BOTTOM'      // 双底
   | 'TRIPLE_BOTTOM'      // 三底
   | 'PULLBACK'           // 上涨回调
-  | 'CONSOLIDATION';     // 横盘震荡
+  | 'CONSOLIDATION'      // 横盘震荡
+  | 'SURGE_W_BOTTOM';    // 上涨后W底
 
 /**
  * 扫描任务状态
@@ -62,6 +63,12 @@ export interface KeyLevels {
   bars_between?: number;       // 两底间隔K线数
   low1_price?: number;         // 第一个底价格
   low2_price?: number;         // 第二个底价格
+  // 上涨后W底形态专用
+  surge_start?: number;        // 起涨点价格
+  surge_high?: number;         // 上涨高点价格
+  surge_pct?: number;          // 上涨幅度 (%)
+  distance_to_bottom_pct?: number;   // 当前价格距底部距离 (%)
+  distance_to_neckline_pct?: number; // 当前价格距颈线距离 (%)
 }
 
 /**
@@ -137,9 +144,9 @@ export class PatternScanRepository extends BaseRepository {
         try {
           await conn.execute(`
             ALTER TABLE pattern_scan_results
-            MODIFY COLUMN pattern_type ENUM('DOUBLE_BOTTOM', 'TRIPLE_BOTTOM', 'PULLBACK', 'CONSOLIDATION') NOT NULL
+            MODIFY COLUMN pattern_type ENUM('DOUBLE_BOTTOM', 'TRIPLE_BOTTOM', 'PULLBACK', 'CONSOLIDATION', 'SURGE_W_BOTTOM') NOT NULL
           `);
-          logger.info('Pattern type ENUM updated to include CONSOLIDATION');
+          logger.info('Pattern type ENUM updated to include SURGE_W_BOTTOM');
         } catch (alter_error: any) {
           // 忽略已经是正确类型的情况
           if (!alter_error.message?.includes('Duplicate')) {

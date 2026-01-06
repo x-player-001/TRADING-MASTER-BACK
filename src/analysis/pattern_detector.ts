@@ -806,6 +806,153 @@ export class PatternDetector {
   }
 
   /**
+   * 自定义参数检测上涨后W底形态
+   *
+   * 形态特征:
+   * 1. 先有一段明显上涨（涨幅 >= min_surge_pct）
+   * 2. 上涨后回调形成W底（双底）
+   * 3. 当前价格接近W底的底部（距离底部 <= max_distance_to_bottom_pct）
+   *
+   * @param klines K线数据
+   * @param min_surge_pct 上涨前的最小涨幅 (%)
+   * @param max_retrace_pct 从高点回调的最大幅度 (%)
+   * @param max_distance_to_bottom_pct 当前价格距W底底部的最大距离 (%)
+   * @returns 检测结果，未检测到返回 null
+   */
+  detect_surge_w_bottom_custom(
+    klines: KlineData[],
+    min_surge_pct: number,
+    max_retrace_pct: number,
+    max_distance_to_bottom_pct: number
+  ): PatternResult | null {
+    if (klines.length < 50) {
+      return null;
+    }
+
+    // 识别波段点
+    const swing_points = this.find_swing_points(klines);
+    const lows = swing_points.filter(p => p.type === 'LOW');
+    const highs = swing_points.filter(p => p.type === 'HIGH');
+
+    if (lows.length < 2 || highs.length < 2) {
+      return null;
+    }
+
+    const current_price = klines[klines.length - 1].close;
+
+    // 遍历寻找：先上涨 → 再形成W底
+    // 需要找到：起涨点(low0) → 高点(high1) → 第一个底(low1) → 反弹高点(high2) → 第二个底(low2)
+    for (let i = 0; i < lows.length - 2; i++) {
+      const low0 = lows[i];  // 起涨点
+
+      // 找起涨点之后的高点
+      const high1_candidates = highs.filter(h => h.index > low0.index);
+      if (high1_candidates.length < 1) continue;
+
+      for (const high1 of high1_candidates) {
+        // 计算上涨幅度
+        const surge_pct = (high1.price - low0.price) / low0.price * 100;
+        if (surge_pct < min_surge_pct) continue;
+
+        // 找高点之后的两个低点（W底的两个底）
+        const w_lows = lows.filter(l => l.index > high1.index);
+        if (w_lows.length < 2) continue;
+
+        for (let j = 0; j < w_lows.length - 1; j++) {
+          const low1 = w_lows[j];      // W底第一个底
+          const low2 = w_lows[j + 1];  // W底第二个底
+
+          // 检查两个低点价差（W底的两个底应该在相近水平）
+          const bottom_diff_pct = Math.abs(low1.price - low2.price) / Math.min(low1.price, low2.price) * 100;
+          if (bottom_diff_pct > 3) continue;  // 两个底价差不超过3%
+
+          // 找两个低点之间的反弹高点（W底的中间高点/颈线）
+          const middle_highs = highs.filter(h => h.index > low1.index && h.index < low2.index);
+          if (middle_highs.length === 0) continue;
+
+          const neckline = Math.max(...middle_highs.map(h => h.price));
+          const bottom_avg = (low1.price + low2.price) / 2;
+
+          // 检查回调幅度（从上涨高点到W底底部的回调）
+          const retrace_pct = (high1.price - bottom_avg) / high1.price * 100;
+          if (retrace_pct > max_retrace_pct) continue;
+
+          // 检查W底的反弹幅度（颈线相对底部至少要有一定反弹）
+          const w_rebound_pct = (neckline - bottom_avg) / bottom_avg * 100;
+          if (w_rebound_pct < 2) continue;  // 至少2%反弹
+
+          // 检查当前价格位置
+          // 1. 必须低于颈线（未突破）
+          if (current_price >= neckline) continue;
+
+          // 2. 必须高于底部
+          if (current_price < bottom_avg) continue;
+
+          // 3. 距离底部不能太远
+          const distance_to_bottom_pct = (current_price - bottom_avg) / bottom_avg * 100;
+          if (distance_to_bottom_pct > max_distance_to_bottom_pct) continue;
+
+          // 4. 第二个底必须是最近的（确保W底刚形成）
+          if (low2.index < klines.length - 30) continue;
+
+          // 计算距颈线的距离
+          const distance_to_neckline_pct = (neckline - current_price) / neckline * 100;
+
+          // 评分
+          let score = 55;
+
+          // 上涨幅度越大越好（满分15分）
+          score += Math.min(15, (surge_pct - min_surge_pct) / min_surge_pct * 10);
+
+          // 两个底越接近越好（满分15分）
+          score += Math.max(0, 15 - bottom_diff_pct * 5);
+
+          // W底反弹幅度越大越好（满分10分）
+          score += Math.min(10, w_rebound_pct * 1.5);
+
+          // 当前价格越接近底部越好（满分10分）
+          if (distance_to_bottom_pct <= 2) {
+            score += 10;
+          } else if (distance_to_bottom_pct <= 5) {
+            score += 7;
+          } else {
+            score += 3;
+          }
+
+          score = Math.min(100, Math.round(score));
+
+          // 根据价格大小决定显示精度
+          const decimals = bottom_avg < 0.01 ? 6 : bottom_avg < 1 ? 4 : 2;
+
+          const target = neckline + (neckline - bottom_avg);  // 目标价 = 颈线 + (颈线 - 底部)
+
+          return {
+            pattern_type: 'SURGE_W_BOTTOM',
+            score,
+            description: `上涨后W底: 涨${surge_pct.toFixed(1)}%, 底部${bottom_avg.toFixed(decimals)}, 颈线${neckline.toFixed(decimals)}, 距底${distance_to_bottom_pct.toFixed(1)}%`,
+            key_levels: {
+              surge_start: low0.price,
+              surge_high: high1.price,
+              surge_pct,
+              support: bottom_avg,
+              neckline,
+              target,
+              stop_loss: bottom_avg * 0.98,
+              low1_price: low1.price,
+              low2_price: low2.price,
+              distance_to_bottom_pct,
+              distance_to_neckline_pct
+            },
+            detected_at: klines[klines.length - 1].open_time
+          };
+        }
+      }
+    }
+
+    return null;
+  }
+
+  /**
    * 自定义参数检测双底形态
    *
    * @param klines K线数据

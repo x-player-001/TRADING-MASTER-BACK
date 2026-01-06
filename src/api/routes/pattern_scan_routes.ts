@@ -6,6 +6,7 @@
  * - POST   /api/pattern-scan/pullback        扫描上涨回调形态（自定义参数）
  * - POST   /api/pattern-scan/consolidation   扫描横盘震荡形态（自定义参数）
  * - POST   /api/pattern-scan/double-bottom   扫描双底形态（自定义参数）
+ * - POST   /api/pattern-scan/surge-w-bottom  扫描上涨后W底形态（自定义参数）
  * - GET    /api/pattern-scan/tasks           获取任务列表
  * - GET    /api/pattern-scan/tasks/:task_id  获取任务状态
  * - GET    /api/pattern-scan/results/:task_id 获取扫描结果
@@ -354,6 +355,103 @@ router.post('/double-bottom', async (req: Request, res: Response): Promise<void>
 });
 
 /**
+ * POST /api/pattern-scan/surge-w-bottom
+ * 扫描上涨后W底形态（自定义参数，同步返回结果）
+ *
+ * 请求体参数:
+ * - interval: K线周期 (5m, 15m, 1h, 4h)，默认 1h
+ * - lookback_bars: 分析的K线数量，默认 100
+ * - min_surge_pct: 最小上涨幅度 (%)，默认 20
+ * - max_retrace_pct: 最大回调幅度 (%)，默认 50
+ * - max_distance_to_bottom_pct: 当前价格距W底底部的最大距离 (%)，默认 5
+ */
+router.post('/surge-w-bottom', async (req: Request, res: Response): Promise<void> => {
+  try {
+    const {
+      interval = '1h',
+      lookback_bars = 100,
+      min_surge_pct = 20,
+      max_retrace_pct = 50,
+      max_distance_to_bottom_pct = 5
+    } = req.body;
+
+    // 验证参数
+    const valid_intervals = ['5m', '15m', '1h', '4h'];
+    if (!valid_intervals.includes(interval)) {
+      res.status(400).json({
+        success: false,
+        error: `Invalid interval. Valid options: ${valid_intervals.join(', ')}`
+      });
+      return;
+    }
+
+    if (lookback_bars < 50 || lookback_bars > 500) {
+      res.status(400).json({
+        success: false,
+        error: 'lookback_bars must be between 50 and 500'
+      });
+      return;
+    }
+
+    if (min_surge_pct < 5 || min_surge_pct > 200) {
+      res.status(400).json({
+        success: false,
+        error: 'min_surge_pct must be between 5 and 200'
+      });
+      return;
+    }
+
+    if (max_retrace_pct < 10 || max_retrace_pct > 80) {
+      res.status(400).json({
+        success: false,
+        error: 'max_retrace_pct must be between 10 and 80'
+      });
+      return;
+    }
+
+    if (max_distance_to_bottom_pct < 1 || max_distance_to_bottom_pct > 20) {
+      res.status(400).json({
+        success: false,
+        error: 'max_distance_to_bottom_pct must be between 1 and 20'
+      });
+      return;
+    }
+
+    const service = get_service();
+
+    // 执行扫描
+    const results = await service.scan_surge_w_bottom({
+      interval,
+      lookback_bars,
+      min_surge_pct,
+      max_retrace_pct,
+      max_distance_to_bottom_pct
+    });
+
+    res.json({
+      success: true,
+      data: {
+        params: {
+          interval,
+          lookback_bars,
+          min_surge_pct,
+          max_retrace_pct,
+          max_distance_to_bottom_pct
+        },
+        results,
+        count: results.length
+      }
+    });
+  } catch (error: any) {
+    logger.error('[PatternScan API] Surge W bottom scan failed:', error);
+    res.status(500).json({
+      success: false,
+      error: error.message
+    });
+  }
+});
+
+/**
  * GET /api/pattern-scan/tasks
  * 获取任务列表
  */
@@ -508,7 +606,8 @@ router.get('/pattern-types', (req: Request, res: Response) => {
     { type: 'DOUBLE_BOTTOM', name: '双底 (W底)', description: '两个相近低点形成的底部形态，等待突破颈线' },
     { type: 'TRIPLE_BOTTOM', name: '三底', description: '三个相近低点形成的更强底部形态，等待突破颈线' },
     { type: 'PULLBACK', name: '上涨回调', description: '主升浪后回调至斐波那契位置企稳' },
-    { type: 'CONSOLIDATION', name: '横盘震荡', description: '窄幅区间长时间横盘，等待突破' }
+    { type: 'CONSOLIDATION', name: '横盘震荡', description: '窄幅区间长时间横盘，等待突破' },
+    { type: 'SURGE_W_BOTTOM', name: '上涨后W底', description: '先有明显上涨，回调后形成W底形态，当前价格接近底部' }
   ];
 
   res.json({

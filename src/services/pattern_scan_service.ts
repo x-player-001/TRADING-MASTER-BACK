@@ -54,6 +54,17 @@ export interface DoubleBottomScanRequest {
 }
 
 /**
+ * 上涨后W底扫描请求参数
+ */
+export interface SurgeWBottomScanRequest {
+  interval: string;                     // K线周期: 5m, 15m, 1h, 4h
+  lookback_bars: number;                // 分析的K线数量
+  min_surge_pct: number;                // 最小上涨幅度 (%)
+  max_retrace_pct: number;              // 最大回调幅度 (%)
+  max_distance_to_bottom_pct: number;   // 当前价格距W底底部的最大距离 (%)
+}
+
+/**
  * 通用扫描结果
  */
 export interface PatternScanResultItem {
@@ -741,6 +752,81 @@ export class PatternScanService {
     results.sort((a, b) => b.score - a.score);
 
     logger.info(`[PatternScan] Double bottom scan completed: ${results.length} patterns found`);
+
+    return results;
+  }
+
+  /**
+   * 扫描上涨后W底形态（同步执行，直接返回结果）
+   *
+   * @param request 扫描参数
+   * @returns 符合条件的币种列表
+   */
+  async scan_surge_w_bottom(request: SurgeWBottomScanRequest): Promise<PatternScanResultItem[]> {
+    const results: PatternScanResultItem[] = [];
+
+    // 从数据库获取有数据的交易对
+    const symbols = await this.get_symbols_from_db(request.interval);
+
+    if (symbols.length === 0) {
+      logger.warn(`[PatternScan] Surge W bottom scan: 数据库中没有 ${request.interval} K线数据`);
+      return results;
+    }
+
+    logger.info(`[PatternScan] Surge W bottom scan: Scanning ${symbols.length} symbols (surge>=${request.min_surge_pct}%, retrace<=${request.max_retrace_pct}%, distance<=${request.max_distance_to_bottom_pct}%)`);
+
+    for (const symbol of symbols) {
+      // 黑名单过滤
+      if (this.blacklist.has(symbol)) {
+        continue;
+      }
+
+      try {
+        // 获取K线数据
+        const klines = await this.get_klines_from_db_only(symbol, request.interval, request.lookback_bars);
+
+        if (klines.length < 50) {
+          continue;
+        }
+
+        // 转换为PatternDetector需要的格式
+        const kline_data: KlineData[] = klines.map(k => ({
+          open_time: k.open_time,
+          close_time: k.close_time,
+          open: k.open,
+          high: k.high,
+          low: k.low,
+          close: k.close,
+          volume: k.volume
+        }));
+
+        // 使用自定义参数检测上涨后W底形态
+        const pattern = this.detector.detect_surge_w_bottom_custom(
+          kline_data,
+          request.min_surge_pct,
+          request.max_retrace_pct,
+          request.max_distance_to_bottom_pct
+        );
+
+        if (pattern) {
+          results.push({
+            symbol,
+            score: pattern.score,
+            description: pattern.description,
+            key_levels: pattern.key_levels,
+            kline_interval: request.interval,
+            detected_at: pattern.detected_at
+          });
+        }
+      } catch (error) {
+        logger.debug(`[PatternScan] Surge W bottom scan failed for ${symbol}: ${error}`);
+      }
+    }
+
+    // 按评分降序排序
+    results.sort((a, b) => b.score - a.score);
+
+    logger.info(`[PatternScan] Surge W bottom scan completed: ${results.length} patterns found`);
 
     return results;
   }
