@@ -586,7 +586,7 @@ export class VolumeMonitorService {
    * 1. 下影线 > 50%
    * 2. 上影线 < 20%
    * 3. 最低价 < EMA120 < 收盘价 (穿越)
-   * 4. 前20根K线的最低价都在EMA120之上（首次下探EMA120）
+   * 4. 前30根K线的最低价都在EMA120之上（首次下探EMA120）
    *
    * @param kline K线数据
    * @param is_final 是否为完结K线
@@ -634,14 +634,14 @@ export class VolumeMonitorService {
       return null;
     }
 
-    // 检查前20根K线的最低价是否都在EMA120之上（首次下探）
-    // 需要至少有20根历史K线（不包括当前K线）
-    const lookback_bars = 20;
+    // 检查前30根K线的最低价是否都在EMA120之上（首次下探）
+    // 需要至少有30根历史K线（不包括当前K线）
+    const lookback_bars = 30;
     if (cache.length < lookback_bars + 1) {
       return null;
     }
 
-    // 获取前20根K线（不包括当前K线，当前K线是cache的最后一根）
+    // 获取前30根K线（不包括当前K线，当前K线是cache的最后一根）
     const prev_klines = cache.slice(-lookback_bars - 1, -1);
     const all_above_ema = prev_klines.every(k => k.low > ema120);
 
@@ -715,7 +715,7 @@ export class VolumeMonitorService {
    * 1. K线为阳线 (close > open)
    * 2. 下影线 >= 70%
    * 3. 上影线 <= 5%
-   * 4. 当前K线最低价是最近20根K线的最低价
+   * 4. 当前K线最低价是最近30根K线的最低价
    *
    * @param kline K线数据
    * @param is_final 是否为完结K线（仅完结K线触发）
@@ -737,7 +737,7 @@ export class VolumeMonitorService {
 
     // 获取K线缓存，检查是否有足够的历史数据
     const cache = this.kline_cache.get(symbol);
-    if (!cache || cache.length < 20) {
+    if (!cache || cache.length < 30) {
       return null;
     }
 
@@ -754,9 +754,9 @@ export class VolumeMonitorService {
       return null;
     }
 
-    // 检查当前K线最低价是否是最近20根K线的最低价
-    const recent_20_klines = cache.slice(-20);
-    const min_low_in_recent = Math.min(...recent_20_klines.map(k => k.low));
+    // 检查当前K线最低价是否是最近30根K线的最低价
+    const recent_30_klines = cache.slice(-30);
+    const min_low_in_recent = Math.min(...recent_30_klines.map(k => k.low));
     if (kline.low > min_low_in_recent) {
       return null;
     }
