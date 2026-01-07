@@ -60,7 +60,10 @@ let perfect_hammer_trader: PerfectHammerTrader | null = null;
 // 批量信号收集器: kline_time -> 信号数组
 // 用于收集同一时间完结的所有K线产生的信号
 const pending_signals: Map<number, Array<{ signal: PerfectHammerResult; kline: Kline5mData }>> = new Map();
-let signal_flush_timer: NodeJS.Timeout | null = null;
+// 每个 kline_time 对应的定时器（一旦设置不重置，固定延迟后处理）
+const signal_timers: Map<number, NodeJS.Timeout> = new Map();
+// 信号收集等待时间（毫秒）- 所有K线同时完结，WebSocket消息在几百毫秒内陆续到达
+const SIGNAL_COLLECT_DELAY_MS = 1000;
 
 // 统计
 const stats = {
@@ -92,45 +95,61 @@ function get_current_time(): string {
 // ==================== 信号收集与交易 ====================
 /**
  * 收集信号用于交易
- * 同一 kline_time 的信号会被收集到一起，延迟 500ms 后统一处理
- * 这样可以确保同一批 K 线完结时产生的所有信号都被收集到
+ *
+ * 逻辑说明：
+ * - 所有5分钟K线同时完结（如 23:25:00）
+ * - WebSocket消息在几百毫秒内陆续到达
+ * - 收到第一个信号时启动固定延迟定时器（不重置）
+ * - 定时器到期后处理该批次所有信号
  */
 function collect_signal_for_trading(signal: PerfectHammerResult, kline: Kline5mData): void {
   const kline_time = signal.kline_time;
 
-  // 添加到对应时间的信号数组
+  // 添加信号到对应时间的数组
   if (!pending_signals.has(kline_time)) {
     pending_signals.set(kline_time, []);
   }
   pending_signals.get(kline_time)!.push({ signal, kline });
 
-  // 重置定时器，等待更多信号
-  if (signal_flush_timer) {
-    clearTimeout(signal_flush_timer);
-  }
+  // 显示当前收集状态
+  const current_count = pending_signals.get(kline_time)!.length;
+  console.log(`   📥 收集信号 #${current_count}: ${signal.symbol} (${format_beijing_time(kline_time)})`);
 
-  // 500ms 后处理信号（给足够时间收集同一批次的所有信号）
-  signal_flush_timer = setTimeout(() => {
-    flush_pending_signals();
-  }, 500);
+  // 如果这个时间点还没有定时器，启动一个（收到第一个信号时）
+  // 定时器不重置，固定延迟后处理
+  if (!signal_timers.has(kline_time)) {
+    console.log(`   ⏱️ 启动 ${SIGNAL_COLLECT_DELAY_MS}ms 收集窗口`);
+    const timer = setTimeout(() => {
+      process_signals_for_time(kline_time);
+    }, SIGNAL_COLLECT_DELAY_MS);
+    signal_timers.set(kline_time, timer);
+  }
 }
 
 /**
- * 处理收集到的信号
+ * 处理指定时间点的所有信号
  */
-async function flush_pending_signals(): Promise<void> {
-  if (!perfect_hammer_trader || pending_signals.size === 0) return;
+async function process_signals_for_time(kline_time: number): Promise<void> {
+  // 清理定时器引用
+  signal_timers.delete(kline_time);
 
-  // 按 kline_time 分组处理
-  for (const [kline_time, signals] of pending_signals) {
-    console.log(`\n📤 处理 ${format_beijing_time(kline_time)} 的 ${signals.length} 个完美倒锤头信号`);
-
-    // 调用交易模块处理这批信号
-    await perfect_hammer_trader.handle_batch_signals(signals);
+  const signals = pending_signals.get(kline_time);
+  if (!signals || signals.length === 0) {
+    pending_signals.delete(kline_time);
+    return;
   }
 
-  // 清空待处理信号
-  pending_signals.clear();
+  console.log(`\n📤 处理 ${format_beijing_time(kline_time)} 的 ${signals.length} 个完美倒锤头信号`);
+
+  // 调用交易模块处理这批信号
+  if (perfect_hammer_trader) {
+    await perfect_hammer_trader.handle_batch_signals(signals).catch((err: Error) => {
+      console.error(`处理信号失败: ${err.message}`);
+    });
+  }
+
+  // 清理已处理的信号
+  pending_signals.delete(kline_time);
 }
 
 // ==================== 初始化 ====================
