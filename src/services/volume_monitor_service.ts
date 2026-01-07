@@ -737,7 +737,7 @@ export class VolumeMonitorService {
 
     // 获取K线缓存，检查是否有足够的历史数据
     const cache = this.kline_cache.get(symbol);
-    if (!cache || cache.length < 30) {
+    if (!cache || cache.length < 40) {
       return null;
     }
 
@@ -754,9 +754,9 @@ export class VolumeMonitorService {
       return null;
     }
 
-    // 检查当前K线最低价是否是最近30根K线的最低价
-    const recent_30_klines = cache.slice(-30);
-    const min_low_in_recent = Math.min(...recent_30_klines.map(k => k.low));
+    // 检查当前K线最低价是否是最近40根K线的最低价
+    const recent_40_klines = cache.slice(-40);
+    const min_low_in_recent = Math.min(...recent_40_klines.map(k => k.low));
     if (kline.low > min_low_in_recent) {
       return null;
     }

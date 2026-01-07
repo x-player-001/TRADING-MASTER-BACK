@@ -10,6 +10,7 @@
  *    - 未完结K线(下跌)：放量≥20x，无递进报警，标记为重要
  * 4. 倒锤头穿越EMA120形态检测（仅完结K线）：下影线>50%，上影线<20%，最低价<EMA120<收盘价，前30根K线最低价都在EMA120之上
  * 5. 完美倒锤头形态检测（独立于EMA，仅完结K线）：阳线 + 下影线>=70% + 上影线<=5% + 最低价是近30根K线最低
+ * 6. 完美倒锤头自动交易（可选）：设置 ENABLE_TRADING=true 启用
  *
  * 注意:
  * - API 接口已集成到主服务 (api_server.ts): /api/volume-monitor/*, /api/pattern-scan/*
@@ -17,6 +18,9 @@
  *
  * 运行命令:
  * npx ts-node -r tsconfig-paths/register scripts/run_volume_monitor.ts
+ *
+ * 启用自动交易:
+ * ENABLE_TRADING=true npx ts-node -r tsconfig-paths/register scripts/run_volume_monitor.ts
  */
 
 import * as dotenv from 'dotenv';
@@ -29,6 +33,7 @@ import { ConfigManager } from '@/core/config/config_manager';
 import { Kline5mRepository, Kline5mData } from '@/database/kline_5m_repository';
 import { KlineAggregator } from '@/core/data/kline_aggregator';
 import { VolumeMonitorService, VolumeCheckResult, HammerCrossResult, PerfectHammerResult } from '@/services/volume_monitor_service';
+import { PerfectHammerTrader } from '@/services/perfect_hammer_trader';
 
 // ==================== 配置 ====================
 const CONFIG = {
@@ -50,6 +55,12 @@ let ws_kline: WebSocket | null = null;
 let kline_5m_repository: Kline5mRepository;
 let kline_aggregator: KlineAggregator;
 let volume_monitor_service: VolumeMonitorService;
+let perfect_hammer_trader: PerfectHammerTrader | null = null;
+
+// 批量信号收集器: kline_time -> 信号数组
+// 用于收集同一时间完结的所有K线产生的信号
+const pending_signals: Map<number, Array<{ signal: PerfectHammerResult; kline: Kline5mData }>> = new Map();
+let signal_flush_timer: NodeJS.Timeout | null = null;
 
 // 统计
 const stats = {
@@ -62,7 +73,8 @@ const stats = {
   aggregated_15m: 0,
   aggregated_1h: 0,
   aggregated_4h: 0,
-  last_kline_time: 0
+  last_kline_time: 0,
+  trading_enabled: false
 };
 
 // ==================== 工具函数 ====================
@@ -75,6 +87,50 @@ function format_beijing_time(ts: number): string {
 
 function get_current_time(): string {
   return new Date().toLocaleTimeString('zh-CN', { hour12: false });
+}
+
+// ==================== 信号收集与交易 ====================
+/**
+ * 收集信号用于交易
+ * 同一 kline_time 的信号会被收集到一起，延迟 500ms 后统一处理
+ * 这样可以确保同一批 K 线完结时产生的所有信号都被收集到
+ */
+function collect_signal_for_trading(signal: PerfectHammerResult, kline: Kline5mData): void {
+  const kline_time = signal.kline_time;
+
+  // 添加到对应时间的信号数组
+  if (!pending_signals.has(kline_time)) {
+    pending_signals.set(kline_time, []);
+  }
+  pending_signals.get(kline_time)!.push({ signal, kline });
+
+  // 重置定时器，等待更多信号
+  if (signal_flush_timer) {
+    clearTimeout(signal_flush_timer);
+  }
+
+  // 500ms 后处理信号（给足够时间收集同一批次的所有信号）
+  signal_flush_timer = setTimeout(() => {
+    flush_pending_signals();
+  }, 500);
+}
+
+/**
+ * 处理收集到的信号
+ */
+async function flush_pending_signals(): Promise<void> {
+  if (!perfect_hammer_trader || pending_signals.size === 0) return;
+
+  // 按 kline_time 分组处理
+  for (const [kline_time, signals] of pending_signals) {
+    console.log(`\n📤 处理 ${format_beijing_time(kline_time)} 的 ${signals.length} 个完美倒锤头信号`);
+
+    // 调用交易模块处理这批信号
+    await perfect_hammer_trader.handle_batch_signals(signals);
+  }
+
+  // 清空待处理信号
+  pending_signals.clear();
 }
 
 // ==================== 初始化 ====================
@@ -90,6 +146,24 @@ async function init_services(): Promise<void> {
 
   // 初始化服务
   await volume_monitor_service.init();
+
+  // 初始化交易模块（可选）
+  if (process.env.ENABLE_TRADING === 'true') {
+    console.log('\n🔴 警告: 自动交易已启用，将使用真实资金!');
+    perfect_hammer_trader = new PerfectHammerTrader();
+    const trading_ok = await perfect_hammer_trader.init();
+    if (trading_ok) {
+      stats.trading_enabled = true;
+      const config = perfect_hammer_trader.get_config();
+      console.log(`✅ 完美倒锤头交易模块已启用`);
+      console.log(`   盈亏比: 1:${config.reward_ratio}`);
+      console.log(`   固定风险: ${config.fixed_risk_amount} USDT/笔`);
+      console.log(`   最大杠杆: ${config.max_leverage}x`);
+      console.log(`   批量信号阈值: ${config.max_concurrent_signals}个`);
+    } else {
+      console.log('⚠️ 交易模块初始化失败，仅监控模式');
+    }
+  }
 
   console.log('✅ 所有服务初始化完成');
 }
@@ -122,16 +196,27 @@ async function process_kline(symbol: string, kline: any, is_final: boolean): Pro
     print_volume_alert(volume_result);
   }
 
+  // 2. 实时更新跟踪止盈（未完结K线也检查，实现"一旦突破就激活"）
+  // 注意：这里传入 is_final 参数，让 trader 区分完结和未完结K线
+  if (perfect_hammer_trader && perfect_hammer_trader.is_enabled()) {
+    await perfect_hammer_trader.on_kline_update(symbol, kline_data, is_final);
+  }
+
   // 只处理完结的K线进行存储和聚合
   if (!is_final) {
     return;
   }
 
-  // 2. 检测完美倒锤头形态（只在K线完结时检查，独立于EMA）
+  // 3. 检测完美倒锤头形态（只在K线完结时检查，独立于EMA）
   const perfect_hammer_result = volume_monitor_service.check_perfect_hammer(kline_data, is_final);
   if (perfect_hammer_result) {
     stats.perfect_hammer_alerts++;
     print_perfect_hammer_alert(perfect_hammer_result, is_final);
+
+    // 收集信号用于交易（延迟处理以收集同一批次的所有信号）
+    if (perfect_hammer_trader && perfect_hammer_trader.is_enabled()) {
+      collect_signal_for_trading(perfect_hammer_result, kline_data);
+    }
   }
 
   // 3. 检测倒锤头穿越EMA120形态（只在K线完结时检查）
@@ -282,6 +367,13 @@ async function print_status(): Promise<void> {
   console.log(`   K线入库: ${db_stats.today_count} (${db_stats.today_symbols}币种)`);
   console.log(`   聚合K线: 15m=${stats.aggregated_15m}, 1h=${stats.aggregated_1h}, 4h=${stats.aggregated_4h}`);
   console.log(`   放量报警: ${stats.volume_alerts} | 倒锤头报警: ${stats.hammer_alerts} | 完美倒锤头: ${stats.perfect_hammer_alerts}`);
+
+  // 交易统计
+  if (perfect_hammer_trader && perfect_hammer_trader.is_enabled()) {
+    const trader_stats = perfect_hammer_trader.get_stats();
+    console.log(`   💰 交易统计: 信号=${trader_stats.signals_received}, 开仓=${trader_stats.trades_opened}, 持仓=${trader_stats.active_positions}`);
+    console.log(`      跳过: 批量=${trader_stats.signals_skipped_batch}, 杠杆=${trader_stats.signals_skipped_leverage}, 持仓=${trader_stats.signals_skipped_position}`);
+  }
 }
 
 // ==================== 主函数 ====================
@@ -338,6 +430,11 @@ async function main() {
     volume_monitor_service.stop();
     kline_aggregator.stop_flush_timer();
     kline_5m_repository.stop_flush_timer();
+
+    // 停止交易模块
+    if (perfect_hammer_trader) {
+      perfect_hammer_trader.stop();
+    }
 
     // 刷新缓冲区
     console.log('💾 正在保存缓冲区数据...');
