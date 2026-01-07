@@ -58,6 +58,42 @@ export interface PatternAlert {
   created_at?: Date;
 }
 
+/**
+ * 交易信号处理日志
+ * 记录每个信号的处理结果（开仓或拒绝）
+ */
+export interface TradingSignalLog {
+  id?: number;
+  symbol: string;
+  kline_time: number;
+  signal_price: number;              // 信号价格
+  stop_loss: number;                 // 止损价
+  stop_pct: number;                  // 止损距离百分比
+  take_profit_target: number;        // 止盈目标价
+  position_value: number;            // 计划仓位价值
+  leverage: number;                  // 计划杠杆
+  action: 'OPENED' | 'REJECTED';     // 处理结果
+  reject_reason?: string;            // 拒绝原因
+  batch_size?: number;               // 批次信号数量
+  lower_shadow_pct: number;          // 下影线百分比
+  upper_shadow_pct: number;          // 上影线百分比
+  created_at?: Date;
+}
+
+/**
+ * 拒绝原因枚举
+ */
+export enum SignalRejectReason {
+  BATCH_TOO_MANY = 'BATCH_TOO_MANY',           // 批量信号过多
+  ALREADY_HAS_POSITION = 'ALREADY_HAS_POSITION', // 已有持仓
+  MAX_POSITIONS_REACHED = 'MAX_POSITIONS_REACHED', // 达到最大持仓数
+  STOP_TOO_SMALL = 'STOP_TOO_SMALL',           // 止损距离太小
+  STOP_TOO_LARGE = 'STOP_TOO_LARGE',           // 止损距离太大
+  LEVERAGE_TOO_HIGH = 'LEVERAGE_TOO_HIGH',     // 杠杆过高
+  PRECISION_ERROR = 'PRECISION_ERROR',         // 精度获取失败
+  ORDER_FAILED = 'ORDER_FAILED'                // 下单失败
+}
+
 export class VolumeMonitorRepository extends BaseRepository {
 
   /**
@@ -126,6 +162,32 @@ export class VolumeMonitorRepository extends BaseRepository {
         ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COMMENT='形态报警记录'
       `;
 
+      // 交易信号处理日志表
+      const create_trading_signal_logs_table = `
+        CREATE TABLE IF NOT EXISTS trading_signal_logs (
+          id BIGINT PRIMARY KEY AUTO_INCREMENT,
+          symbol VARCHAR(20) NOT NULL,
+          kline_time BIGINT NOT NULL,
+          signal_price DECIMAL(20,8) NOT NULL COMMENT '信号价格',
+          stop_loss DECIMAL(20,8) NOT NULL COMMENT '止损价',
+          stop_pct DECIMAL(10,6) NOT NULL COMMENT '止损距离百分比',
+          take_profit_target DECIMAL(20,8) NOT NULL COMMENT '止盈目标价',
+          position_value DECIMAL(20,4) NOT NULL COMMENT '计划仓位价值',
+          leverage DECIMAL(10,2) NOT NULL COMMENT '计划杠杆',
+          action ENUM('OPENED', 'REJECTED') NOT NULL COMMENT '处理结果',
+          reject_reason VARCHAR(50) NULL COMMENT '拒绝原因',
+          batch_size INT NULL COMMENT '批次信号数量',
+          lower_shadow_pct DECIMAL(10,4) NOT NULL COMMENT '下影线百分比',
+          upper_shadow_pct DECIMAL(10,4) NOT NULL COMMENT '上影线百分比',
+          created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+
+          UNIQUE KEY uk_symbol_time (symbol, kline_time),
+          INDEX idx_created_at (created_at),
+          INDEX idx_action (action),
+          INDEX idx_reject_reason (reject_reason)
+        ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COMMENT='交易信号处理日志'
+      `;
+
       // 检查并添加 is_important 字段（兼容旧表）
       const add_is_important_column = `
         ALTER TABLE volume_alerts
@@ -137,6 +199,7 @@ export class VolumeMonitorRepository extends BaseRepository {
         await conn.execute(create_symbols_table);
         await conn.execute(create_alerts_table);
         await conn.execute(create_pattern_alerts_table);
+        await conn.execute(create_trading_signal_logs_table);
 
         // 尝试添加 is_important 字段（如果表已存在但没有此字段）
         try {
@@ -629,5 +692,209 @@ export class VolumeMonitorRepository extends BaseRepository {
       is_final: row.is_final === 1,
       created_at: row.created_at
     };
+  }
+
+  private map_to_signal_log(row: RowDataPacket): TradingSignalLog {
+    return {
+      id: row.id,
+      symbol: row.symbol,
+      kline_time: Number(row.kline_time),
+      signal_price: parseFloat(row.signal_price),
+      stop_loss: parseFloat(row.stop_loss),
+      stop_pct: parseFloat(row.stop_pct),
+      take_profit_target: parseFloat(row.take_profit_target),
+      position_value: parseFloat(row.position_value),
+      leverage: parseFloat(row.leverage),
+      action: row.action,
+      reject_reason: row.reject_reason || undefined,
+      batch_size: row.batch_size || undefined,
+      lower_shadow_pct: parseFloat(row.lower_shadow_pct),
+      upper_shadow_pct: parseFloat(row.upper_shadow_pct),
+      created_at: row.created_at
+    };
+  }
+
+  // ==================== 交易信号日志操作 ====================
+
+  /**
+   * 保存交易信号处理日志
+   */
+  async save_signal_log(log: Omit<TradingSignalLog, 'id' | 'created_at'>): Promise<number> {
+    return this.execute_with_connection(async (conn) => {
+      const [result] = await conn.execute<ResultSetHeader>(
+        `INSERT IGNORE INTO trading_signal_logs
+         (symbol, kline_time, signal_price, stop_loss, stop_pct, take_profit_target,
+          position_value, leverage, action, reject_reason, batch_size,
+          lower_shadow_pct, upper_shadow_pct)
+         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+        [
+          log.symbol,
+          log.kline_time,
+          log.signal_price,
+          log.stop_loss,
+          log.stop_pct,
+          log.take_profit_target,
+          log.position_value,
+          log.leverage,
+          log.action,
+          log.reject_reason || null,
+          log.batch_size || null,
+          log.lower_shadow_pct,
+          log.upper_shadow_pct
+        ]
+      );
+      return result.insertId;
+    });
+  }
+
+  /**
+   * 查询交易信号日志
+   */
+  async get_signal_logs(options: {
+    symbol?: string;
+    date?: string;  // 格式: YYYY-MM-DD
+    start_time?: number;
+    end_time?: number;
+    action?: 'OPENED' | 'REJECTED';
+    reject_reason?: string;
+    limit?: number;
+  } = {}): Promise<TradingSignalLog[]> {
+    return this.execute_with_connection(async (conn) => {
+      let date_start_time: number | undefined;
+      let date_end_time: number | undefined;
+
+      if (options.date) {
+        const date = new Date(options.date + 'T00:00:00+08:00');
+        date_start_time = date.getTime();
+        date_end_time = date_start_time + 24 * 60 * 60 * 1000 - 1;
+      }
+
+      let sql = 'SELECT * FROM trading_signal_logs WHERE 1=1';
+      const params: any[] = [];
+
+      if (options.symbol) {
+        sql += ' AND symbol = ?';
+        params.push(options.symbol.toUpperCase());
+      }
+
+      if (date_start_time !== undefined) {
+        sql += ' AND kline_time >= ?';
+        params.push(date_start_time);
+      } else if (options.start_time) {
+        sql += ' AND kline_time >= ?';
+        params.push(options.start_time);
+      }
+
+      if (date_end_time !== undefined) {
+        sql += ' AND kline_time <= ?';
+        params.push(date_end_time);
+      } else if (options.end_time) {
+        sql += ' AND kline_time <= ?';
+        params.push(options.end_time);
+      }
+
+      if (options.action) {
+        sql += ' AND action = ?';
+        params.push(options.action);
+      }
+
+      if (options.reject_reason) {
+        sql += ' AND reject_reason = ?';
+        params.push(options.reject_reason);
+      }
+
+      sql += ' ORDER BY kline_time DESC';
+
+      if (options.limit) {
+        sql += ' LIMIT ?';
+        params.push(options.limit);
+      }
+
+      const [rows] = await conn.execute<RowDataPacket[]>(sql, params);
+      return rows.map(row => this.map_to_signal_log(row));
+    });
+  }
+
+  /**
+   * 获取信号日志统计
+   */
+  async get_signal_log_statistics(date?: string): Promise<{
+    total: number;
+    opened: number;
+    rejected: number;
+    reject_reasons: { reason: string; count: number }[];
+  }> {
+    return this.execute_with_connection(async (conn) => {
+      let date_start_time: number | undefined;
+      let date_end_time: number | undefined;
+
+      if (date) {
+        const d = new Date(date + 'T00:00:00+08:00');
+        date_start_time = d.getTime();
+        date_end_time = date_start_time + 24 * 60 * 60 * 1000 - 1;
+      }
+
+      // 总计
+      let countSql = 'SELECT action, COUNT(*) as cnt FROM trading_signal_logs WHERE 1=1';
+      const countParams: any[] = [];
+
+      if (date_start_time !== undefined) {
+        countSql += ' AND kline_time >= ? AND kline_time <= ?';
+        countParams.push(date_start_time, date_end_time);
+      }
+
+      countSql += ' GROUP BY action';
+
+      const [countRows] = await conn.execute<RowDataPacket[]>(countSql, countParams);
+
+      let total = 0;
+      let opened = 0;
+      let rejected = 0;
+
+      for (const row of countRows) {
+        const cnt = Number(row.cnt);
+        total += cnt;
+        if (row.action === 'OPENED') opened = cnt;
+        if (row.action === 'REJECTED') rejected = cnt;
+      }
+
+      // 拒绝原因分布
+      let reasonSql = `
+        SELECT reject_reason, COUNT(*) as cnt
+        FROM trading_signal_logs
+        WHERE action = 'REJECTED'
+      `;
+      const reasonParams: any[] = [];
+
+      if (date_start_time !== undefined) {
+        reasonSql += ' AND kline_time >= ? AND kline_time <= ?';
+        reasonParams.push(date_start_time, date_end_time);
+      }
+
+      reasonSql += ' GROUP BY reject_reason ORDER BY cnt DESC';
+
+      const [reasonRows] = await conn.execute<RowDataPacket[]>(reasonSql, reasonParams);
+
+      const reject_reasons = reasonRows.map(row => ({
+        reason: row.reject_reason || 'UNKNOWN',
+        count: Number(row.cnt)
+      }));
+
+      return { total, opened, rejected, reject_reasons };
+    });
+  }
+
+  /**
+   * 清理旧交易信号日志
+   */
+  async cleanup_old_signal_logs(days_to_keep: number = 30): Promise<number> {
+    return this.execute_with_connection(async (conn) => {
+      const cutoff = Date.now() - days_to_keep * 24 * 60 * 60 * 1000;
+      const [result] = await conn.execute<ResultSetHeader>(
+        'DELETE FROM trading_signal_logs WHERE kline_time < ?',
+        [cutoff]
+      );
+      return result.affectedRows;
+    });
   }
 }

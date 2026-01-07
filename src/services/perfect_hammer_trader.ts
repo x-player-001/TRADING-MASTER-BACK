@@ -13,6 +13,7 @@
 
 import { BinanceFuturesTradingAPI, OrderSide, PositionSide } from '@/api/binance_futures_trading_api';
 import { OIRepository } from '@/database/oi_repository';
+import { VolumeMonitorRepository, SignalRejectReason, TradingSignalLog } from '@/database/volume_monitor_repository';
 import { Kline5mData } from '@/database/kline_5m_repository';
 import { PerfectHammerResult } from '@/services/volume_monitor_service';
 import { logger } from '@/utils/logger';
@@ -71,6 +72,7 @@ export class PerfectHammerTrader {
   private config: PerfectHammerTraderConfig;
   private trading_api: BinanceFuturesTradingAPI | null = null;
   private oi_repository: OIRepository | null = null;
+  private volume_monitor_repository: VolumeMonitorRepository | null = null;
   private enabled: boolean = false;
 
   // 当前持仓
@@ -113,6 +115,7 @@ export class PerfectHammerTrader {
     try {
       this.trading_api = new BinanceFuturesTradingAPI(api_key, api_secret, false);
       this.oi_repository = new OIRepository();
+      this.volume_monitor_repository = new VolumeMonitorRepository();
       this.enabled = true;
 
       logger.info('[PerfectHammerTrader] Initialized successfully');
@@ -195,27 +198,47 @@ export class PerfectHammerTrader {
       logger.warn(`[PerfectHammerTrader] Batch signal detected: ${signals.length} signals, skipping all`);
       this.stats.signals_skipped_batch += signals.length;
       console.log(`\n⚠️ 批量信号过多 (${signals.length}个)，跳过本批次所有信号\n`);
+
+      // 保存所有被拒绝的信号日志
+      for (const { signal, kline } of signals) {
+        await this.save_signal_log_rejected(signal, kline, SignalRejectReason.BATCH_TOO_MANY, signals.length);
+      }
       return;
     }
 
     // 逐个处理信号
     for (const { signal, kline } of signals) {
-      await this.handle_single_signal(signal, kline);
+      await this.handle_single_signal(signal, kline, signals.length);
     }
   }
 
   /**
    * 处理单个信号
+   * @param signal 信号数据
+   * @param kline K线数据
+   * @param batch_size 批次信号数量
    */
-  private async handle_single_signal(signal: PerfectHammerResult, kline: Kline5mData): Promise<boolean> {
+  private async handle_single_signal(signal: PerfectHammerResult, kline: Kline5mData, batch_size: number = 1): Promise<boolean> {
     if (!this.trading_api) return false;
 
     const symbol = signal.symbol;
+
+    // 计算止损价和止损距离（提前计算，用于日志记录）
+    const entry_price = signal.current_price;
+    const stop_loss = kline.low;
+    const stop_pct = (entry_price - stop_loss) / entry_price;
+    const risk_amount = this.config.fixed_risk_amount;
+    const position_value = risk_amount / stop_pct;
+    const leverage = position_value / this.config.initial_capital;
+    const take_profit_target = entry_price + (entry_price - stop_loss) * this.config.reward_ratio;
 
     // 检查是否已有该币种的持仓
     if (this.active_positions.has(symbol)) {
       logger.debug(`[PerfectHammerTrader] ${symbol}: Already has position, skipping`);
       this.stats.signals_skipped_position++;
+      await this.save_signal_log_rejected(signal, kline, SignalRejectReason.ALREADY_HAS_POSITION, batch_size, {
+        stop_pct, position_value, leverage, take_profit_target
+      });
       return false;
     }
 
@@ -223,47 +246,47 @@ export class PerfectHammerTrader {
     if (this.active_positions.size >= this.config.max_positions) {
       logger.info(`[PerfectHammerTrader] ${symbol}: Max positions reached (${this.active_positions.size}/${this.config.max_positions}), skipping`);
       this.stats.signals_skipped_position++;
+      await this.save_signal_log_rejected(signal, kline, SignalRejectReason.MAX_POSITIONS_REACHED, batch_size, {
+        stop_pct, position_value, leverage, take_profit_target
+      });
       return false;
     }
-
-    // 计算止损价和止损距离
-    const entry_price = signal.current_price;
-    const stop_loss = kline.low;
-    const stop_pct = (entry_price - stop_loss) / entry_price;
 
     // 检查止损距离
     if (stop_pct < this.config.min_stop_pct) {
       logger.info(`[PerfectHammerTrader] ${symbol}: Stop loss too small (${(stop_pct * 100).toFixed(3)}%), skipping`);
       this.stats.signals_skipped_stop++;
+      await this.save_signal_log_rejected(signal, kline, SignalRejectReason.STOP_TOO_SMALL, batch_size, {
+        stop_pct, position_value, leverage, take_profit_target
+      });
       return false;
     }
 
     if (stop_pct > this.config.max_stop_pct) {
       logger.info(`[PerfectHammerTrader] ${symbol}: Stop loss too large (${(stop_pct * 100).toFixed(3)}%), skipping`);
       this.stats.signals_skipped_stop++;
+      await this.save_signal_log_rejected(signal, kline, SignalRejectReason.STOP_TOO_LARGE, batch_size, {
+        stop_pct, position_value, leverage, take_profit_target
+      });
       return false;
     }
-
-    // 计算仓位大小
-    const risk_amount = this.config.fixed_risk_amount;
-    const position_value = risk_amount / stop_pct;
-
-    // 计算杠杆
-    const leverage = position_value / this.config.initial_capital;
 
     if (leverage > this.config.max_leverage) {
       logger.info(`[PerfectHammerTrader] ${symbol}: Required leverage ${leverage.toFixed(1)}x > max ${this.config.max_leverage}x, skipping`);
       this.stats.signals_skipped_leverage++;
+      await this.save_signal_log_rejected(signal, kline, SignalRejectReason.LEVERAGE_TOO_HIGH, batch_size, {
+        stop_pct, position_value, leverage, take_profit_target
+      });
       return false;
     }
-
-    // 计算止盈目标价（用于判断是否激活跟踪止盈，不实际下单）
-    const take_profit_target = entry_price + (entry_price - stop_loss) * this.config.reward_ratio;
 
     // 获取精度
     const precision = await this.get_symbol_precision(symbol);
     if (!precision) {
       logger.error(`[PerfectHammerTrader] ${symbol}: Failed to get precision, skipping`);
+      await this.save_signal_log_rejected(signal, kline, SignalRejectReason.PRECISION_ERROR, batch_size, {
+        stop_pct, position_value, leverage, take_profit_target
+      });
       return false;
     }
 
@@ -338,11 +361,23 @@ export class PerfectHammerTrader {
       });
 
       this.stats.trades_opened++;
+
+      // 保存成功开仓日志
+      await this.save_signal_log_opened(signal, kline, batch_size, {
+        stop_pct, position_value, leverage, take_profit_target
+      });
+
       return true;
 
     } catch (error: any) {
       logger.error(`[PerfectHammerTrader] ${symbol}: Failed to open position: ${error.message}`);
       console.log(`\n❌ 开仓失败: ${symbol} - ${error.message}\n`);
+
+      // 保存开仓失败日志
+      await this.save_signal_log_rejected(signal, kline, SignalRejectReason.ORDER_FAILED, batch_size, {
+        stop_pct, position_value, leverage, take_profit_target
+      });
+
       return false;
     }
   }
@@ -574,6 +609,98 @@ export class PerfectHammerTrader {
     const step_multiplier = Math.round(quantity / step_size);
     const formatted = step_multiplier * step_size;
     return parseFloat(formatted.toFixed(precision));
+  }
+
+  // ==================== 信号日志保存方法 ====================
+
+  /**
+   * 保存被拒绝的信号日志
+   */
+  private async save_signal_log_rejected(
+    signal: PerfectHammerResult,
+    kline: Kline5mData,
+    reason: SignalRejectReason,
+    batch_size: number,
+    computed?: {
+      stop_pct: number;
+      position_value: number;
+      leverage: number;
+      take_profit_target: number;
+    }
+  ): Promise<void> {
+    if (!this.volume_monitor_repository) return;
+
+    try {
+      // 如果没有预计算值，则计算
+      const entry_price = signal.current_price;
+      const stop_loss = kline.low;
+      const stop_pct = computed?.stop_pct ?? (entry_price - stop_loss) / entry_price;
+      const risk_amount = this.config.fixed_risk_amount;
+      const position_value = computed?.position_value ?? risk_amount / stop_pct;
+      const leverage = computed?.leverage ?? position_value / this.config.initial_capital;
+      const take_profit_target = computed?.take_profit_target ?? entry_price + (entry_price - stop_loss) * this.config.reward_ratio;
+
+      const log: Omit<TradingSignalLog, 'id' | 'created_at'> = {
+        symbol: signal.symbol,
+        kline_time: kline.open_time,
+        signal_price: entry_price,
+        stop_loss: stop_loss,
+        stop_pct: stop_pct,
+        take_profit_target: take_profit_target,
+        position_value: position_value,
+        leverage: leverage,
+        action: 'REJECTED',
+        reject_reason: reason,
+        batch_size: batch_size,
+        lower_shadow_pct: signal.lower_shadow_pct,
+        upper_shadow_pct: signal.upper_shadow_pct
+      };
+
+      await this.volume_monitor_repository.save_signal_log(log);
+      logger.debug(`[PerfectHammerTrader] Signal log saved: ${signal.symbol} REJECTED (${reason})`);
+    } catch (error: any) {
+      logger.warn(`[PerfectHammerTrader] Failed to save signal log: ${error.message}`);
+    }
+  }
+
+  /**
+   * 保存成功开仓的信号日志
+   */
+  private async save_signal_log_opened(
+    signal: PerfectHammerResult,
+    kline: Kline5mData,
+    batch_size: number,
+    computed: {
+      stop_pct: number;
+      position_value: number;
+      leverage: number;
+      take_profit_target: number;
+    }
+  ): Promise<void> {
+    if (!this.volume_monitor_repository) return;
+
+    try {
+      const log: Omit<TradingSignalLog, 'id' | 'created_at'> = {
+        symbol: signal.symbol,
+        kline_time: kline.open_time,
+        signal_price: signal.current_price,
+        stop_loss: kline.low,
+        stop_pct: computed.stop_pct,
+        take_profit_target: computed.take_profit_target,
+        position_value: computed.position_value,
+        leverage: computed.leverage,
+        action: 'OPENED',
+        reject_reason: undefined,
+        batch_size: batch_size,
+        lower_shadow_pct: signal.lower_shadow_pct,
+        upper_shadow_pct: signal.upper_shadow_pct
+      };
+
+      await this.volume_monitor_repository.save_signal_log(log);
+      logger.info(`[PerfectHammerTrader] Signal log saved: ${signal.symbol} OPENED`);
+    } catch (error: any) {
+      logger.warn(`[PerfectHammerTrader] Failed to save signal log: ${error.message}`);
+    }
   }
 
   /**
