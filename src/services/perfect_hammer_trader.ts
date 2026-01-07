@@ -43,7 +43,7 @@ const DEFAULT_CONFIG: PerfectHammerTraderConfig = {
   max_concurrent_signals: 5,
   min_stop_pct: 0.002,    // 0.2%
   max_stop_pct: 0.05,     // 5%
-  max_positions: 3,
+  max_positions: 8,
 };
 
 // ==================== 类型定义 ====================
