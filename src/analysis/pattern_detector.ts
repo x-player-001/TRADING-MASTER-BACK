@@ -1087,4 +1087,186 @@ export class PatternDetector {
 
     return null;
   }
+
+  /**
+   * 计算EMA (Exponential Moving Average)
+   *
+   * @param klines K线数据
+   * @param period EMA周期
+   * @returns EMA值数组
+   */
+  private calculate_ema(klines: KlineData[], period: number): number[] {
+    const ema: number[] = [];
+    const multiplier = 2 / (period + 1);
+
+    for (let i = 0; i < klines.length; i++) {
+      if (i === 0) {
+        ema.push(klines[i].close);
+      } else if (i < period) {
+        // 前period根使用SMA作为初始值
+        const sum = klines.slice(0, i + 1).reduce((acc, k) => acc + k.close, 0);
+        ema.push(sum / (i + 1));
+      } else {
+        ema.push((klines[i].close - ema[i - 1]) * multiplier + ema[i - 1]);
+      }
+    }
+
+    return ema;
+  }
+
+  /**
+   * 自定义参数检测上涨回调靠近EMA形态
+   *
+   * 形态特征:
+   * 1. 先有一段明显上涨（涨幅 >= min_surge_pct）
+   * 2. 上涨后回调（回调幅度 <= max_retrace_pct）
+   * 3. 回调持续一定时间（回调K线数 >= min_retrace_bars）
+   * 4. 当前价格靠近EMA均线（距离 <= max_distance_to_ema_pct）
+   *
+   * @param klines K线数据
+   * @param min_surge_pct 最小上涨幅度 (%)
+   * @param max_retrace_pct 最大回调幅度 (%)
+   * @param min_retrace_bars 最小回调K线数
+   * @param max_distance_to_ema_pct 当前价格距EMA的最大距离 (%)
+   * @param ema_period EMA周期，默认120
+   * @returns 检测结果，未检测到返回 null
+   */
+  detect_surge_ema_pullback_custom(
+    klines: KlineData[],
+    min_surge_pct: number,
+    max_retrace_pct: number,
+    min_retrace_bars: number,
+    max_distance_to_ema_pct: number,
+    ema_period: number = 120
+  ): PatternResult | null {
+    // 需要足够的K线数据计算EMA
+    if (klines.length < ema_period + 20) {
+      return null;
+    }
+
+    // 计算EMA
+    const ema_values = this.calculate_ema(klines, ema_period);
+    const current_ema = ema_values[ema_values.length - 1];
+    const current_price = klines[klines.length - 1].close;
+
+    // 当前价格必须在EMA上方（上涨趋势）
+    if (current_price < current_ema) {
+      return null;
+    }
+
+    // 计算当前价格距EMA的距离
+    const distance_to_ema_pct = (current_price - current_ema) / current_ema * 100;
+
+    // 距离EMA必须在指定范围内
+    if (distance_to_ema_pct > max_distance_to_ema_pct) {
+      return null;
+    }
+
+    // 识别波段点
+    const swing_points = this.find_swing_points(klines);
+    const lows = swing_points.filter(p => p.type === 'LOW');
+    const highs = swing_points.filter(p => p.type === 'HIGH');
+
+    if (lows.length < 1 || highs.length < 1) {
+      return null;
+    }
+
+    const current_index = klines.length - 1;
+
+    // 找最近的波段低点和高点
+    const recent_lows = lows.slice(-5);
+    const recent_highs = highs.slice(-5);
+
+    for (const low of recent_lows) {
+      for (const high of recent_highs) {
+        // 高点必须在低点之后
+        if (high.index <= low.index) continue;
+
+        // 高点必须在当前K线之前
+        if (high.index >= current_index) continue;
+
+        // 计算上涨幅度
+        const surge_pct = (high.price - low.price) / low.price * 100;
+        if (surge_pct < min_surge_pct) continue;
+
+        // 检查回调持续时间
+        const retrace_bars = current_index - high.index;
+        if (retrace_bars < min_retrace_bars) continue;
+
+        // 当前价格必须低于高点（处于回调中）
+        if (current_price >= high.price) continue;
+
+        // 当前价格必须高于起涨点
+        if (current_price <= low.price) continue;
+
+        // 计算回调幅度（相对于涨幅）
+        const surge_amount = high.price - low.price;
+        const retrace_amount = high.price - current_price;
+        const retrace_pct = (retrace_amount / surge_amount) * 100;
+
+        // 回调幅度必须在指定范围内
+        if (retrace_pct > max_retrace_pct) continue;
+
+        // 确定斐波那契位置
+        const retrace_ratio = retrace_pct / 100;
+        let fib_level = '';
+        if (retrace_ratio <= 0.236) {
+          fib_level = '0.236';
+        } else if (retrace_ratio <= 0.382) {
+          fib_level = '0.382';
+        } else if (retrace_ratio <= 0.5) {
+          fib_level = '0.5';
+        } else if (retrace_ratio <= 0.618) {
+          fib_level = '0.618';
+        } else {
+          fib_level = '>0.618';
+        }
+
+        // 评分
+        let score = 50;
+
+        // 涨幅越大越好（满分20分）
+        score += Math.min(20, (surge_pct - min_surge_pct) / min_surge_pct * 15);
+
+        // 回调越浅越好（满分15分）
+        score += Math.max(0, 15 - retrace_pct / max_retrace_pct * 15);
+
+        // 距离EMA越近越好（满分15分）
+        score += Math.max(0, 15 - distance_to_ema_pct / max_distance_to_ema_pct * 15);
+
+        // 回调时间适中加分（满分10分）
+        if (retrace_bars >= min_retrace_bars && retrace_bars <= min_retrace_bars * 3) {
+          score += 10;
+        } else if (retrace_bars <= min_retrace_bars * 5) {
+          score += 5;
+        }
+
+        score = Math.min(100, Math.round(score));
+
+        // 根据价格大小决定显示精度
+        const decimals = current_price < 0.01 ? 6 : current_price < 1 ? 4 : 2;
+
+        return {
+          pattern_type: 'SURGE_EMA_PULLBACK',
+          score,
+          description: `上涨回调靠近EMA${ema_period}: 涨${surge_pct.toFixed(1)}%, 回调${retrace_pct.toFixed(1)}% (${fib_level}), 距EMA${distance_to_ema_pct.toFixed(1)}%`,
+          key_levels: {
+            swing_low: low.price,
+            swing_high: high.price,
+            surge_pct,
+            ema_value: current_ema,
+            distance_to_ema_pct,
+            retrace_pct,
+            retrace_bars,
+            support: current_ema,
+            target: high.price * 1.1,  // 目标突破前高10%
+            stop_loss: current_ema * 0.98
+          },
+          detected_at: klines[klines.length - 1].open_time
+        };
+      }
+    }
+
+    return null;
+  }
 }

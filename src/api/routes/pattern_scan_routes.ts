@@ -7,6 +7,7 @@
  * - POST   /api/pattern-scan/consolidation   扫描横盘震荡形态（自定义参数）
  * - POST   /api/pattern-scan/double-bottom   扫描双底形态（自定义参数）
  * - POST   /api/pattern-scan/surge-w-bottom  扫描上涨后W底形态（自定义参数）
+ * - POST   /api/pattern-scan/surge-ema-pullback 扫描上涨回调靠近EMA形态（自定义参数）
  * - GET    /api/pattern-scan/tasks           获取任务列表
  * - GET    /api/pattern-scan/tasks/:task_id  获取任务状态
  * - GET    /api/pattern-scan/results/:task_id 获取扫描结果
@@ -452,6 +453,136 @@ router.post('/surge-w-bottom', async (req: Request, res: Response): Promise<void
 });
 
 /**
+ * POST /api/pattern-scan/surge-ema-pullback
+ * 扫描上涨回调靠近EMA形态（自定义参数，同步返回结果）
+ *
+ * 请求体参数:
+ * - interval: K线周期 (5m, 15m, 1h, 4h)，默认 4h
+ * - lookback_bars: 分析的K线数量，默认 200
+ * - min_surge_pct: 最小上涨幅度 (%)，默认 30
+ * - max_retrace_pct: 最大回调幅度 (%)，默认 50
+ * - min_retrace_bars: 最小回调K线数，默认 10
+ * - max_distance_to_ema_pct: 当前价格距EMA的最大距离 (%)，默认 5
+ * - ema_period: EMA周期，默认 120
+ */
+router.post('/surge-ema-pullback', async (req: Request, res: Response): Promise<void> => {
+  try {
+    const {
+      interval = '4h',
+      lookback_bars = 200,
+      min_surge_pct = 30,
+      max_retrace_pct = 50,
+      min_retrace_bars = 10,
+      max_distance_to_ema_pct = 5,
+      ema_period = 120
+    } = req.body;
+
+    // 验证参数
+    const valid_intervals = ['5m', '15m', '1h', '4h'];
+    if (!valid_intervals.includes(interval)) {
+      res.status(400).json({
+        success: false,
+        error: `Invalid interval. Valid options: ${valid_intervals.join(', ')}`
+      });
+      return;
+    }
+
+    if (lookback_bars < 50 || lookback_bars > 1000) {
+      res.status(400).json({
+        success: false,
+        error: 'lookback_bars must be between 50 and 1000'
+      });
+      return;
+    }
+
+    if (min_surge_pct < 5 || min_surge_pct > 500) {
+      res.status(400).json({
+        success: false,
+        error: 'min_surge_pct must be between 5 and 500'
+      });
+      return;
+    }
+
+    if (max_retrace_pct < 10 || max_retrace_pct > 100) {
+      res.status(400).json({
+        success: false,
+        error: 'max_retrace_pct must be between 10 and 100'
+      });
+      return;
+    }
+
+    if (min_retrace_bars < 1 || min_retrace_bars > 100) {
+      res.status(400).json({
+        success: false,
+        error: 'min_retrace_bars must be between 1 and 100'
+      });
+      return;
+    }
+
+    if (max_distance_to_ema_pct < 0.1 || max_distance_to_ema_pct > 30) {
+      res.status(400).json({
+        success: false,
+        error: 'max_distance_to_ema_pct must be between 0.1 and 30'
+      });
+      return;
+    }
+
+    if (ema_period < 10 || ema_period > 500) {
+      res.status(400).json({
+        success: false,
+        error: 'ema_period must be between 10 and 500'
+      });
+      return;
+    }
+
+    // 验证 lookback_bars 是否足够计算 EMA
+    if (lookback_bars < ema_period + 20) {
+      res.status(400).json({
+        success: false,
+        error: `lookback_bars must be at least ${ema_period + 20} (ema_period + 20) to calculate EMA${ema_period}`
+      });
+      return;
+    }
+
+    const service = get_service();
+
+    // 执行扫描
+    const results = await service.scan_surge_ema_pullback({
+      interval,
+      lookback_bars,
+      min_surge_pct,
+      max_retrace_pct,
+      min_retrace_bars,
+      max_distance_to_ema_pct,
+      ema_period
+    });
+
+    res.json({
+      success: true,
+      data: {
+        params: {
+          interval,
+          lookback_bars,
+          min_surge_pct,
+          max_retrace_pct,
+          min_retrace_bars,
+          max_distance_to_ema_pct,
+          ema_period
+        },
+        results,
+        count: results.length
+      }
+    });
+  } catch (error: any) {
+    logger.error('[PatternScan API] Surge EMA pullback scan failed:', error);
+    res.status(500).json({
+      success: false,
+      error: error.message
+    });
+  }
+});
+
+/**
  * GET /api/pattern-scan/tasks
  * 获取任务列表
  */
@@ -607,7 +738,8 @@ router.get('/pattern-types', (req: Request, res: Response) => {
     { type: 'TRIPLE_BOTTOM', name: '三底', description: '三个相近低点形成的更强底部形态，等待突破颈线' },
     { type: 'PULLBACK', name: '上涨回调', description: '主升浪后回调至斐波那契位置企稳' },
     { type: 'CONSOLIDATION', name: '横盘震荡', description: '窄幅区间长时间横盘，等待突破' },
-    { type: 'SURGE_W_BOTTOM', name: '上涨后W底', description: '先有明显上涨，回调后形成W底形态，当前价格接近底部' }
+    { type: 'SURGE_W_BOTTOM', name: '上涨后W底', description: '先有明显上涨，回调后形成W底形态，当前价格接近底部' },
+    { type: 'SURGE_EMA_PULLBACK', name: '上涨回调靠近EMA', description: '先有明显上涨，回调后靠近EMA均线，当前价格在EMA上方' }
   ];
 
   res.json({

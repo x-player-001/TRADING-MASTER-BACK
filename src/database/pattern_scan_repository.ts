@@ -20,7 +20,8 @@ export type PatternType =
   | 'TRIPLE_BOTTOM'      // 三底
   | 'PULLBACK'           // 上涨回调
   | 'CONSOLIDATION'      // 横盘震荡
-  | 'SURGE_W_BOTTOM';    // 上涨后W底
+  | 'SURGE_W_BOTTOM'     // 上涨后W底
+  | 'SURGE_EMA_PULLBACK'; // 上涨回调靠近EMA
 
 /**
  * 扫描任务状态
@@ -69,6 +70,11 @@ export interface KeyLevels {
   surge_pct?: number;          // 上涨幅度 (%)
   distance_to_bottom_pct?: number;   // 当前价格距底部距离 (%)
   distance_to_neckline_pct?: number; // 当前价格距颈线距离 (%)
+  // 上涨回调靠近EMA形态专用
+  ema_value?: number;          // EMA均线值
+  distance_to_ema_pct?: number; // 当前价格距EMA的距离 (%)
+  retrace_pct?: number;        // 回调幅度 (%)
+  retrace_bars?: number;       // 回调持续K线数
 }
 
 /**
@@ -144,9 +150,9 @@ export class PatternScanRepository extends BaseRepository {
         try {
           await conn.execute(`
             ALTER TABLE pattern_scan_results
-            MODIFY COLUMN pattern_type ENUM('DOUBLE_BOTTOM', 'TRIPLE_BOTTOM', 'PULLBACK', 'CONSOLIDATION', 'SURGE_W_BOTTOM') NOT NULL
+            MODIFY COLUMN pattern_type ENUM('DOUBLE_BOTTOM', 'TRIPLE_BOTTOM', 'PULLBACK', 'CONSOLIDATION', 'SURGE_W_BOTTOM', 'SURGE_EMA_PULLBACK') NOT NULL
           `);
-          logger.info('Pattern type ENUM updated to include SURGE_W_BOTTOM');
+          logger.info('Pattern type ENUM updated to include SURGE_EMA_PULLBACK');
         } catch (alter_error: any) {
           // 忽略已经是正确类型的情况
           if (!alter_error.message?.includes('Duplicate')) {

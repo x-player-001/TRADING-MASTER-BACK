@@ -65,6 +65,19 @@ export interface SurgeWBottomScanRequest {
 }
 
 /**
+ * 上涨回调靠近EMA扫描请求参数
+ */
+export interface SurgeEmaPullbackScanRequest {
+  interval: string;                     // K线周期: 5m, 15m, 1h, 4h
+  lookback_bars: number;                // 分析的K线数量
+  min_surge_pct: number;                // 最小上涨幅度 (%)
+  max_retrace_pct: number;              // 最大回调幅度 (%)
+  min_retrace_bars: number;             // 最小回调K线数
+  max_distance_to_ema_pct: number;      // 当前价格距EMA的最大距离 (%)
+  ema_period: number;                   // EMA周期，默认120
+}
+
+/**
  * 通用扫描结果
  */
 export interface PatternScanResultItem {
@@ -827,6 +840,83 @@ export class PatternScanService {
     results.sort((a, b) => b.score - a.score);
 
     logger.info(`[PatternScan] Surge W bottom scan completed: ${results.length} patterns found`);
+
+    return results;
+  }
+
+  /**
+   * 扫描上涨回调靠近EMA形态（同步执行，直接返回结果）
+   *
+   * @param request 扫描参数
+   * @returns 符合条件的币种列表
+   */
+  async scan_surge_ema_pullback(request: SurgeEmaPullbackScanRequest): Promise<PatternScanResultItem[]> {
+    const results: PatternScanResultItem[] = [];
+
+    // 从数据库获取有数据的交易对
+    const symbols = await this.get_symbols_from_db(request.interval);
+
+    if (symbols.length === 0) {
+      logger.warn(`[PatternScan] Surge EMA pullback scan: 数据库中没有 ${request.interval} K线数据`);
+      return results;
+    }
+
+    logger.info(`[PatternScan] Surge EMA pullback scan: Scanning ${symbols.length} symbols (surge>=${request.min_surge_pct}%, retrace<=${request.max_retrace_pct}%, bars>=${request.min_retrace_bars}, ema_distance<=${request.max_distance_to_ema_pct}%, ema_period=${request.ema_period})`);
+
+    for (const symbol of symbols) {
+      // 黑名单过滤
+      if (this.blacklist.has(symbol)) {
+        continue;
+      }
+
+      try {
+        // 获取K线数据（需要足够的数据计算EMA）
+        const klines = await this.get_klines_from_db_only(symbol, request.interval, request.lookback_bars);
+
+        if (klines.length < request.ema_period + 20) {
+          continue;
+        }
+
+        // 转换为PatternDetector需要的格式
+        const kline_data: KlineData[] = klines.map(k => ({
+          open_time: k.open_time,
+          close_time: k.close_time,
+          open: k.open,
+          high: k.high,
+          low: k.low,
+          close: k.close,
+          volume: k.volume
+        }));
+
+        // 使用自定义参数检测上涨回调靠近EMA形态
+        const pattern = this.detector.detect_surge_ema_pullback_custom(
+          kline_data,
+          request.min_surge_pct,
+          request.max_retrace_pct,
+          request.min_retrace_bars,
+          request.max_distance_to_ema_pct,
+          request.ema_period
+        );
+
+        if (pattern) {
+          results.push({
+            symbol,
+            score: pattern.score,
+            description: pattern.description,
+            key_levels: pattern.key_levels,
+            kline_interval: request.interval,
+            detected_at: pattern.detected_at
+          });
+        }
+      } catch (error) {
+        logger.debug(`[PatternScan] Surge EMA pullback scan failed for ${symbol}: ${error}`);
+      }
+    }
+
+    // 按评分降序排序
+    results.sort((a, b) => b.score - a.score);
+
+    logger.info(`[PatternScan] Surge EMA pullback scan completed: ${results.length} patterns found`);
 
     return results;
   }
