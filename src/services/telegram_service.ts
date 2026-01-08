@@ -361,7 +361,17 @@ export class TelegramService {
         return false;
       }
 
-      logger.error('[Telegram] Failed to send message:', error.message);
+      // 详细记录错误信息
+      const error_details = {
+        message: error.message || 'Unknown error',
+        code: error.code || 'N/A',
+        status: error.response?.status || 'N/A',
+        response_data: error.response?.data || null,
+        errno: error.errno || 'N/A',
+        syscall: error.syscall || 'N/A',
+        hostname: error.hostname || 'N/A'
+      };
+      logger.error('[Telegram] Failed to send message:', JSON.stringify(error_details));
       return false;
     }
   }

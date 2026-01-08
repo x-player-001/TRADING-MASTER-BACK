@@ -4,9 +4,10 @@
  * 策略规则:
  * 1. 入场: 完美倒锤头信号触发后立即做多
  * 2. 止损: 倒锤头K线最低价
- * 3. 止盈: 固定金额 (默认70U)
- * 4. 止损金额: 固定金额 (默认50U)
- * 5. 仓位: 根据止损金额和止损距离自动计算
+ * 3. 保本止损: 5根K线后，如果价格高于开盘价且低于止盈目标，止损移到开盘价
+ * 4. 止盈: 固定金额 (默认70U)
+ * 5. 止损金额: 固定金额 (默认50U)
+ * 6. 仓位: 根据止损金额和止损距离自动计算
  *
  * 运行命令:
  * npx ts-node -r tsconfig-paths/register scripts/backtest_perfect_hammer.ts
@@ -22,13 +23,14 @@ import { DatabaseConfig } from '@/core/config/database';
 const CONFIG = {
   // 回测时间范围
   start_date: '2026-01-06',
-  end_date: '2026-01-07',
+  end_date: '2026-01-08',
 
   // ========== 资金管理参数 (固定金额模式) ==========
   initial_capital: 20,      // 初始本金 (USDT)
   fixed_risk_amount: 2,     // 固定每笔风险金额 (USDT)
   reward_ratio: 1.4,        // 盈亏比 (止盈 = 止损 * 1.4)
   max_leverage: 20,         // 最大杠杆倍数
+  min_leverage: 5,          // 最小杠杆倍数 (过滤影线过长的信号)
   use_compound: false,      // 是否使用复利模式 (false = 固定金额)
 
   // 信号过滤
@@ -332,6 +334,11 @@ function calculate_position_size(
     return null; // 杠杆过高，跳过
   }
 
+  // 检查杠杆是否低于最小限制 (影线过长)
+  if (leverage < CONFIG.min_leverage) {
+    return null; // 杠杆过低，影线过长，跳过
+  }
+
   // 合约数量
   const position_size = position_value / entry_price;
 
@@ -349,6 +356,9 @@ function simulate_trade(
 
   // 止损价格 = 信号K线最低价
   const stop_loss = signal_kline.low;
+
+  // 保本止损价 = 信号K线开盘价
+  const breakeven_stop = signal_kline.open;
 
   // 计算风险金额 (当前资金的固定百分比)
   const risk_amount = calculate_risk_amount(current_capital);
@@ -386,11 +396,22 @@ function simulate_trade(
   // 跟踪止盈相关
   let current_stop = stop_loss;  // 当前止损价
   let trailing_active = false;   // 是否激活跟踪止盈
+  let breakeven_active = false;  // 是否激活保本止损
   let prev_kline_low = 0;        // 上一根K线最低价（用于跟踪止盈判断）
 
   // 模拟持仓
   for (let i = 0; i < following_klines.length && i < CONFIG.max_hold_bars; i++) {
     const kline = following_klines[i];
+
+    // 阶段0: 检查保本止损条件（5根K线后）- 暂时禁用
+    // 条件：持仓>=5根K线、价格高于开盘价、尚未触及止盈目标、未激活跟踪止盈
+    // if (!breakeven_active && !trailing_active && i >= 5) {
+    //   // 检查当前K线收盘价是否高于开盘价且低于止盈目标
+    //   if (kline.close > breakeven_stop && kline.close < take_profit) {
+    //     breakeven_active = true;
+    //     current_stop = breakeven_stop;  // 止损移动到开盘价（保本）
+    //   }
+    // }
 
     // 阶段1: 未激活跟踪止盈，检查是否突破原止盈位
     if (!trailing_active) {
@@ -398,7 +419,7 @@ function simulate_trade(
       if (kline.low <= current_stop) {
         trade.exit_time = kline.open_time;
         trade.exit_price = current_stop * (1 - CONFIG.slippage);
-        trade.exit_reason = 'STOP_LOSS';
+        trade.exit_reason = breakeven_active ? 'BREAKEVEN' : 'STOP_LOSS';
         trade.hold_bars = i + 1;
         break;
       }
@@ -574,7 +595,7 @@ async function main() {
   console.log(`   初始本金: ${CONFIG.initial_capital} U`);
   console.log(`   单笔风险: ${CONFIG.fixed_risk_amount} U (固定)`);
   console.log(`   盈亏比: 1:${CONFIG.reward_ratio}`);
-  console.log(`   最大杠杆: ${CONFIG.max_leverage}x`);
+  console.log(`   杠杆范围: ${CONFIG.min_leverage}x ~ ${CONFIG.max_leverage}x`);
   console.log(`   止损范围: ${CONFIG.min_stop_pct * 100}% ~ ${CONFIG.max_stop_pct * 100}%`);
   console.log(`   手续费率: ${CONFIG.fee_rate * 100}%`);
   console.log(`   最大持仓: ${CONFIG.max_hold_bars} 根K线 (${CONFIG.max_hold_bars * 5 / 60} 小时)`);
@@ -681,6 +702,12 @@ async function main() {
     const estimated_leverage = estimated_position_value / leverage_base;
 
     if (estimated_leverage > CONFIG.max_leverage) {
+      skip_leverage_count++;
+      continue;
+    }
+
+    // 检查杠杆是否低于最小限制 (影线过长)
+    if (estimated_leverage < CONFIG.min_leverage) {
       skip_leverage_count++;
       continue;
     }
