@@ -66,7 +66,7 @@ export interface PerfectHammerResult {
 const DEFAULT_CONFIG = {
   // 完结K线配置
   volume_multiplier: 5.0,        // 放量倍数阈值
-  max_upper_shadow_pct: 50,      // 上影线最大比例 (%)
+  max_upper_shadow_pct: 60,      // 上影线最大比例 (%)
   important_threshold: 10,       // 重要信号阈值 (≥10x)
   // 未完结K线配置 (递进报警阈值)
   pending_thresholds: [10, 15, 20] as const,  // 上涨时: 10倍→15倍→20倍，最多报警3次

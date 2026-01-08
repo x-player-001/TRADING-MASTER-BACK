@@ -30,7 +30,7 @@ const CONFIG = {
   fixed_risk_amount: 2,     // 固定每笔风险金额 (USDT)
   reward_ratio: 1.4,        // 盈亏比 (止盈 = 止损 * 1.4)
   max_leverage: 20,         // 最大杠杆倍数
-  min_leverage: 5,          // 最小杠杆倍数 (过滤影线过长的信号)
+  min_leverage: 0,          // 最小杠杆倍数 (0=不过滤)
   use_compound: false,      // 是否使用复利模式 (false = 固定金额)
 
   // 信号过滤
