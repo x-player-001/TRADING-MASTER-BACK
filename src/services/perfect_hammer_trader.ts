@@ -480,6 +480,14 @@ export class PerfectHammerTrader {
       logger.info(`[PerfectHammerTrader] ${position.symbol}: New stop @ ${formatted_stop}, algoId=${sl_result.algoId}`);
     } catch (error: any) {
       logger.error(`[PerfectHammerTrader] ${position.symbol}: Failed to place new stop: ${error.message}`);
+
+      // 如果止损单无法挂上（如 "Order would immediately trigger"），说明价格已跌破止损位
+      // 立即市价平仓保护资金
+      if (error.message?.includes('immediately trigger')) {
+        console.log(`\n⚠️ [PerfectHammer] ${position.symbol} 止损单无法挂上，价格已跌破止损位，立即市价平仓!`);
+        logger.warn(`[PerfectHammerTrader] ${position.symbol}: Stop order would trigger immediately, closing position`);
+        await this.close_position_market(position);
+      }
     }
   }
 
