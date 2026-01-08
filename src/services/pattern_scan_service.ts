@@ -31,6 +31,7 @@ export interface PullbackScanRequest {
   lookback_bars: number;      // 分析的K线数量
   min_surge_pct: number;      // 最小上涨幅度 (%)
   max_retrace_pct: number;    // 最大回调幅度 (%)
+  end_time?: number;          // 最后一根K线时间 (ms)，默认当前时间
 }
 
 /**
@@ -41,6 +42,7 @@ export interface ConsolidationScanRequest {
   min_bars: number;               // 最小横盘K线数量
   max_range_pct: number;          // 最大震荡幅度 (%)
   require_fake_breakdown: boolean; // 是否要求有向下假突破
+  end_time?: number;              // 最后一根K线时间 (ms)，默认当前时间
 }
 
 /**
@@ -51,6 +53,7 @@ export interface DoubleBottomScanRequest {
   lookback_bars: number;          // 分析的K线数量
   min_bars_between: number;       // 两个底之间最小K线数量
   bottom_tolerance_pct: number;   // 底部价差容忍度 (%)
+  end_time?: number;              // 最后一根K线时间 (ms)，默认当前时间
 }
 
 /**
@@ -62,6 +65,7 @@ export interface SurgeWBottomScanRequest {
   min_surge_pct: number;                // 最小上涨幅度 (%)
   max_retrace_pct: number;              // 最大回调幅度 (%)
   max_distance_to_bottom_pct: number;   // 当前价格距W底底部的最大距离 (%)
+  end_time?: number;                    // 最后一根K线时间 (ms)，默认当前时间
 }
 
 /**
@@ -75,6 +79,7 @@ export interface SurgeEmaPullbackScanRequest {
   min_retrace_bars: number;             // 最小回调K线数
   max_distance_to_ema_pct: number;      // 当前价格距EMA的最大距离 (%)
   ema_period: number;                   // EMA周期，默认120
+  end_time?: number;                    // 最后一根K线时间 (ms)，默认当前时间
 }
 
 /**
@@ -327,17 +332,42 @@ export class PatternScanService {
 
   /**
    * 仅从本地数据库获取K线数据（不请求API）
+   *
+   * @param symbol 交易对
+   * @param interval K线周期
+   * @param limit K线数量
+   * @param end_time 最后一根K线时间 (ms)，默认当前时间
    */
   private async get_klines_from_db_only(
     symbol: string,
     interval: string,
-    limit: number
+    limit: number,
+    end_time?: number
   ): Promise<(Kline5mData | AggregatedKline)[]> {
     if (interval === '5m') {
       // 直接从数据库获取5m K线
-      return this.get_5m_klines_from_db(symbol, limit);
+      return this.get_5m_klines_from_db(symbol, limit, end_time);
     } else {
-      // 聚合周期，先尝试从聚合缓存获取
+      // 如果指定了 end_time，直接从数据库获取（不使用缓存）
+      if (end_time) {
+        const db_klines = await this.get_aggregated_klines_from_db(symbol, interval, limit, end_time);
+        if (db_klines.length >= limit * 0.5) {
+          return db_klines;
+        }
+
+        // 聚合表数据不足，尝试从5m数据聚合
+        const interval_ms = this.get_interval_ms(interval);
+        const required_5m = Math.ceil(limit * interval_ms / (5 * 60 * 1000)) + 10;
+        const klines_5m = await this.get_5m_klines_from_db(symbol, required_5m, end_time);
+
+        if (klines_5m.length >= required_5m * 0.5) {
+          return this.aggregate_klines(symbol, klines_5m, interval);
+        }
+
+        return db_klines;
+      }
+
+      // 未指定 end_time，使用缓存逻辑
       const cached = this.aggregator.get_aggregated_klines(symbol, interval);
       if (cached.length >= limit) {
         return cached.slice(-limit);
@@ -366,27 +396,37 @@ export class PatternScanService {
 
   /**
    * 仅从数据库获取5m K线（不请求API）
+   *
+   * @param symbol 交易对
+   * @param limit K线数量
+   * @param end_time 最后一根K线时间 (ms)，默认当前时间
    */
-  private async get_5m_klines_from_db(symbol: string, limit: number): Promise<Kline5mData[]> {
-    const now = Date.now();
-    const start_time = now - (limit + 10) * 5 * 60 * 1000;
+  private async get_5m_klines_from_db(symbol: string, limit: number, end_time?: number): Promise<Kline5mData[]> {
+    const end = end_time || Date.now();
+    const start_time = end - (limit + 10) * 5 * 60 * 1000;
 
-    return this.kline_5m_repository.get_klines_by_time_range(symbol, start_time, now);
+    return this.kline_5m_repository.get_klines_by_time_range(symbol, start_time, end);
   }
 
   /**
    * 从数据库获取聚合K线
+   *
+   * @param symbol 交易对
+   * @param interval K线周期
+   * @param limit K线数量
+   * @param end_time 最后一根K线时间 (ms)，默认当前时间
    */
   private async get_aggregated_klines_from_db(
     symbol: string,
     interval: string,
-    limit: number
+    limit: number,
+    end_time?: number
   ): Promise<AggregatedKline[]> {
     const interval_ms = this.get_interval_ms(interval);
-    const now = Date.now();
-    const start_time = now - (limit + 10) * interval_ms;
+    const end = end_time || Date.now();
+    const start_time = end - (limit + 10) * interval_ms;
 
-    return this.aggregator.get_klines_from_db(symbol, interval, start_time, now);
+    return this.aggregator.get_klines_from_db(symbol, interval, start_time, end);
   }
 
   /**
@@ -562,7 +602,7 @@ export class PatternScanService {
       return results;
     }
 
-    logger.info(`[PatternScan] Pullback scan: Scanning ${symbols.length} symbols (surge>=${request.min_surge_pct}%, retrace<=${request.max_retrace_pct}%)`);
+    logger.info(`[PatternScan] Pullback scan: Scanning ${symbols.length} symbols (surge>=${request.min_surge_pct}%, retrace<=${request.max_retrace_pct}%${request.end_time ? `, end_time=${new Date(request.end_time).toISOString()}` : ''})`);
 
     for (const symbol of symbols) {
       // 黑名单过滤
@@ -572,7 +612,7 @@ export class PatternScanService {
 
       try {
         // 获取K线数据
-        const klines = await this.get_klines_from_db_only(symbol, request.interval, request.lookback_bars);
+        const klines = await this.get_klines_from_db_only(symbol, request.interval, request.lookback_bars, request.end_time);
 
         if (klines.length < 30) {
           continue;
@@ -637,7 +677,8 @@ export class PatternScanService {
     }
 
     const fake_desc = request.require_fake_breakdown ? ', 要求假突破' : '';
-    logger.info(`[PatternScan] Consolidation scan: Scanning ${symbols.length} symbols (bars>=${request.min_bars}, range<=${request.max_range_pct}%${fake_desc})`);
+    const end_time_desc = request.end_time ? `, end_time=${new Date(request.end_time).toISOString()}` : '';
+    logger.info(`[PatternScan] Consolidation scan: Scanning ${symbols.length} symbols (bars>=${request.min_bars}, range<=${request.max_range_pct}%${fake_desc}${end_time_desc})`);
 
     for (const symbol of symbols) {
       // 黑名单过滤
@@ -647,7 +688,7 @@ export class PatternScanService {
 
       try {
         // 获取K线数据
-        const klines = await this.get_klines_from_db_only(symbol, request.interval, request.min_bars + 20);
+        const klines = await this.get_klines_from_db_only(symbol, request.interval, request.min_bars + 20, request.end_time);
 
         if (klines.length < request.min_bars) {
           continue;
@@ -712,7 +753,7 @@ export class PatternScanService {
       return results;
     }
 
-    logger.info(`[PatternScan] Double bottom scan: Scanning ${symbols.length} symbols (min_bars_between>=${request.min_bars_between}, tolerance<=${request.bottom_tolerance_pct}%)`);
+    logger.info(`[PatternScan] Double bottom scan: Scanning ${symbols.length} symbols (min_bars_between>=${request.min_bars_between}, tolerance<=${request.bottom_tolerance_pct}%${request.end_time ? `, end_time=${new Date(request.end_time).toISOString()}` : ''})`);
 
     for (const symbol of symbols) {
       // 黑名单过滤
@@ -722,7 +763,7 @@ export class PatternScanService {
 
       try {
         // 获取K线数据
-        const klines = await this.get_klines_from_db_only(symbol, request.interval, request.lookback_bars);
+        const klines = await this.get_klines_from_db_only(symbol, request.interval, request.lookback_bars, request.end_time);
 
         if (klines.length < 30) {
           continue;
@@ -786,7 +827,7 @@ export class PatternScanService {
       return results;
     }
 
-    logger.info(`[PatternScan] Surge W bottom scan: Scanning ${symbols.length} symbols (surge>=${request.min_surge_pct}%, retrace<=${request.max_retrace_pct}%, distance<=${request.max_distance_to_bottom_pct}%)`);
+    logger.info(`[PatternScan] Surge W bottom scan: Scanning ${symbols.length} symbols (surge>=${request.min_surge_pct}%, retrace<=${request.max_retrace_pct}%, distance<=${request.max_distance_to_bottom_pct}%${request.end_time ? `, end_time=${new Date(request.end_time).toISOString()}` : ''})`);
 
     for (const symbol of symbols) {
       // 黑名单过滤
@@ -796,7 +837,7 @@ export class PatternScanService {
 
       try {
         // 获取K线数据
-        const klines = await this.get_klines_from_db_only(symbol, request.interval, request.lookback_bars);
+        const klines = await this.get_klines_from_db_only(symbol, request.interval, request.lookback_bars, request.end_time);
 
         if (klines.length < 50) {
           continue;
@@ -861,7 +902,7 @@ export class PatternScanService {
       return results;
     }
 
-    logger.info(`[PatternScan] Surge EMA pullback scan: Scanning ${symbols.length} symbols (surge>=${request.min_surge_pct}%, retrace<=${request.max_retrace_pct}%, bars>=${request.min_retrace_bars}, ema_distance<=${request.max_distance_to_ema_pct}%, ema_period=${request.ema_period})`);
+    logger.info(`[PatternScan] Surge EMA pullback scan: Scanning ${symbols.length} symbols (surge>=${request.min_surge_pct}%, retrace<=${request.max_retrace_pct}%, bars>=${request.min_retrace_bars}, ema_distance<=${request.max_distance_to_ema_pct}%, ema_period=${request.ema_period}${request.end_time ? `, end_time=${new Date(request.end_time).toISOString()}` : ''})`);
 
     for (const symbol of symbols) {
       // 黑名单过滤
@@ -871,7 +912,7 @@ export class PatternScanService {
 
       try {
         // 获取K线数据（需要足够的数据计算EMA）
-        const klines = await this.get_klines_from_db_only(symbol, request.interval, request.lookback_bars);
+        const klines = await this.get_klines_from_db_only(symbol, request.interval, request.lookback_bars, request.end_time);
 
         if (klines.length < request.ema_period + 20) {
           continue;

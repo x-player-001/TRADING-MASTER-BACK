@@ -117,6 +117,7 @@ router.post('/start', async (req: Request, res: Response): Promise<void> => {
  * - lookback_bars: 分析的K线数量，默认 100
  * - min_surge_pct: 最小上涨幅度 (%)，默认 20
  * - max_retrace_pct: 最大回调幅度 (%)，默认 50
+ * - end_time: 最后一根K线时间 (ms)，默认当前时间
  */
 router.post('/pullback', async (req: Request, res: Response): Promise<void> => {
   try {
@@ -124,7 +125,8 @@ router.post('/pullback', async (req: Request, res: Response): Promise<void> => {
       interval = '1h',
       lookback_bars = 100,
       min_surge_pct = 20,
-      max_retrace_pct = 50
+      max_retrace_pct = 50,
+      end_time
     } = req.body;
 
     // 验证参数
@@ -161,6 +163,16 @@ router.post('/pullback', async (req: Request, res: Response): Promise<void> => {
       return;
     }
 
+    // 验证 end_time
+    const parsed_end_time = end_time ? Number(end_time) : undefined;
+    if (parsed_end_time !== undefined && (isNaN(parsed_end_time) || parsed_end_time <= 0)) {
+      res.status(400).json({
+        success: false,
+        error: 'end_time must be a valid timestamp in milliseconds'
+      });
+      return;
+    }
+
     const service = get_service();
 
     // 执行扫描
@@ -168,7 +180,8 @@ router.post('/pullback', async (req: Request, res: Response): Promise<void> => {
       interval,
       lookback_bars,
       min_surge_pct,
-      max_retrace_pct
+      max_retrace_pct,
+      end_time: parsed_end_time
     });
 
     res.json({
@@ -178,7 +191,8 @@ router.post('/pullback', async (req: Request, res: Response): Promise<void> => {
           interval,
           lookback_bars,
           min_surge_pct,
-          max_retrace_pct
+          max_retrace_pct,
+          end_time: parsed_end_time
         },
         results,
         count: results.length
@@ -202,6 +216,7 @@ router.post('/pullback', async (req: Request, res: Response): Promise<void> => {
  * - min_bars: 最小横盘K线数量，默认 20
  * - max_range_pct: 最大震荡幅度 (%)，默认 10
  * - require_fake_breakdown: 是否要求有向下假突破，默认 false
+ * - end_time: 最后一根K线时间 (ms)，默认当前时间
  */
 router.post('/consolidation', async (req: Request, res: Response): Promise<void> => {
   try {
@@ -209,7 +224,8 @@ router.post('/consolidation', async (req: Request, res: Response): Promise<void>
       interval = '1h',
       min_bars = 20,
       max_range_pct = 10,
-      require_fake_breakdown = false
+      require_fake_breakdown = false,
+      end_time
     } = req.body;
 
     // 验证参数
@@ -238,6 +254,16 @@ router.post('/consolidation', async (req: Request, res: Response): Promise<void>
       return;
     }
 
+    // 验证 end_time
+    const parsed_end_time = end_time ? Number(end_time) : undefined;
+    if (parsed_end_time !== undefined && (isNaN(parsed_end_time) || parsed_end_time <= 0)) {
+      res.status(400).json({
+        success: false,
+        error: 'end_time must be a valid timestamp in milliseconds'
+      });
+      return;
+    }
+
     const service = get_service();
 
     // 执行扫描
@@ -245,7 +271,8 @@ router.post('/consolidation', async (req: Request, res: Response): Promise<void>
       interval,
       min_bars,
       max_range_pct,
-      require_fake_breakdown: !!require_fake_breakdown
+      require_fake_breakdown: !!require_fake_breakdown,
+      end_time: parsed_end_time
     });
 
     res.json({
@@ -255,7 +282,8 @@ router.post('/consolidation', async (req: Request, res: Response): Promise<void>
           interval,
           min_bars,
           max_range_pct,
-          require_fake_breakdown
+          require_fake_breakdown,
+          end_time: parsed_end_time
         },
         results,
         count: results.length
@@ -279,6 +307,7 @@ router.post('/consolidation', async (req: Request, res: Response): Promise<void>
  * - lookback_bars: 分析的K线数量，默认 100
  * - min_bars_between: 两个底之间最小K线数量，默认 10
  * - bottom_tolerance_pct: 底部价差容忍度 (%)，默认 2
+ * - end_time: 最后一根K线时间 (ms)，默认当前时间
  */
 router.post('/double-bottom', async (req: Request, res: Response): Promise<void> => {
   try {
@@ -286,7 +315,8 @@ router.post('/double-bottom', async (req: Request, res: Response): Promise<void>
       interval = '1h',
       lookback_bars = 100,
       min_bars_between = 10,
-      bottom_tolerance_pct = 2
+      bottom_tolerance_pct = 2,
+      end_time
     } = req.body;
 
     // 验证参数
@@ -323,6 +353,16 @@ router.post('/double-bottom', async (req: Request, res: Response): Promise<void>
       return;
     }
 
+    // 验证 end_time
+    const parsed_end_time = end_time ? Number(end_time) : undefined;
+    if (parsed_end_time !== undefined && (isNaN(parsed_end_time) || parsed_end_time <= 0)) {
+      res.status(400).json({
+        success: false,
+        error: 'end_time must be a valid timestamp in milliseconds'
+      });
+      return;
+    }
+
     const service = get_service();
 
     // 执行扫描
@@ -330,7 +370,8 @@ router.post('/double-bottom', async (req: Request, res: Response): Promise<void>
       interval,
       lookback_bars,
       min_bars_between,
-      bottom_tolerance_pct
+      bottom_tolerance_pct,
+      end_time: parsed_end_time
     });
 
     res.json({
@@ -340,7 +381,8 @@ router.post('/double-bottom', async (req: Request, res: Response): Promise<void>
           interval,
           lookback_bars,
           min_bars_between,
-          bottom_tolerance_pct
+          bottom_tolerance_pct,
+          end_time: parsed_end_time
         },
         results,
         count: results.length
@@ -365,6 +407,7 @@ router.post('/double-bottom', async (req: Request, res: Response): Promise<void>
  * - min_surge_pct: 最小上涨幅度 (%)，默认 20
  * - max_retrace_pct: 最大回调幅度 (%)，默认 50
  * - max_distance_to_bottom_pct: 当前价格距W底底部的最大距离 (%)，默认 5
+ * - end_time: 最后一根K线时间 (ms)，默认当前时间
  */
 router.post('/surge-w-bottom', async (req: Request, res: Response): Promise<void> => {
   try {
@@ -373,7 +416,8 @@ router.post('/surge-w-bottom', async (req: Request, res: Response): Promise<void
       lookback_bars = 100,
       min_surge_pct = 20,
       max_retrace_pct = 50,
-      max_distance_to_bottom_pct = 5
+      max_distance_to_bottom_pct = 5,
+      end_time
     } = req.body;
 
     // 验证参数
@@ -418,6 +462,16 @@ router.post('/surge-w-bottom', async (req: Request, res: Response): Promise<void
       return;
     }
 
+    // 验证 end_time
+    const parsed_end_time = end_time ? Number(end_time) : undefined;
+    if (parsed_end_time !== undefined && (isNaN(parsed_end_time) || parsed_end_time <= 0)) {
+      res.status(400).json({
+        success: false,
+        error: 'end_time must be a valid timestamp in milliseconds'
+      });
+      return;
+    }
+
     const service = get_service();
 
     // 执行扫描
@@ -426,7 +480,8 @@ router.post('/surge-w-bottom', async (req: Request, res: Response): Promise<void
       lookback_bars,
       min_surge_pct,
       max_retrace_pct,
-      max_distance_to_bottom_pct
+      max_distance_to_bottom_pct,
+      end_time: parsed_end_time
     });
 
     res.json({
@@ -437,7 +492,8 @@ router.post('/surge-w-bottom', async (req: Request, res: Response): Promise<void
           lookback_bars,
           min_surge_pct,
           max_retrace_pct,
-          max_distance_to_bottom_pct
+          max_distance_to_bottom_pct,
+          end_time: parsed_end_time
         },
         results,
         count: results.length
@@ -464,6 +520,7 @@ router.post('/surge-w-bottom', async (req: Request, res: Response): Promise<void
  * - min_retrace_bars: 最小回调K线数，默认 10
  * - max_distance_to_ema_pct: 当前价格距EMA的最大距离 (%)，默认 5
  * - ema_period: EMA周期，默认 120
+ * - end_time: 最后一根K线时间 (ms)，默认当前时间
  */
 router.post('/surge-ema-pullback', async (req: Request, res: Response): Promise<void> => {
   try {
@@ -474,7 +531,8 @@ router.post('/surge-ema-pullback', async (req: Request, res: Response): Promise<
       max_retrace_pct = 50,
       min_retrace_bars = 10,
       max_distance_to_ema_pct = 5,
-      ema_period = 120
+      ema_period = 120,
+      end_time
     } = req.body;
 
     // 验证参数
@@ -544,6 +602,16 @@ router.post('/surge-ema-pullback', async (req: Request, res: Response): Promise<
       return;
     }
 
+    // 验证 end_time
+    const parsed_end_time = end_time ? Number(end_time) : undefined;
+    if (parsed_end_time !== undefined && (isNaN(parsed_end_time) || parsed_end_time <= 0)) {
+      res.status(400).json({
+        success: false,
+        error: 'end_time must be a valid timestamp in milliseconds'
+      });
+      return;
+    }
+
     const service = get_service();
 
     // 执行扫描
@@ -554,7 +622,8 @@ router.post('/surge-ema-pullback', async (req: Request, res: Response): Promise<
       max_retrace_pct,
       min_retrace_bars,
       max_distance_to_ema_pct,
-      ema_period
+      ema_period,
+      end_time: parsed_end_time
     });
 
     res.json({
@@ -567,7 +636,8 @@ router.post('/surge-ema-pullback', async (req: Request, res: Response): Promise<
           max_retrace_pct,
           min_retrace_bars,
           max_distance_to_ema_pct,
-          ema_period
+          ema_period,
+          end_time: parsed_end_time
         },
         results,
         count: results.length
