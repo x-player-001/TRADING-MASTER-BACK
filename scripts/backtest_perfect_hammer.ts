@@ -22,7 +22,7 @@ import { DatabaseConfig } from '@/core/config/database';
 // ==================== 配置 ====================
 const CONFIG = {
   // 回测时间范围
-  start_date: '2026-01-06',
+  start_date: '2026-01-08',
   end_date: '2026-01-08',
 
   // ========== 资金管理参数 (固定金额模式) ==========
@@ -34,10 +34,9 @@ const CONFIG = {
   use_compound: false,      // 是否使用复利模式 (false = 固定金额)
 
   // 信号过滤
-  max_concurrent_signals: 5,  // 同一时间最多允许的信号数量，超过则跳过
+  max_concurrent_signals: 0,  // 同一时间最多允许的信号数量，0=不过滤
   min_stop_pct: 0.002,        // 最小止损距离 (0.2%)，太小跳过
   max_stop_pct: 0.05,         // 最大止损距离 (5%)，太大跳过
-  min_low_lookback: 40,       // 信号K线最低价必须是近N根K线的最低价
 
   // 手续费 (Binance U本位合约 Maker 0.02%, Taker 0.05%)
   fee_rate: 0.0005,  // 0.05% taker fee
@@ -117,18 +116,22 @@ async function get_pattern_signals(start_date: string, end_date: string): Promis
   const conn = await DatabaseConfig.get_mysql_connection();
 
   try {
+    // 将日期转换为时间戳 (UTC+8 00:00:00)
+    const start_ts = new Date(start_date + 'T00:00:00+08:00').getTime();
+    const end_ts = new Date(end_date + 'T00:00:00+08:00').getTime() + 24 * 60 * 60 * 1000; // 结束日期+1天
+
     const sql = `
       SELECT
         id, symbol, kline_time, current_price,
         lower_shadow_pct, upper_shadow_pct, price_change_pct, created_at
       FROM pattern_alerts
       WHERE pattern_type = 'PERFECT_HAMMER'
-        AND created_at >= ?
-        AND created_at < DATE_ADD(?, INTERVAL 1 DAY)
+        AND kline_time >= ?
+        AND kline_time < ?
       ORDER BY kline_time ASC
     `;
 
-    const [rows] = await conn.execute(sql, [start_date, end_date]);
+    const [rows] = await conn.execute(sql, [start_ts, end_ts]);
 
     return (rows as any[]).map(row => ({
       id: row.id,
@@ -227,58 +230,6 @@ async function get_following_klines(
   }
 }
 
-/**
- * 获取信号K线之前的历史K线（用于验证最低价条件）
- */
-async function get_previous_klines(
-  symbol: string,
-  end_time: number,
-  count: number,
-  dates: string[]
-): Promise<KlineData[]> {
-  const conn = await DatabaseConfig.get_mysql_connection();
-  const klines: KlineData[] = [];
-
-  try {
-    // 倒序遍历日期，从最近的日期开始查询
-    for (let i = dates.length - 1; i >= 0 && klines.length < count; i--) {
-      const date = dates[i];
-      const table_name = `kline_5m_${date.replace(/-/g, '')}`;
-
-      try {
-        const sql = `
-          SELECT symbol, open_time, open, high, low, close, volume
-          FROM ${table_name}
-          WHERE symbol = ? AND open_time < ?
-          ORDER BY open_time DESC
-          LIMIT ?
-        `;
-
-        const [rows] = await conn.execute(sql, [symbol, end_time, count - klines.length]);
-        const data = rows as any[];
-
-        for (const row of data) {
-          klines.push({
-            symbol: row.symbol,
-            open_time: Number(row.open_time),
-            open: parseFloat(row.open),
-            high: parseFloat(row.high),
-            low: parseFloat(row.low),
-            close: parseFloat(row.close),
-            volume: parseFloat(row.volume)
-          });
-        }
-      } catch (error) {
-        // 表不存在，跳过
-      }
-    }
-
-    return klines;
-  } finally {
-    conn.release();
-  }
-}
-
 // ==================== 回测逻辑 ====================
 
 /**
@@ -326,8 +277,11 @@ function calculate_position_size(
   // 例如: 风险2U, 止损1% => 仓位价值 = 2 / 0.01 = 200U
   const position_value = risk_amount / stop_pct;
 
-  // 计算杠杆 = 仓位价值 / 当前资金
-  const leverage = position_value / current_capital;
+  // 计算杠杆 = 仓位价值 / 资金基准
+  // 固定金额模式：用初始资金（仓位大小固定，不受亏损影响）
+  // 复利模式：用当前资金
+  const leverage_base = CONFIG.use_compound ? current_capital : CONFIG.initial_capital;
+  const leverage = position_value / leverage_base;
 
   // 检查杠杆是否超过限制
   if (leverage > CONFIG.max_leverage) {
@@ -517,11 +471,12 @@ function calculate_results(trades: Trade[]): BacktestResult {
 
 // ==================== 输出格式化 ====================
 function format_time(ts: number): string {
-  const date = new Date(ts);
-  const month = (date.getUTCMonth() + 1).toString().padStart(2, '0');
-  const day = date.getUTCDate().toString().padStart(2, '0');
-  const hours = ((date.getUTCHours() + 8) % 24).toString().padStart(2, '0');
-  const minutes = date.getUTCMinutes().toString().padStart(2, '0');
+  // 直接加8小时得到北京时间，让 Date 自动处理跨天
+  const beijing_date = new Date(ts + 8 * 60 * 60 * 1000);
+  const month = (beijing_date.getUTCMonth() + 1).toString().padStart(2, '0');
+  const day = beijing_date.getUTCDate().toString().padStart(2, '0');
+  const hours = beijing_date.getUTCHours().toString().padStart(2, '0');
+  const minutes = beijing_date.getUTCMinutes().toString().padStart(2, '0');
   return `${month}-${day} ${hours}:${minutes}`;
 }
 
@@ -601,7 +556,6 @@ async function main() {
   console.log(`   最大持仓: ${CONFIG.max_hold_bars} 根K线 (${CONFIG.max_hold_bars * 5 / 60} 小时)`);
   console.log(`   滑点: ${CONFIG.slippage * 100}%`);
   console.log(`   信号过滤: 同时≥${CONFIG.max_concurrent_signals}个信号时跳过`);
-  console.log(`   最低价验证: 信号K线最低价必须是近${CONFIG.min_low_lookback}根K线最低`);
 
   // 初始化
   const config_manager = ConfigManager.getInstance();
@@ -636,18 +590,21 @@ async function main() {
     signal_count_by_time.set(signal.kline_time, count + 1);
   }
 
-  // 标记需要跳过的时间点
+  // 标记需要跳过的时间点 (max_concurrent_signals=0 表示不过滤)
   const skip_times: Set<number> = new Set();
   let skipped_signals = 0;
-  for (const [kline_time, count] of signal_count_by_time.entries()) {
-    if (count >= CONFIG.max_concurrent_signals) {
-      skip_times.add(kline_time);
-      skipped_signals += count;
+  if (CONFIG.max_concurrent_signals > 0) {
+    for (const [kline_time, count] of signal_count_by_time.entries()) {
+      if (count >= CONFIG.max_concurrent_signals) {
+        skip_times.add(kline_time);
+        skipped_signals += count;
+      }
     }
-  }
-
-  if (skip_times.size > 0) {
-    console.log(`   ⚠️ 过滤掉 ${skip_times.size} 个时间点的 ${skipped_signals} 个密集信号`);
+    if (skip_times.size > 0) {
+      console.log(`   ⚠️ 过滤掉 ${skip_times.size} 个时间点的 ${skipped_signals} 个密集信号`);
+    }
+  } else {
+    console.log(`   📢 密集信号过滤已禁用`);
   }
 
   // 回测每个信号
@@ -659,7 +616,9 @@ async function main() {
   let filtered_count = 0;
   let skip_leverage_count = 0;
   let skip_stop_range_count = 0;
-  let skip_volume_count = 0;
+  let skip_no_kline_data = 0;
+  let skip_no_following_klines = 0;
+  let skip_simulate_failed = 0;
 
   // 资金跟踪 (复利模式)
   let current_capital = CONFIG.initial_capital;
@@ -679,7 +638,7 @@ async function main() {
     const signal_kline = await get_signal_kline(signal.symbol, signal.kline_time, signal_date);
 
     if (!signal_kline) {
-      console.log(`   ⚠️ 跳过 ${signal.symbol}: 无法获取信号K线数据`);
+      skip_no_kline_data++;
       continue;
     }
 
@@ -712,32 +671,7 @@ async function main() {
       continue;
     }
 
-    // 获取历史K线，验证信号K线是否是近N根K线的最低价
-    const previous_klines = await get_previous_klines(
-      signal.symbol,
-      signal.kline_time,
-      CONFIG.min_low_lookback,
-      dates
-    );
-
-    if (previous_klines.length < CONFIG.min_low_lookback) {
-      console.log(`   ⚠️ 跳过 ${signal.symbol}: 历史K线不足 (${previous_klines.length}/${CONFIG.min_low_lookback})`);
-      continue;
-    }
-
-    // 检查信号K线最低价是否是近N根K线的最低价
-    const min_low_in_history = Math.min(...previous_klines.map(k => k.low));
-    if (signal_kline.low > min_low_in_history) {
-      // 信号K线不是最低价，跳过
-      continue;
-    }
-
-    // 检查信号K线交易量是否高于上一根K线 (暂时禁用)
-    // const prev_kline = previous_klines[previous_klines.length - 1];  // 最后一根就是上一根K线
-    // if (signal_kline.volume <= prev_kline.volume) {
-    //   skip_volume_count++;
-    //   continue;
-    // }
+    // 信号K线最低价验证已在信号生成时完成，入库的信号都是合格的，无需再次验证
 
     // 获取后续K线
     const following_klines = await get_following_klines(
@@ -748,7 +682,7 @@ async function main() {
     );
 
     if (following_klines.length === 0) {
-      console.log(`   ⚠️ 跳过 ${signal.symbol}: 无后续K线数据`);
+      skip_no_following_klines++;
       continue;
     }
 
@@ -757,6 +691,7 @@ async function main() {
 
     // 如果交易无效 (仓位计算失败)，跳过
     if (!trade) {
+      skip_simulate_failed++;
       continue;
     }
 
@@ -783,7 +718,7 @@ async function main() {
     }
   }
 
-  console.log(`\n   📊 过滤统计: 密集信号=${filtered_count}, 止损范围外=${skip_stop_range_count}, 杠杆过高=${skip_leverage_count}, 交易量不足=${skip_volume_count}`);
+  console.log(`\n   📊 过滤统计: 密集信号=${filtered_count}, 无K线数据=${skip_no_kline_data}, 止损范围外=${skip_stop_range_count}, 杠杆问题=${skip_leverage_count}, 无后续K线=${skip_no_following_klines}, 模拟失败=${skip_simulate_failed}`);
 
   console.log('─'.repeat(100));
 

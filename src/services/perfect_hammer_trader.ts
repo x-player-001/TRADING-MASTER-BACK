@@ -85,6 +85,10 @@ export class PerfectHammerTrader {
     step_size: number;
   }>();
 
+  // 已拒绝的批次记录: kline_time -> true
+  // 用于拦截因网络延迟分批到达的同一时间点信号
+  private rejected_batches = new Set<number>();
+
   // 统计
   private stats = {
     signals_received: 0,
@@ -191,6 +195,23 @@ export class PerfectHammerTrader {
   async handle_batch_signals(signals: SignalWithKline[]): Promise<void> {
     if (!this.enabled || signals.length === 0) return;
 
+    // 获取批次的 kline_time (所有信号应该是同一个时间点)
+    const kline_time = signals[0].signal.kline_time;
+
+    // 检查该批次是否已被拒绝（因网络延迟分批到达的情况）
+    if (this.rejected_batches.has(kline_time)) {
+      logger.warn(`[PerfectHammerTrader] Batch ${kline_time} already rejected, skipping ${signals.length} late signals`);
+      this.stats.signals_received += signals.length;
+      this.stats.signals_skipped_batch += signals.length;
+      console.log(`\n⚠️ 该批次已被拒绝，跳过迟到的 ${signals.length} 个信号\n`);
+
+      // 保存所有被拒绝的信号日志
+      for (const { signal, kline } of signals) {
+        await this.save_signal_log_rejected(signal, kline, SignalRejectReason.BATCH_TOO_MANY, signals.length);
+      }
+      return;
+    }
+
     this.stats.signals_received += signals.length;
 
     // 检查批量信号数量
@@ -198,6 +219,9 @@ export class PerfectHammerTrader {
       logger.warn(`[PerfectHammerTrader] Batch signal detected: ${signals.length} signals, skipping all`);
       this.stats.signals_skipped_batch += signals.length;
       console.log(`\n⚠️ 批量信号过多 (${signals.length}个)，跳过本批次所有信号\n`);
+
+      // 记录该批次已被拒绝，拦截后续迟到的信号
+      this.rejected_batches.add(kline_time);
 
       // 保存所有被拒绝的信号日志
       for (const { signal, kline } of signals) {
@@ -210,6 +234,28 @@ export class PerfectHammerTrader {
     for (const { signal, kline } of signals) {
       await this.handle_single_signal(signal, kline, signals.length);
     }
+  }
+
+  /**
+   * 清理过期的已拒绝批次记录
+   * 建议每5分钟调用一次，清理超过10分钟的记录
+   */
+  cleanup_rejected_batches(): number {
+    const now = Date.now();
+    const max_age = 10 * 60 * 1000; // 10分钟
+    let cleaned = 0;
+
+    for (const kline_time of this.rejected_batches) {
+      if (now - kline_time > max_age) {
+        this.rejected_batches.delete(kline_time);
+        cleaned++;
+      }
+    }
+
+    if (cleaned > 0) {
+      logger.debug(`[PerfectHammerTrader] Cleaned ${cleaned} expired rejected batch records`);
+    }
+    return cleaned;
   }
 
   /**

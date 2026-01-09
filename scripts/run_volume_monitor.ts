@@ -63,7 +63,7 @@ const pending_signals: Map<number, Array<{ signal: PerfectHammerResult; kline: K
 // 每个 kline_time 对应的定时器（一旦设置不重置，固定延迟后处理）
 const signal_timers: Map<number, NodeJS.Timeout> = new Map();
 // 信号收集等待时间（毫秒）- 所有K线同时完结，WebSocket消息在几百毫秒内陆续到达
-const SIGNAL_COLLECT_DELAY_MS = 1000;
+const SIGNAL_COLLECT_DELAY_MS = 2000;
 
 // 统计
 const stats = {
@@ -378,6 +378,11 @@ async function print_status(): Promise<void> {
   volume_monitor_service.cleanup_pending_alerts();
   volume_monitor_service.cleanup_hammer_alerts();
   volume_monitor_service.cleanup_perfect_hammer_alerts();
+
+  // 清理过期的已拒绝批次记录
+  if (perfect_hammer_trader) {
+    perfect_hammer_trader.cleanup_rejected_batches();
+  }
 
   console.log(`\n📊 [${get_current_time()}] 状态报告`);
   console.log(`   运行时间: ${uptime} 分钟`);
