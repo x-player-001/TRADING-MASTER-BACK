@@ -1269,4 +1269,177 @@ export class PatternDetector {
 
     return null;
   }
+
+  /**
+   * 自定义参数检测单根K线形态
+   *
+   * 分析最后一根K线的形态特征：
+   * - 上影线占比
+   * - 下影线占比
+   * - 实体占比
+   * - 是否为阳线/阴线
+   * - K线振幅（最高-最低的涨幅）
+   *
+   * @param klines K线数据
+   * @param min_upper_shadow_pct 最小上影线占比 (%)，可选
+   * @param max_upper_shadow_pct 最大上影线占比 (%)，可选
+   * @param min_lower_shadow_pct 最小下影线占比 (%)，可选
+   * @param max_lower_shadow_pct 最大下影线占比 (%)，可选
+   * @param min_body_pct 最小实体占比 (%)，可选
+   * @param max_body_pct 最大实体占比 (%)，可选
+   * @param is_bullish 是否要求阳线，null表示不限
+   * @param min_range_pct 最小振幅 (%)，可选
+   * @param max_range_pct 最大振幅 (%)，可选
+   * @returns 检测结果，未检测到返回 null
+   */
+  detect_single_candle_custom(
+    klines: KlineData[],
+    min_upper_shadow_pct?: number,
+    max_upper_shadow_pct?: number,
+    min_lower_shadow_pct?: number,
+    max_lower_shadow_pct?: number,
+    min_body_pct?: number,
+    max_body_pct?: number,
+    is_bullish?: boolean | null,
+    min_range_pct?: number,
+    max_range_pct?: number
+  ): PatternResult | null {
+    if (klines.length < 1) {
+      return null;
+    }
+
+    // 获取最后一根K线
+    const candle = klines[klines.length - 1];
+
+    // 计算K线各部分
+    const { open, high, low, close } = candle;
+    const range = high - low;
+
+    // 防止除零
+    if (range <= 0) {
+      return null;
+    }
+
+    // 判断阳线/阴线
+    const bullish = close >= open;
+    const body_top = Math.max(open, close);
+    const body_bottom = Math.min(open, close);
+    const body = body_top - body_bottom;
+
+    // 计算各部分占比
+    const upper_shadow = high - body_top;
+    const lower_shadow = body_bottom - low;
+
+    const upper_shadow_pct = (upper_shadow / range) * 100;
+    const lower_shadow_pct = (lower_shadow / range) * 100;
+    const body_pct = (body / range) * 100;
+
+    // 计算振幅（相对于最低价的涨幅）
+    const range_pct = (range / low) * 100;
+
+    // 验证条件
+    // 上影线占比
+    if (min_upper_shadow_pct !== undefined && upper_shadow_pct < min_upper_shadow_pct) {
+      return null;
+    }
+    if (max_upper_shadow_pct !== undefined && upper_shadow_pct > max_upper_shadow_pct) {
+      return null;
+    }
+
+    // 下影线占比
+    if (min_lower_shadow_pct !== undefined && lower_shadow_pct < min_lower_shadow_pct) {
+      return null;
+    }
+    if (max_lower_shadow_pct !== undefined && lower_shadow_pct > max_lower_shadow_pct) {
+      return null;
+    }
+
+    // 实体占比
+    if (min_body_pct !== undefined && body_pct < min_body_pct) {
+      return null;
+    }
+    if (max_body_pct !== undefined && body_pct > max_body_pct) {
+      return null;
+    }
+
+    // 阳线/阴线
+    if (is_bullish !== undefined && is_bullish !== null && bullish !== is_bullish) {
+      return null;
+    }
+
+    // 振幅
+    if (min_range_pct !== undefined && range_pct < min_range_pct) {
+      return null;
+    }
+    if (max_range_pct !== undefined && range_pct > max_range_pct) {
+      return null;
+    }
+
+    // 评分计算
+    let score = 60;
+
+    // 振幅越大加分（最多15分）
+    if (min_range_pct !== undefined) {
+      score += Math.min(15, (range_pct - min_range_pct) / min_range_pct * 10);
+    }
+
+    // 形态特征加分
+    // 长下影线（锤子线特征）加分
+    if (lower_shadow_pct >= 50) {
+      score += 10;
+    } else if (lower_shadow_pct >= 30) {
+      score += 5;
+    }
+
+    // 长上影线（流星线特征）加分
+    if (upper_shadow_pct >= 50) {
+      score += 10;
+    } else if (upper_shadow_pct >= 30) {
+      score += 5;
+    }
+
+    // 小实体（十字星特征）加分
+    if (body_pct <= 10) {
+      score += 5;
+    }
+
+    score = Math.min(100, Math.round(score));
+
+    // 识别形态名称
+    let pattern_name = '';
+    if (body_pct <= 10) {
+      pattern_name = '十字星';
+    } else if (lower_shadow_pct >= 60 && upper_shadow_pct <= 10) {
+      pattern_name = bullish ? '锤子线' : '上吊线';
+    } else if (upper_shadow_pct >= 60 && lower_shadow_pct <= 10) {
+      pattern_name = bullish ? '倒锤头' : '流星线';
+    } else if (body_pct >= 70) {
+      pattern_name = bullish ? '大阳线' : '大阴线';
+    } else {
+      pattern_name = bullish ? '阳线' : '阴线';
+    }
+
+    // 根据价格大小决定显示精度
+    const decimals = close < 0.01 ? 6 : close < 1 ? 4 : 2;
+
+    return {
+      pattern_type: 'SINGLE_CANDLE',
+      score,
+      description: `${pattern_name}: 上影${upper_shadow_pct.toFixed(1)}%, 下影${lower_shadow_pct.toFixed(1)}%, 实体${body_pct.toFixed(1)}%, 振幅${range_pct.toFixed(2)}%`,
+      key_levels: {
+        upper_shadow_pct,
+        lower_shadow_pct,
+        body_pct,
+        is_bullish: bullish,
+        candle_range_pct: range_pct,
+        open_price: open,
+        close_price: close,
+        high_price: high,
+        low_price: low,
+        support: low,
+        resistance: high
+      },
+      detected_at: candle.open_time
+    };
+  }
 }

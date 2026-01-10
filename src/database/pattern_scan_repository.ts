@@ -13,7 +13,7 @@ import { v4 as uuidv4 } from 'uuid';
 
 /**
  * 形态类型
- * 五种核心形态
+ * 核心形态
  */
 export type PatternType =
   | 'DOUBLE_BOTTOM'      // 双底
@@ -21,7 +21,8 @@ export type PatternType =
   | 'PULLBACK'           // 上涨回调
   | 'CONSOLIDATION'      // 横盘震荡
   | 'SURGE_W_BOTTOM'     // 上涨后W底
-  | 'SURGE_EMA_PULLBACK'; // 上涨回调靠近EMA
+  | 'SURGE_EMA_PULLBACK' // 上涨回调靠近EMA
+  | 'SINGLE_CANDLE';     // 单根K线形态
 
 /**
  * 扫描任务状态
@@ -75,6 +76,16 @@ export interface KeyLevels {
   distance_to_ema_pct?: number; // 当前价格距EMA的距离 (%)
   retrace_pct?: number;        // 回调幅度 (%)
   retrace_bars?: number;       // 回调持续K线数
+  // 单根K线形态专用
+  upper_shadow_pct?: number;   // 上影线占比 (%)
+  lower_shadow_pct?: number;   // 下影线占比 (%)
+  body_pct?: number;           // 实体占比 (%)
+  is_bullish?: boolean;        // 是否为阳线
+  candle_range_pct?: number;   // K线振幅 (最高-最低)/最低 (%)
+  open_price?: number;         // 开盘价
+  close_price?: number;        // 收盘价
+  high_price?: number;         // 最高价
+  low_price?: number;          // 最低价
 }
 
 /**
@@ -150,9 +161,9 @@ export class PatternScanRepository extends BaseRepository {
         try {
           await conn.execute(`
             ALTER TABLE pattern_scan_results
-            MODIFY COLUMN pattern_type ENUM('DOUBLE_BOTTOM', 'TRIPLE_BOTTOM', 'PULLBACK', 'CONSOLIDATION', 'SURGE_W_BOTTOM', 'SURGE_EMA_PULLBACK') NOT NULL
+            MODIFY COLUMN pattern_type ENUM('DOUBLE_BOTTOM', 'TRIPLE_BOTTOM', 'PULLBACK', 'CONSOLIDATION', 'SURGE_W_BOTTOM', 'SURGE_EMA_PULLBACK', 'SINGLE_CANDLE') NOT NULL
           `);
-          logger.info('Pattern type ENUM updated to include SURGE_EMA_PULLBACK');
+          logger.info('Pattern type ENUM updated to include SINGLE_CANDLE');
         } catch (alter_error: any) {
           // 忽略已经是正确类型的情况
           if (!alter_error.message?.includes('Duplicate')) {

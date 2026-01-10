@@ -83,6 +83,23 @@ export interface SurgeEmaPullbackScanRequest {
 }
 
 /**
+ * 单根K线形态扫描请求参数
+ */
+export interface SingleCandleScanRequest {
+  interval: string;                     // K线周期: 5m, 15m, 1h, 4h
+  min_upper_shadow_pct?: number;        // 最小上影线占比 (%)
+  max_upper_shadow_pct?: number;        // 最大上影线占比 (%)
+  min_lower_shadow_pct?: number;        // 最小下影线占比 (%)
+  max_lower_shadow_pct?: number;        // 最大下影线占比 (%)
+  min_body_pct?: number;                // 最小实体占比 (%)
+  max_body_pct?: number;                // 最大实体占比 (%)
+  is_bullish?: boolean | null;          // 是否要求阳线，null/undefined表示不限
+  min_range_pct?: number;               // 最小振幅 (%)
+  max_range_pct?: number;               // 最大振幅 (%)
+  end_time?: number;                    // 最后一根K线时间 (ms)，默认当前时间
+}
+
+/**
  * 通用扫描结果
  */
 export interface PatternScanResultItem {
@@ -958,6 +975,101 @@ export class PatternScanService {
     results.sort((a, b) => b.score - a.score);
 
     logger.info(`[PatternScan] Surge EMA pullback scan completed: ${results.length} patterns found`);
+
+    return results;
+  }
+
+  /**
+   * 扫描单根K线形态（同步执行，直接返回结果）
+   *
+   * @param request 扫描参数
+   * @returns 符合条件的币种列表
+   */
+  async scan_single_candle(request: SingleCandleScanRequest): Promise<PatternScanResultItem[]> {
+    const results: PatternScanResultItem[] = [];
+
+    // 从数据库获取有数据的交易对
+    const symbols = await this.get_symbols_from_db(request.interval);
+
+    if (symbols.length === 0) {
+      logger.warn(`[PatternScan] Single candle scan: 数据库中没有 ${request.interval} K线数据`);
+      return results;
+    }
+
+    // 构建日志描述
+    const conditions: string[] = [];
+    if (request.min_upper_shadow_pct !== undefined) conditions.push(`上影>=${request.min_upper_shadow_pct}%`);
+    if (request.max_upper_shadow_pct !== undefined) conditions.push(`上影<=${request.max_upper_shadow_pct}%`);
+    if (request.min_lower_shadow_pct !== undefined) conditions.push(`下影>=${request.min_lower_shadow_pct}%`);
+    if (request.max_lower_shadow_pct !== undefined) conditions.push(`下影<=${request.max_lower_shadow_pct}%`);
+    if (request.min_body_pct !== undefined) conditions.push(`实体>=${request.min_body_pct}%`);
+    if (request.max_body_pct !== undefined) conditions.push(`实体<=${request.max_body_pct}%`);
+    if (request.is_bullish === true) conditions.push('阳线');
+    if (request.is_bullish === false) conditions.push('阴线');
+    if (request.min_range_pct !== undefined) conditions.push(`振幅>=${request.min_range_pct}%`);
+    if (request.max_range_pct !== undefined) conditions.push(`振幅<=${request.max_range_pct}%`);
+    const end_time_desc = request.end_time ? `, end_time=${new Date(request.end_time).toISOString()}` : '';
+
+    logger.info(`[PatternScan] Single candle scan: Scanning ${symbols.length} symbols (${conditions.join(', ')}${end_time_desc})`);
+
+    for (const symbol of symbols) {
+      // 黑名单过滤
+      if (this.blacklist.has(symbol)) {
+        continue;
+      }
+
+      try {
+        // 获取最后一根K线数据
+        const klines = await this.get_klines_from_db_only(symbol, request.interval, 1, request.end_time);
+
+        if (klines.length < 1) {
+          continue;
+        }
+
+        // 转换为PatternDetector需要的格式
+        const kline_data: KlineData[] = klines.map(k => ({
+          open_time: k.open_time,
+          close_time: k.close_time,
+          open: k.open,
+          high: k.high,
+          low: k.low,
+          close: k.close,
+          volume: k.volume
+        }));
+
+        // 使用自定义参数检测单根K线形态
+        const pattern = this.detector.detect_single_candle_custom(
+          kline_data,
+          request.min_upper_shadow_pct,
+          request.max_upper_shadow_pct,
+          request.min_lower_shadow_pct,
+          request.max_lower_shadow_pct,
+          request.min_body_pct,
+          request.max_body_pct,
+          request.is_bullish,
+          request.min_range_pct,
+          request.max_range_pct
+        );
+
+        if (pattern) {
+          results.push({
+            symbol,
+            score: pattern.score,
+            description: pattern.description,
+            key_levels: pattern.key_levels,
+            kline_interval: request.interval,
+            detected_at: pattern.detected_at
+          });
+        }
+      } catch (error) {
+        logger.debug(`[PatternScan] Single candle scan failed for ${symbol}: ${error}`);
+      }
+    }
+
+    // 按评分降序排序
+    results.sort((a, b) => b.score - a.score);
+
+    logger.info(`[PatternScan] Single candle scan completed: ${results.length} patterns found`);
 
     return results;
   }

@@ -8,6 +8,7 @@
  * - POST   /api/pattern-scan/double-bottom   扫描双底形态（自定义参数）
  * - POST   /api/pattern-scan/surge-w-bottom  扫描上涨后W底形态（自定义参数）
  * - POST   /api/pattern-scan/surge-ema-pullback 扫描上涨回调靠近EMA形态（自定义参数）
+ * - POST   /api/pattern-scan/single-candle   扫描单根K线形态（自定义参数）
  * - GET    /api/pattern-scan/tasks           获取任务列表
  * - GET    /api/pattern-scan/tasks/:task_id  获取任务状态
  * - GET    /api/pattern-scan/results/:task_id 获取扫描结果
@@ -653,6 +654,155 @@ router.post('/surge-ema-pullback', async (req: Request, res: Response): Promise<
 });
 
 /**
+ * POST /api/pattern-scan/single-candle
+ * 扫描单根K线形态（自定义参数，同步返回结果）
+ *
+ * 请求体参数:
+ * - interval: K线周期 (5m, 15m, 1h, 4h)，默认 1h
+ * - min_upper_shadow_pct: 最小上影线占比 (%)，可选
+ * - max_upper_shadow_pct: 最大上影线占比 (%)，可选
+ * - min_lower_shadow_pct: 最小下影线占比 (%)，可选
+ * - max_lower_shadow_pct: 最大下影线占比 (%)，可选
+ * - min_body_pct: 最小实体占比 (%)，可选
+ * - max_body_pct: 最大实体占比 (%)，可选
+ * - is_bullish: 是否要求阳线 (true/false)，可选，不传表示不限
+ * - min_range_pct: 最小振幅 (%)，可选
+ * - max_range_pct: 最大振幅 (%)，可选
+ * - end_time: 最后一根K线时间 (ms)，默认当前时间
+ */
+router.post('/single-candle', async (req: Request, res: Response): Promise<void> => {
+  try {
+    const {
+      interval = '1h',
+      min_upper_shadow_pct,
+      max_upper_shadow_pct,
+      min_lower_shadow_pct,
+      max_lower_shadow_pct,
+      min_body_pct,
+      max_body_pct,
+      is_bullish,
+      min_range_pct,
+      max_range_pct,
+      end_time
+    } = req.body;
+
+    // 验证参数
+    const valid_intervals = ['5m', '15m', '1h', '4h'];
+    if (!valid_intervals.includes(interval)) {
+      res.status(400).json({
+        success: false,
+        error: `Invalid interval. Valid options: ${valid_intervals.join(', ')}`
+      });
+      return;
+    }
+
+    // 验证百分比参数范围
+    const validate_pct = (value: any, name: string, min: number = 0, max: number = 100): number | undefined => {
+      if (value === undefined || value === null || value === '') return undefined;
+      const num = Number(value);
+      if (isNaN(num) || num < min || num > max) {
+        throw new Error(`${name} must be between ${min} and ${max}`);
+      }
+      return num;
+    };
+
+    let parsed_min_upper_shadow_pct: number | undefined;
+    let parsed_max_upper_shadow_pct: number | undefined;
+    let parsed_min_lower_shadow_pct: number | undefined;
+    let parsed_max_lower_shadow_pct: number | undefined;
+    let parsed_min_body_pct: number | undefined;
+    let parsed_max_body_pct: number | undefined;
+    let parsed_min_range_pct: number | undefined;
+    let parsed_max_range_pct: number | undefined;
+
+    try {
+      parsed_min_upper_shadow_pct = validate_pct(min_upper_shadow_pct, 'min_upper_shadow_pct');
+      parsed_max_upper_shadow_pct = validate_pct(max_upper_shadow_pct, 'max_upper_shadow_pct');
+      parsed_min_lower_shadow_pct = validate_pct(min_lower_shadow_pct, 'min_lower_shadow_pct');
+      parsed_max_lower_shadow_pct = validate_pct(max_lower_shadow_pct, 'max_lower_shadow_pct');
+      parsed_min_body_pct = validate_pct(min_body_pct, 'min_body_pct');
+      parsed_max_body_pct = validate_pct(max_body_pct, 'max_body_pct');
+      parsed_min_range_pct = validate_pct(min_range_pct, 'min_range_pct', 0, 1000);
+      parsed_max_range_pct = validate_pct(max_range_pct, 'max_range_pct', 0, 1000);
+    } catch (e: any) {
+      res.status(400).json({
+        success: false,
+        error: e.message
+      });
+      return;
+    }
+
+    // 解析 is_bullish
+    let parsed_is_bullish: boolean | null | undefined = undefined;
+    if (is_bullish !== undefined && is_bullish !== null && is_bullish !== '') {
+      if (typeof is_bullish === 'boolean') {
+        parsed_is_bullish = is_bullish;
+      } else if (is_bullish === 'true' || is_bullish === '1') {
+        parsed_is_bullish = true;
+      } else if (is_bullish === 'false' || is_bullish === '0') {
+        parsed_is_bullish = false;
+      } else if (is_bullish === 'null') {
+        parsed_is_bullish = null;
+      }
+    }
+
+    // 验证 end_time
+    const parsed_end_time = end_time ? Number(end_time) : undefined;
+    if (parsed_end_time !== undefined && (isNaN(parsed_end_time) || parsed_end_time <= 0)) {
+      res.status(400).json({
+        success: false,
+        error: 'end_time must be a valid timestamp in milliseconds'
+      });
+      return;
+    }
+
+    const service = get_service();
+
+    // 执行扫描
+    const results = await service.scan_single_candle({
+      interval,
+      min_upper_shadow_pct: parsed_min_upper_shadow_pct,
+      max_upper_shadow_pct: parsed_max_upper_shadow_pct,
+      min_lower_shadow_pct: parsed_min_lower_shadow_pct,
+      max_lower_shadow_pct: parsed_max_lower_shadow_pct,
+      min_body_pct: parsed_min_body_pct,
+      max_body_pct: parsed_max_body_pct,
+      is_bullish: parsed_is_bullish,
+      min_range_pct: parsed_min_range_pct,
+      max_range_pct: parsed_max_range_pct,
+      end_time: parsed_end_time
+    });
+
+    res.json({
+      success: true,
+      data: {
+        params: {
+          interval,
+          min_upper_shadow_pct: parsed_min_upper_shadow_pct,
+          max_upper_shadow_pct: parsed_max_upper_shadow_pct,
+          min_lower_shadow_pct: parsed_min_lower_shadow_pct,
+          max_lower_shadow_pct: parsed_max_lower_shadow_pct,
+          min_body_pct: parsed_min_body_pct,
+          max_body_pct: parsed_max_body_pct,
+          is_bullish: parsed_is_bullish,
+          min_range_pct: parsed_min_range_pct,
+          max_range_pct: parsed_max_range_pct,
+          end_time: parsed_end_time
+        },
+        results,
+        count: results.length
+      }
+    });
+  } catch (error: any) {
+    logger.error('[PatternScan API] Single candle scan failed:', error);
+    res.status(500).json({
+      success: false,
+      error: error.message
+    });
+  }
+});
+
+/**
  * GET /api/pattern-scan/tasks
  * 获取任务列表
  */
@@ -809,7 +959,8 @@ router.get('/pattern-types', (req: Request, res: Response) => {
     { type: 'PULLBACK', name: '上涨回调', description: '主升浪后回调至斐波那契位置企稳' },
     { type: 'CONSOLIDATION', name: '横盘震荡', description: '窄幅区间长时间横盘，等待突破' },
     { type: 'SURGE_W_BOTTOM', name: '上涨后W底', description: '先有明显上涨，回调后形成W底形态，当前价格接近底部' },
-    { type: 'SURGE_EMA_PULLBACK', name: '上涨回调靠近EMA', description: '先有明显上涨，回调后靠近EMA均线，当前价格在EMA上方' }
+    { type: 'SURGE_EMA_PULLBACK', name: '上涨回调靠近EMA', description: '先有明显上涨，回调后靠近EMA均线，当前价格在EMA上方' },
+    { type: 'SINGLE_CANDLE', name: '单根K线形态', description: '基于单根K线特征的形态识别，如锤子线、流星线、十字星等' }
   ];
 
   res.json({
