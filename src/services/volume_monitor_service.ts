@@ -713,9 +713,9 @@ export class VolumeMonitorService {
    * 检测完美倒锤头形态（独立检测，不依赖EMA，仅完结K线）
    * 条件：
    * 1. K线为阳线 (close > open)
-   * 2. 下影线 >= 70%
+   * 2. 下影线 >= 85% (回测优化，原为70%)
    * 3. 上影线 <= 5%
-   * 4. 当前K线最低价是最近30根K线的最低价
+   * 4. 当前K线最低价是最近40根K线的最低价
    *
    * @param kline K线数据
    * @param is_final 是否为完结K线（仅完结K线触发）
@@ -747,7 +747,7 @@ export class VolumeMonitorService {
 
     // 检查完美倒锤头条件
     const is_bullish = kline.close > kline.open;                 // 阳线
-    const is_lower_shadow_ok = lower_shadow_pct >= 70;           // 下影线 >= 70%
+    const is_lower_shadow_ok = lower_shadow_pct >= 85;           // 下影线 >= 85% (回测优化)
     const is_upper_shadow_ok = upper_shadow_pct <= 5;            // 上影线 <= 5%
 
     if (!is_bullish || !is_lower_shadow_ok || !is_upper_shadow_ok) {

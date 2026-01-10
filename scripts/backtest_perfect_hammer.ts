@@ -23,10 +23,10 @@ import { DatabaseConfig } from '@/core/config/database';
 const CONFIG = {
   // 回测时间范围
   start_date: '2026-01-08',
-  end_date: '2026-01-08',
+  end_date: '2026-01-10',
 
   // ========== 资金管理参数 (固定金额模式) ==========
-  initial_capital: 20,      // 初始本金 (USDT)
+  initial_capital: 1000,    // 初始本金 (USDT) - 增大用于获取更多样本
   fixed_risk_amount: 2,     // 固定每笔风险金额 (USDT)
   reward_ratio: 1.4,        // 盈亏比 (止盈 = 止损 * 1.4)
   max_leverage: 20,         // 最大杠杆倍数
@@ -35,8 +35,9 @@ const CONFIG = {
 
   // 信号过滤
   max_concurrent_signals: 0,  // 同一时间最多允许的信号数量，0=不过滤
-  min_stop_pct: 0.002,        // 最小止损距离 (0.2%)，太小跳过
+  min_stop_pct: 0.01,         // 最小止损距离 (1%)，太小跳过 ⭐ 改为1%
   max_stop_pct: 0.05,         // 最大止损距离 (5%)，太大跳过
+  min_lower_shadow_pct: 85,   // 最小下影线比例 (%) ⭐ 新增
 
   // 手续费 (Binance U本位合约 Maker 0.02%, Taker 0.05%)
   fee_rate: 0.0005,  // 0.05% taker fee
@@ -88,6 +89,14 @@ interface Trade {
   fee?: number;           // 手续费
   net_pnl?: number;       // 净盈亏
   hold_bars?: number;     // 持仓K线数
+
+  // 特征数据 (用于分析)
+  lower_shadow_pct?: number;
+  upper_shadow_pct?: number;
+  stop_pct?: number;
+  leverage?: number;
+  hour_of_day?: number;
+  batch_size?: number;
 }
 
 interface BacktestResult {
@@ -336,6 +345,10 @@ function simulate_trade(
   // 例如: 止损1%, 盈亏比1.4 => 止盈1.4%
   const take_profit = entry_price * (1 + stop_pct * CONFIG.reward_ratio);
 
+  // 计算北京时间的小时
+  const beijing_date = new Date(signal.kline_time + 8 * 60 * 60 * 1000);
+  const hour_of_day = beijing_date.getUTCHours();
+
   const trade: Trade = {
     signal_id: signal.id,
     symbol: signal.symbol,
@@ -344,7 +357,13 @@ function simulate_trade(
     stop_loss,
     take_profit,
     position_size,
-    position_value
+    position_value,
+    // 特征数据
+    lower_shadow_pct: signal.lower_shadow_pct,
+    upper_shadow_pct: signal.upper_shadow_pct,
+    stop_pct,
+    leverage,
+    hour_of_day
   };
 
   // 跟踪止盈相关
@@ -538,6 +557,187 @@ function print_results(result: BacktestResult): void {
   console.log('\n' + '═'.repeat(100));
 }
 
+// ==================== 特征分析 ====================
+interface TradeWithFeatures extends Trade {
+  lower_shadow_pct?: number;
+  upper_shadow_pct?: number;
+  stop_pct?: number;
+  leverage?: number;
+  hour_of_day?: number;
+  batch_size?: number;
+}
+
+function analyze_features(trades: TradeWithFeatures[]): void {
+  const winners = trades.filter(t => (t.net_pnl || 0) > 0);
+  const losers = trades.filter(t => (t.net_pnl || 0) <= 0);
+
+  console.log('\n' + '═'.repeat(100));
+  console.log('                              特征对比分析');
+  console.log('═'.repeat(100));
+
+  // 1. 下影线比例分析
+  const win_lower_shadows = winners.filter(t => t.lower_shadow_pct).map(t => t.lower_shadow_pct!);
+  const lose_lower_shadows = losers.filter(t => t.lower_shadow_pct).map(t => t.lower_shadow_pct!);
+
+  if (win_lower_shadows.length > 0 && lose_lower_shadows.length > 0) {
+    const win_avg_lower = win_lower_shadows.reduce((a, b) => a + b, 0) / win_lower_shadows.length;
+    const lose_avg_lower = lose_lower_shadows.reduce((a, b) => a + b, 0) / lose_lower_shadows.length;
+    console.log('\n📊 下影线比例:');
+    console.log(`   盈利交易平均: ${win_avg_lower.toFixed(1)}%`);
+    console.log(`   亏损交易平均: ${lose_avg_lower.toFixed(1)}%`);
+
+    // 分段统计
+    const ranges = [[70, 75], [75, 80], [80, 85], [85, 90], [90, 100]];
+    console.log('   分段胜率:');
+    for (const [min, max] of ranges) {
+      const range_wins = winners.filter(t => t.lower_shadow_pct && t.lower_shadow_pct >= min && t.lower_shadow_pct < max).length;
+      const range_loses = losers.filter(t => t.lower_shadow_pct && t.lower_shadow_pct >= min && t.lower_shadow_pct < max).length;
+      const total = range_wins + range_loses;
+      if (total > 0) {
+        const win_rate = (range_wins / total * 100).toFixed(1);
+        console.log(`     ${min}%-${max}%: ${range_wins}胜/${range_loses}负 (胜率${win_rate}%)`);
+      }
+    }
+  }
+
+  // 2. 上影线比例分析
+  const win_upper_shadows = winners.filter(t => t.upper_shadow_pct !== undefined).map(t => t.upper_shadow_pct!);
+  const lose_upper_shadows = losers.filter(t => t.upper_shadow_pct !== undefined).map(t => t.upper_shadow_pct!);
+
+  if (win_upper_shadows.length > 0 && lose_upper_shadows.length > 0) {
+    const win_avg_upper = win_upper_shadows.reduce((a, b) => a + b, 0) / win_upper_shadows.length;
+    const lose_avg_upper = lose_upper_shadows.reduce((a, b) => a + b, 0) / lose_upper_shadows.length;
+    console.log('\n📊 上影线比例:');
+    console.log(`   盈利交易平均: ${win_avg_upper.toFixed(2)}%`);
+    console.log(`   亏损交易平均: ${lose_avg_upper.toFixed(2)}%`);
+
+    // 分段统计: 0%, 0-2%, 2-5%
+    const upper_ranges = [[0, 0.01], [0.01, 2], [2, 5]];
+    console.log('   分段胜率:');
+    for (const [min, max] of upper_ranges) {
+      const range_wins = winners.filter(t => t.upper_shadow_pct !== undefined && t.upper_shadow_pct >= min && t.upper_shadow_pct < max).length;
+      const range_loses = losers.filter(t => t.upper_shadow_pct !== undefined && t.upper_shadow_pct >= min && t.upper_shadow_pct < max).length;
+      const total = range_wins + range_loses;
+      if (total > 0) {
+        const win_rate = (range_wins / total * 100).toFixed(1);
+        const label = min === 0 ? '0%' : `${min}%-${max}%`;
+        console.log(`     ${label}: ${range_wins}胜/${range_loses}负 (胜率${win_rate}%)`);
+      }
+    }
+  }
+
+  // 3. 止损距离分析
+  const win_stop_pcts = winners.filter(t => t.stop_pct).map(t => t.stop_pct! * 100);
+  const lose_stop_pcts = losers.filter(t => t.stop_pct).map(t => t.stop_pct! * 100);
+
+  if (win_stop_pcts.length > 0 && lose_stop_pcts.length > 0) {
+    const win_avg_stop = win_stop_pcts.reduce((a, b) => a + b, 0) / win_stop_pcts.length;
+    const lose_avg_stop = lose_stop_pcts.reduce((a, b) => a + b, 0) / lose_stop_pcts.length;
+    console.log('\n📊 止损距离:');
+    console.log(`   盈利交易平均: ${win_avg_stop.toFixed(2)}%`);
+    console.log(`   亏损交易平均: ${lose_avg_stop.toFixed(2)}%`);
+
+    // 分段统计
+    const stop_ranges = [[0.2, 0.5], [0.5, 1.0], [1.0, 2.0], [2.0, 5.0]];
+    console.log('   分段胜率:');
+    for (const [min, max] of stop_ranges) {
+      const range_wins = winners.filter(t => t.stop_pct && t.stop_pct * 100 >= min && t.stop_pct * 100 < max).length;
+      const range_loses = losers.filter(t => t.stop_pct && t.stop_pct * 100 >= min && t.stop_pct * 100 < max).length;
+      const total = range_wins + range_loses;
+      if (total > 0) {
+        const win_rate = (range_wins / total * 100).toFixed(1);
+        console.log(`     ${min}%-${max}%: ${range_wins}胜/${range_loses}负 (胜率${win_rate}%)`);
+      }
+    }
+  }
+
+  // 4. 杠杆分析
+  const win_leverages = winners.filter(t => t.leverage).map(t => t.leverage!);
+  const lose_leverages = losers.filter(t => t.leverage).map(t => t.leverage!);
+
+  if (win_leverages.length > 0 && lose_leverages.length > 0) {
+    const win_avg_lev = win_leverages.reduce((a, b) => a + b, 0) / win_leverages.length;
+    const lose_avg_lev = lose_leverages.reduce((a, b) => a + b, 0) / lose_leverages.length;
+    console.log('\n📊 杠杆倍数:');
+    console.log(`   盈利交易平均: ${win_avg_lev.toFixed(1)}x`);
+    console.log(`   亏损交易平均: ${lose_avg_lev.toFixed(1)}x`);
+
+    // 分段统计
+    const lev_ranges = [[0, 5], [5, 10], [10, 15], [15, 20]];
+    console.log('   分段胜率:');
+    for (const [min, max] of lev_ranges) {
+      const range_wins = winners.filter(t => t.leverage && t.leverage >= min && t.leverage < max).length;
+      const range_loses = losers.filter(t => t.leverage && t.leverage >= min && t.leverage < max).length;
+      const total = range_wins + range_loses;
+      if (total > 0) {
+        const win_rate = (range_wins / total * 100).toFixed(1);
+        console.log(`     ${min}x-${max}x: ${range_wins}胜/${range_loses}负 (胜率${win_rate}%)`);
+      }
+    }
+  }
+
+  // 5. 时段分析
+  const win_hours = winners.filter(t => t.hour_of_day !== undefined).map(t => t.hour_of_day!);
+  const lose_hours = losers.filter(t => t.hour_of_day !== undefined).map(t => t.hour_of_day!);
+
+  if (win_hours.length > 0 && lose_hours.length > 0) {
+    console.log('\n📊 时段分析 (北京时间):');
+
+    // 按时段分组: 0-4, 4-8, 8-12, 12-16, 16-20, 20-24
+    const hour_ranges = [[0, 4], [4, 8], [8, 12], [12, 16], [16, 20], [20, 24]];
+    console.log('   分段胜率:');
+    for (const [min, max] of hour_ranges) {
+      const range_wins = winners.filter(t => t.hour_of_day !== undefined && t.hour_of_day >= min && t.hour_of_day < max).length;
+      const range_loses = losers.filter(t => t.hour_of_day !== undefined && t.hour_of_day >= min && t.hour_of_day < max).length;
+      const total = range_wins + range_loses;
+      if (total > 0) {
+        const win_rate = (range_wins / total * 100).toFixed(1);
+        console.log(`     ${min.toString().padStart(2, '0')}:00-${max.toString().padStart(2, '0')}:00: ${range_wins}胜/${range_loses}负 (胜率${win_rate}%)`);
+      }
+    }
+  }
+
+  // 6. 持仓时间分析
+  const win_hold_bars = winners.filter(t => t.hold_bars).map(t => t.hold_bars!);
+  const lose_hold_bars = losers.filter(t => t.hold_bars).map(t => t.hold_bars!);
+
+  if (win_hold_bars.length > 0 && lose_hold_bars.length > 0) {
+    const win_avg_hold = win_hold_bars.reduce((a, b) => a + b, 0) / win_hold_bars.length;
+    const lose_avg_hold = lose_hold_bars.reduce((a, b) => a + b, 0) / lose_hold_bars.length;
+    console.log('\n📊 持仓时间:');
+    console.log(`   盈利交易平均: ${win_avg_hold.toFixed(1)}根K线 (${(win_avg_hold * 5 / 60).toFixed(1)}小时)`);
+    console.log(`   亏损交易平均: ${lose_avg_hold.toFixed(1)}根K线 (${(lose_avg_hold * 5 / 60).toFixed(1)}小时)`);
+  }
+
+  // 7. 批次信号数量分析
+  const win_batch = winners.filter(t => t.batch_size).map(t => t.batch_size!);
+  const lose_batch = losers.filter(t => t.batch_size).map(t => t.batch_size!);
+
+  if (win_batch.length > 0 && lose_batch.length > 0) {
+    const win_avg_batch = win_batch.reduce((a, b) => a + b, 0) / win_batch.length;
+    const lose_avg_batch = lose_batch.reduce((a, b) => a + b, 0) / lose_batch.length;
+    console.log('\n📊 批次信号数量:');
+    console.log(`   盈利交易平均: ${win_avg_batch.toFixed(1)}个信号/批次`);
+    console.log(`   亏损交易平均: ${lose_avg_batch.toFixed(1)}个信号/批次`);
+
+    // 分段统计: 1个、2-3个、4-5个、6+个
+    const batch_ranges = [[1, 2], [2, 4], [4, 6], [6, 100]];
+    console.log('   分段胜率:');
+    for (const [min, max] of batch_ranges) {
+      const range_wins = winners.filter(t => t.batch_size && t.batch_size >= min && t.batch_size < max).length;
+      const range_loses = losers.filter(t => t.batch_size && t.batch_size >= min && t.batch_size < max).length;
+      const total = range_wins + range_loses;
+      if (total > 0) {
+        const win_rate = (range_wins / total * 100).toFixed(1);
+        const label = max === 100 ? `${min}+个` : `${min}-${max - 1}个`;
+        console.log(`     ${label}: ${range_wins}胜/${range_loses}负 (胜率${win_rate}%)`);
+      }
+    }
+  }
+
+  console.log('\n' + '═'.repeat(100));
+}
+
 // ==================== 主函数 ====================
 async function main() {
   const mode_str = CONFIG.use_compound ? '复利模式' : '固定金额模式';
@@ -616,6 +816,7 @@ async function main() {
   let filtered_count = 0;
   let skip_leverage_count = 0;
   let skip_stop_range_count = 0;
+  let skip_lower_shadow_count = 0;
   let skip_no_kline_data = 0;
   let skip_no_following_klines = 0;
   let skip_simulate_failed = 0;
@@ -650,6 +851,12 @@ async function main() {
 
     if (stop_pct < CONFIG.min_stop_pct || stop_pct > CONFIG.max_stop_pct) {
       skip_stop_range_count++;
+      continue;
+    }
+
+    // 检查下影线比例
+    if (CONFIG.min_lower_shadow_pct > 0 && signal.lower_shadow_pct < CONFIG.min_lower_shadow_pct) {
+      skip_lower_shadow_count++;
       continue;
     }
 
@@ -695,6 +902,9 @@ async function main() {
       continue;
     }
 
+    // 添加批次信号数量
+    trade.batch_size = signal_count_by_time.get(signal.kline_time) || 1;
+
     trades.push(trade);
 
     // 更新资金 (复利模式)
@@ -718,13 +928,16 @@ async function main() {
     }
   }
 
-  console.log(`\n   📊 过滤统计: 密集信号=${filtered_count}, 无K线数据=${skip_no_kline_data}, 止损范围外=${skip_stop_range_count}, 杠杆问题=${skip_leverage_count}, 无后续K线=${skip_no_following_klines}, 模拟失败=${skip_simulate_failed}`);
+  console.log(`\n   📊 过滤统计: 密集信号=${filtered_count}, 无K线数据=${skip_no_kline_data}, 止损范围外=${skip_stop_range_count}, 下影线不足=${skip_lower_shadow_count}, 杠杆问题=${skip_leverage_count}, 无后续K线=${skip_no_following_klines}, 模拟失败=${skip_simulate_failed}`);
 
   console.log('─'.repeat(100));
 
   // 计算并输出结果
   const result = calculate_results(trades);
   print_results(result);
+
+  // 特征对比分析
+  analyze_features(trades);
 
   // 输出资金变化
   console.log('\n💵 资金变化:');
