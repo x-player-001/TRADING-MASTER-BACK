@@ -239,11 +239,12 @@ async function process_kline(symbol: string, kline: any, is_final: boolean): Pro
   }
 
   // 3. 检测倒锤头穿越EMA120形态（只在K线完结时检查）
-  const hammer_result = volume_monitor_service.check_hammer_cross_ema(kline_data, is_final);
-  if (hammer_result) {
-    stats.hammer_alerts++;
-    print_hammer_alert(hammer_result, is_final);
-  }
+  // 暂停此信号，优先验证完美倒锤头策略
+  // const hammer_result = volume_monitor_service.check_hammer_cross_ema(kline_data, is_final);
+  // if (hammer_result) {
+  //   stats.hammer_alerts++;
+  //   print_hammer_alert(hammer_result, is_final);
+  // }
 
   // 2. 保存5m K线到数据库
   kline_5m_repository.add_kline(kline_data).catch(err => {
