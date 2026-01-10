@@ -87,6 +87,8 @@ export interface SurgeEmaPullbackScanRequest {
  */
 export interface SingleCandleScanRequest {
   interval: string;                     // K线周期: 5m, 15m, 1h, 4h
+  lookback_bars: number;                // 扫描的K线数量
+  max_distance?: number;                // 距离最后一根K线的最大距离（K线数），默认不限
   min_upper_shadow_pct?: number;        // 最小上影线占比 (%)
   max_upper_shadow_pct?: number;        // 最大上影线占比 (%)
   min_lower_shadow_pct?: number;        // 最小下影线占比 (%)
@@ -998,6 +1000,8 @@ export class PatternScanService {
 
     // 构建日志描述
     const conditions: string[] = [];
+    conditions.push(`lookback=${request.lookback_bars}`);
+    if (request.max_distance !== undefined) conditions.push(`max_distance=${request.max_distance}`);
     if (request.min_upper_shadow_pct !== undefined) conditions.push(`上影>=${request.min_upper_shadow_pct}%`);
     if (request.max_upper_shadow_pct !== undefined) conditions.push(`上影<=${request.max_upper_shadow_pct}%`);
     if (request.min_lower_shadow_pct !== undefined) conditions.push(`下影>=${request.min_lower_shadow_pct}%`);
@@ -1019,8 +1023,8 @@ export class PatternScanService {
       }
 
       try {
-        // 获取最后一根K线数据
-        const klines = await this.get_klines_from_db_only(symbol, request.interval, 1, request.end_time);
+        // 获取K线数据
+        const klines = await this.get_klines_from_db_only(symbol, request.interval, request.lookback_bars, request.end_time);
 
         if (klines.length < 1) {
           continue;
@@ -1037,29 +1041,44 @@ export class PatternScanService {
           volume: k.volume
         }));
 
-        // 使用自定义参数检测单根K线形态
-        const pattern = this.detector.detect_single_candle_custom(
-          kline_data,
-          request.min_upper_shadow_pct,
-          request.max_upper_shadow_pct,
-          request.min_lower_shadow_pct,
-          request.max_lower_shadow_pct,
-          request.min_body_pct,
-          request.max_body_pct,
-          request.is_bullish,
-          request.min_range_pct,
-          request.max_range_pct
-        );
+        // 计算要扫描的K线范围
+        // max_distance 限制从最后一根K线往前最多扫描多少根
+        const total_klines = kline_data.length;
+        const max_distance = request.max_distance !== undefined ? request.max_distance : total_klines;
+        const start_index = Math.max(0, total_klines - max_distance);
 
-        if (pattern) {
-          results.push({
-            symbol,
-            score: pattern.score,
-            description: pattern.description,
-            key_levels: pattern.key_levels,
-            kline_interval: request.interval,
-            detected_at: pattern.detected_at
-          });
+        // 扫描每一根K线
+        for (let i = start_index; i < total_klines; i++) {
+          // 使用自定义参数检测单根K线形态
+          // 传入单根K线的数组
+          const pattern = this.detector.detect_single_candle_custom(
+            [kline_data[i]],
+            request.min_upper_shadow_pct,
+            request.max_upper_shadow_pct,
+            request.min_lower_shadow_pct,
+            request.max_lower_shadow_pct,
+            request.min_body_pct,
+            request.max_body_pct,
+            request.is_bullish,
+            request.min_range_pct,
+            request.max_range_pct
+          );
+
+          if (pattern) {
+            // 添加距离信息到key_levels
+            const distance_from_end = total_klines - 1 - i;
+            results.push({
+              symbol,
+              score: pattern.score,
+              description: pattern.description + `, 距当前${distance_from_end}根`,
+              key_levels: {
+                ...pattern.key_levels,
+                distance_from_end
+              },
+              kline_interval: request.interval,
+              detected_at: pattern.detected_at
+            });
+          }
         }
       } catch (error) {
         logger.debug(`[PatternScan] Single candle scan failed for ${symbol}: ${error}`);

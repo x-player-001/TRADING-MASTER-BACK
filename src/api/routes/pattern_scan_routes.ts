@@ -659,6 +659,8 @@ router.post('/surge-ema-pullback', async (req: Request, res: Response): Promise<
  *
  * 请求体参数:
  * - interval: K线周期 (5m, 15m, 1h, 4h)，默认 1h
+ * - lookback_bars: 扫描的K线数量，默认 100
+ * - max_distance: 距离最后一根K线的最大距离（K线数），可选，不传表示不限
  * - min_upper_shadow_pct: 最小上影线占比 (%)，可选
  * - max_upper_shadow_pct: 最大上影线占比 (%)，可选
  * - min_lower_shadow_pct: 最小下影线占比 (%)，可选
@@ -674,6 +676,8 @@ router.post('/single-candle', async (req: Request, res: Response): Promise<void>
   try {
     const {
       interval = '1h',
+      lookback_bars = 100,
+      max_distance,
       min_upper_shadow_pct,
       max_upper_shadow_pct,
       min_lower_shadow_pct,
@@ -694,6 +698,29 @@ router.post('/single-candle', async (req: Request, res: Response): Promise<void>
         error: `Invalid interval. Valid options: ${valid_intervals.join(', ')}`
       });
       return;
+    }
+
+    // 验证 lookback_bars
+    const parsed_lookback_bars = Number(lookback_bars);
+    if (isNaN(parsed_lookback_bars) || parsed_lookback_bars < 1 || parsed_lookback_bars > 500) {
+      res.status(400).json({
+        success: false,
+        error: 'lookback_bars must be between 1 and 500'
+      });
+      return;
+    }
+
+    // 验证 max_distance
+    let parsed_max_distance: number | undefined = undefined;
+    if (max_distance !== undefined && max_distance !== null && max_distance !== '') {
+      parsed_max_distance = Number(max_distance);
+      if (isNaN(parsed_max_distance) || parsed_max_distance < 1 || parsed_max_distance > parsed_lookback_bars) {
+        res.status(400).json({
+          success: false,
+          error: `max_distance must be between 1 and ${parsed_lookback_bars} (lookback_bars)`
+        });
+        return;
+      }
     }
 
     // 验证百分比参数范围
@@ -761,6 +788,8 @@ router.post('/single-candle', async (req: Request, res: Response): Promise<void>
     // 执行扫描
     const results = await service.scan_single_candle({
       interval,
+      lookback_bars: parsed_lookback_bars,
+      max_distance: parsed_max_distance,
       min_upper_shadow_pct: parsed_min_upper_shadow_pct,
       max_upper_shadow_pct: parsed_max_upper_shadow_pct,
       min_lower_shadow_pct: parsed_min_lower_shadow_pct,
@@ -778,6 +807,8 @@ router.post('/single-candle', async (req: Request, res: Response): Promise<void>
       data: {
         params: {
           interval,
+          lookback_bars: parsed_lookback_bars,
+          max_distance: parsed_max_distance,
           min_upper_shadow_pct: parsed_min_upper_shadow_pct,
           max_upper_shadow_pct: parsed_max_upper_shadow_pct,
           min_lower_shadow_pct: parsed_min_lower_shadow_pct,
