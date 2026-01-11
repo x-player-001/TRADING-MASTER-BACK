@@ -1016,6 +1016,10 @@ export class PatternScanService {
 
     logger.info(`[PatternScan] Single candle scan: Scanning ${symbols.length} symbols (${conditions.join(', ')}${end_time_desc})`);
 
+    // 单根K线扫描需要扫描历史K线，强制使用当前时间作为end_time确保从数据库获取完整数据
+    // 这样可以避免使用可能不完整的缓存数据
+    const effective_end_time = request.end_time || Date.now();
+
     for (const symbol of symbols) {
       // 黑名单过滤
       if (this.blacklist.has(symbol)) {
@@ -1023,8 +1027,8 @@ export class PatternScanService {
       }
 
       try {
-        // 获取K线数据
-        const klines = await this.get_klines_from_db_only(symbol, request.interval, request.lookback_bars, request.end_time);
+        // 获取K线数据（强制指定end_time以绕过缓存，直接从数据库获取）
+        const klines = await this.get_klines_from_db_only(symbol, request.interval, request.lookback_bars, effective_end_time);
 
         if (klines.length < 1) {
           continue;
