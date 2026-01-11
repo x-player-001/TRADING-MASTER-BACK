@@ -41,7 +41,7 @@ const DEFAULT_CONFIG: PerfectHammerTraderConfig = {
   reward_ratio: 1.4,
   max_leverage: 20,
   max_concurrent_signals: 5,
-  min_stop_pct: 0.01,     // 1% (回测优化，原为0.2%)
+  min_stop_pct: 0.005,    // 0.5% (回测优化)
   max_stop_pct: 0.05,     // 5%
   max_positions: 8,
 };

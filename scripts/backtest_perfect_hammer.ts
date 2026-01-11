@@ -22,8 +22,8 @@ import { DatabaseConfig } from '@/core/config/database';
 // ==================== 配置 ====================
 const CONFIG = {
   // 回测时间范围
-  start_date: '2026-01-08',
-  end_date: '2026-01-10',
+  start_date: '2026-01-11',
+  end_date: '2026-01-11',
 
   // ========== 资金管理参数 (固定金额模式) ==========
   initial_capital: 1000,    // 初始本金 (USDT) - 增大用于获取更多样本
@@ -35,7 +35,7 @@ const CONFIG = {
 
   // 信号过滤
   max_concurrent_signals: 0,  // 同一时间最多允许的信号数量，0=不过滤
-  min_stop_pct: 0.01,         // 最小止损距离 (1%)，太小跳过 ⭐ 改为1%
+  min_stop_pct: 0.005,        // 最小止损距离 0.5%
   max_stop_pct: 0.05,         // 最大止损距离 (5%)，太大跳过
   min_lower_shadow_pct: 85,   // 最小下影线比例 (%) ⭐ 新增
 
