@@ -15,6 +15,7 @@
 import { Kline5mData, Kline5mRepository } from '@/database/kline_5m_repository';
 import { VolumeMonitorRepository, VolumeAlert } from '@/database/volume_monitor_repository';
 import { TelegramService, MessagePriority } from '@/services/telegram_service';
+import { AggregatedKline } from '@/core/data/kline_aggregator';
 import { logger } from '@/utils/logger';
 
 /**
@@ -61,6 +62,24 @@ export interface PerfectHammerResult {
 }
 
 /**
+ * 1h十字星检测结果
+ */
+export interface DojiResult {
+  symbol: string;
+  kline_time: number;
+  interval: string;           // K线周期 (1h)
+  current_price: number;
+  open_price: number;
+  high_price: number;
+  low_price: number;
+  body_pct: number;           // 实体占比 (%)
+  upper_shadow_pct: number;   // 上影线比例 (%)
+  lower_shadow_pct: number;   // 下影线比例 (%)
+  price_change_pct: number;   // K线涨跌幅
+  volume: number;             // 成交量
+}
+
+/**
  * 默认监控配置
  */
 const DEFAULT_CONFIG = {
@@ -79,6 +98,11 @@ const DEFAULT_CONFIG = {
   hammer_ema_period: 120,        // EMA周期
   hammer_min_lower_shadow: 50,   // 下影线最小比例 (%)
   hammer_max_upper_shadow: 20,   // 上影线最大比例 (%)
+  // 1h十字星配置
+  doji_max_body_pct: 5,          // 实体最大占比 (%) - 实体/振幅 <= 5%
+  doji_min_range_pct: 1,         // 最小振幅 (%) - 过滤横盘小K线
+  doji_lookback_bars: 100,       // 回溯K线数量
+  doji_min_surge_pct: 15,        // 最小涨幅 (%) - 需要有过15%以上涨幅
 };
 
 /**
@@ -127,6 +151,13 @@ export class VolumeMonitorService {
 
   // 完美倒锤头报警记录: "symbol_openTime" -> true (独立的报警记录)
   private perfect_hammer_alerts: Map<string, boolean> = new Map();
+
+  // 1h十字星报警记录: "symbol_openTime" -> true (避免同一根K线重复报警)
+  private doji_alerts: Map<string, boolean> = new Map();
+
+  // 1h K线缓存: symbol -> klines[] (用于十字星检测)
+  private kline_1h_cache: Map<string, AggregatedKline[]> = new Map();
+  private readonly MAX_1H_CACHE_SIZE = 120;  // 缓存120根1h K线
 
   constructor() {
     this.repository = new VolumeMonitorRepository();
@@ -897,5 +928,224 @@ export class VolumeMonitorService {
    */
   get_config(): typeof DEFAULT_CONFIG {
     return { ...DEFAULT_CONFIG };
+  }
+
+  /**
+   * 检测1h十字星形态
+   * 条件：
+   * 1. 实体占比 <= 10% (实体/振幅)
+   * 2. 振幅 >= 0.5% (过滤横盘小K线)
+   * 3. 最近100根K线内有过15%以上涨幅
+   * 4. 当前价格未跌破起涨点
+   *
+   * @param kline 聚合后的1h K线数据
+   * @returns 如果检测到十字星，返回结果
+   */
+  check_doji(kline: AggregatedKline): DojiResult | null {
+    const symbol = kline.symbol;
+    const alert_key = `${symbol}_${kline.open_time}`;
+
+    // 黑名单过滤
+    if (this.blacklist.has(symbol)) {
+      return null;
+    }
+
+    // 更新1h K线缓存
+    let cache = this.kline_1h_cache.get(symbol);
+    if (!cache) {
+      cache = [];
+      this.kline_1h_cache.set(symbol, cache);
+    }
+
+    // 添加新K线（避免重复）
+    if (cache.length === 0 || cache[cache.length - 1].open_time !== kline.open_time) {
+      cache.push(kline);
+      if (cache.length > this.MAX_1H_CACHE_SIZE) {
+        cache.shift();
+      }
+    } else {
+      // 更新最后一根
+      cache[cache.length - 1] = kline;
+    }
+
+    // 检查是否已经报过警
+    if (this.doji_alerts.has(alert_key)) {
+      return null;
+    }
+
+    // 计算K线振幅
+    const total_range = kline.high - kline.low;
+    const range_pct = (total_range / kline.low) * 100;
+
+    // 过滤横盘小K线
+    if (range_pct < DEFAULT_CONFIG.doji_min_range_pct) {
+      return null;
+    }
+
+    // 计算实体大小
+    const body = Math.abs(kline.close - kline.open);
+    const body_pct = total_range > 0 ? (body / total_range) * 100 : 0;
+
+    // 检查十字星条件：实体占比 <= 10%
+    if (body_pct > DEFAULT_CONFIG.doji_max_body_pct) {
+      return null;
+    }
+
+    // 检查涨幅条件：最近100根K线内有过15%以上涨幅，且当前价格未跌破起涨点
+    const surge_check = this.check_surge_condition(cache, kline.close);
+    if (!surge_check.has_surge) {
+      return null;
+    }
+
+    // 计算影线比例
+    const body_top = Math.max(kline.open, kline.close);
+    const body_bottom = Math.min(kline.open, kline.close);
+    const upper_shadow = kline.high - body_top;
+    const lower_shadow = body_bottom - kline.low;
+    const upper_shadow_pct = total_range > 0 ? (upper_shadow / total_range) * 100 : 0;
+    const lower_shadow_pct = total_range > 0 ? (lower_shadow / total_range) * 100 : 0;
+
+    // 计算涨跌幅
+    const price_change_pct = ((kline.close - kline.open) / kline.open) * 100;
+
+    // 记录已报警
+    this.doji_alerts.set(alert_key, true);
+
+    const result: DojiResult = {
+      symbol,
+      kline_time: kline.open_time,
+      interval: kline.interval,
+      current_price: kline.close,
+      open_price: kline.open,
+      high_price: kline.high,
+      low_price: kline.low,
+      body_pct,
+      upper_shadow_pct,
+      lower_shadow_pct,
+      price_change_pct,
+      volume: kline.volume
+    };
+
+    // 保存形态报警到数据库
+    this.repository.save_pattern_alert({
+      symbol,
+      kline_time: kline.open_time,
+      pattern_type: 'DOJI_1H',
+      current_price: kline.close,
+      price_change_pct,
+      ema120: 0,
+      lower_shadow_pct,
+      upper_shadow_pct,
+      is_final: true
+    }).catch(err => {
+      logger.debug(`[VolumeMonitor] Doji alert save failed: ${err.message}`);
+    });
+
+    // 发送 Telegram 推送
+    this.send_doji_telegram_alert(result, surge_check);
+
+    logger.info(`[VolumeMonitor] ✚ Doji 1h: ${symbol} @ ${kline.close.toFixed(4)}, 实体=${body_pct.toFixed(1)}%, 涨幅=${surge_check.max_surge_pct.toFixed(1)}%`);
+
+    return result;
+  }
+
+  /**
+   * 检查涨幅条件
+   * 在最近100根K线内查找是否有过15%以上涨幅，且当前价格未跌破起涨点
+   */
+  private check_surge_condition(cache: AggregatedKline[], current_price: number): {
+    has_surge: boolean;
+    max_surge_pct: number;
+    surge_start_price: number;
+    surge_high_price: number;
+  } {
+    const lookback = Math.min(cache.length, DEFAULT_CONFIG.doji_lookback_bars);
+    const min_surge = DEFAULT_CONFIG.doji_min_surge_pct;
+
+    let max_surge_pct = 0;
+    let best_start_price = 0;
+    let best_high_price = 0;
+
+    // 从最早的K线开始，寻找起涨点到最高点的涨幅
+    for (let i = cache.length - lookback; i < cache.length; i++) {
+      if (i < 0) continue;
+
+      const start_price = cache[i].low;  // 起涨点用最低价
+
+      // 从起涨点向后找最高价
+      let high_price = start_price;
+      for (let j = i; j < cache.length; j++) {
+        if (cache[j].high > high_price) {
+          high_price = cache[j].high;
+        }
+      }
+
+      // 计算涨幅
+      const surge_pct = ((high_price - start_price) / start_price) * 100;
+
+      // 检查是否满足条件：涨幅>=15% 且 当前价格未跌破起涨点
+      if (surge_pct >= min_surge && current_price >= start_price) {
+        if (surge_pct > max_surge_pct) {
+          max_surge_pct = surge_pct;
+          best_start_price = start_price;
+          best_high_price = high_price;
+        }
+      }
+    }
+
+    return {
+      has_surge: max_surge_pct >= min_surge,
+      max_surge_pct,
+      surge_start_price: best_start_price,
+      surge_high_price: best_high_price
+    };
+  }
+
+  /**
+   * 发送十字星 Telegram 报警
+   */
+  private send_doji_telegram_alert(result: DojiResult, surge_check: {
+    max_surge_pct: number;
+    surge_start_price: number;
+    surge_high_price: number;
+  }): void {
+    // 获取当天第几次报警
+    const alert_index = this.get_and_increment_daily_alert_count(result.symbol);
+
+    this.telegram.send_alert({
+      symbol: result.symbol,
+      message: `✚ 1h十字星 (涨幅${surge_check.max_surge_pct.toFixed(0)}%) [今日第${alert_index}次]`,
+      price: result.current_price,
+      change_pct: result.price_change_pct,
+      direction: result.price_change_pct >= 0 ? 'UP' : 'DOWN',
+      is_important: true,
+      extra_info: `实体: ${result.body_pct.toFixed(1)}% | 起涨: ${surge_check.surge_start_price.toFixed(4)} | 最高: ${surge_check.surge_high_price.toFixed(4)}`
+    }, MessagePriority.HIGH).catch(err => {
+      logger.debug(`[VolumeMonitor] Telegram send failed: ${err.message}`);
+    });
+  }
+
+  /**
+   * 清理过期的十字星报警记录
+   * 建议每小时调用一次，清理超过2小时的记录
+   */
+  cleanup_doji_alerts(): number {
+    const now = Date.now();
+    const max_age = 2 * 60 * 60 * 1000; // 2小时
+    let cleaned = 0;
+
+    for (const [key] of this.doji_alerts) {
+      const parts = key.split('_');
+      const open_time = parseInt(parts[parts.length - 1]);
+      if (now - open_time > max_age) {
+        this.doji_alerts.delete(key);
+        cleaned++;
+      }
+    }
+
+    if (cleaned > 0) {
+      logger.debug(`[VolumeMonitor] Cleaned ${cleaned} expired doji alert records`);
+    }
+    return cleaned;
   }
 }

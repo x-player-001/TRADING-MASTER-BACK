@@ -48,7 +48,7 @@ export interface PatternAlert {
   id?: number;
   symbol: string;
   kline_time: number;
-  pattern_type: 'HAMMER_CROSS_EMA' | 'PERFECT_HAMMER';  // 形态类型
+  pattern_type: 'HAMMER_CROSS_EMA' | 'PERFECT_HAMMER' | 'DOJI_1H';  // 形态类型
   current_price: number;
   price_change_pct: number;
   ema120: number;                    // EMA120值（完美倒锤头时为0）

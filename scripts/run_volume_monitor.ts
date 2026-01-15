@@ -11,6 +11,7 @@
  * 4. 倒锤头穿越EMA120形态检测（仅完结K线）：下影线>50%，上影线<20%，最低价<EMA120<收盘价，前30根K线最低价都在EMA120之上
  * 5. 完美倒锤头形态检测（独立于EMA，仅完结K线）：阳线 + 下影线>=70% + 上影线<=5% + 最低价是近30根K线最低
  * 6. 完美倒锤头自动交易（可选）：设置 ENABLE_TRADING=true 启用
+ * 7. 1h十字星形态检测：实体占比≤5%，振幅≥1%，100根K线内涨幅≥15%且未跌破起涨点
  *
  * 注意:
  * - API 接口已集成到主服务 (api_server.ts): /api/volume-monitor/*, /api/pattern-scan/*
@@ -32,7 +33,7 @@ import axios from 'axios';
 import { ConfigManager } from '@/core/config/config_manager';
 import { Kline5mRepository, Kline5mData } from '@/database/kline_5m_repository';
 import { KlineAggregator } from '@/core/data/kline_aggregator';
-import { VolumeMonitorService, VolumeCheckResult, HammerCrossResult, PerfectHammerResult } from '@/services/volume_monitor_service';
+import { VolumeMonitorService, VolumeCheckResult, HammerCrossResult, PerfectHammerResult, DojiResult } from '@/services/volume_monitor_service';
 import { PerfectHammerTrader } from '@/services/perfect_hammer_trader';
 
 // ==================== 配置 ====================
@@ -73,6 +74,7 @@ const stats = {
   volume_alerts: 0,
   hammer_alerts: 0,
   perfect_hammer_alerts: 0,
+  doji_alerts: 0,
   aggregated_15m: 0,
   aggregated_1h: 0,
   aggregated_4h: 0,
@@ -255,7 +257,15 @@ async function process_kline(symbol: string, kline: any, is_final: boolean): Pro
   const aggregated = kline_aggregator.process_5m_kline(kline_data);
   for (const agg of aggregated) {
     if (agg.interval === '15m') stats.aggregated_15m++;
-    else if (agg.interval === '1h') stats.aggregated_1h++;
+    else if (agg.interval === '1h') {
+      stats.aggregated_1h++;
+      // 4. 检测1h十字星形态
+      const doji_result = volume_monitor_service.check_doji(agg);
+      if (doji_result) {
+        stats.doji_alerts++;
+        print_doji_alert(doji_result);
+      }
+    }
     else if (agg.interval === '4h') stats.aggregated_4h++;
   }
 }
@@ -310,6 +320,20 @@ function print_perfect_hammer_alert(result: PerfectHammerResult, is_final: boole
   console.log(`   💰 价格: ${result.current_price.toFixed(4)} (${change_str})`);
 }
 
+// ==================== 1h十字星报警打印 ====================
+function print_doji_alert(result: DojiResult): void {
+  const time_str = format_beijing_time(result.kline_time);
+  const change_str = result.price_change_pct >= 0
+    ? `+${result.price_change_pct.toFixed(2)}%`
+    : `${result.price_change_pct.toFixed(2)}%`;
+
+  const direction_emoji = result.price_change_pct >= 0 ? '🟢' : '🔴';
+
+  console.log(`\n✚ [${time_str}] ${result.symbol} 1h十字星 ${direction_emoji} ⭐ 重要`);
+  console.log(`   📊 实体: ${result.body_pct.toFixed(1)}% | 上影: ${result.upper_shadow_pct.toFixed(1)}% | 下影: ${result.lower_shadow_pct.toFixed(1)}%`);
+  console.log(`   💰 价格: ${result.current_price.toFixed(4)} (${change_str})`);
+  console.log(`   📈 条件: 100根K线内涨幅≥15%且未跌破起涨点`);
+}
 
 // ==================== WebSocket ====================
 async function get_all_symbols(): Promise<string[]> {
@@ -379,6 +403,7 @@ async function print_status(): Promise<void> {
   volume_monitor_service.cleanup_pending_alerts();
   volume_monitor_service.cleanup_hammer_alerts();
   volume_monitor_service.cleanup_perfect_hammer_alerts();
+  volume_monitor_service.cleanup_doji_alerts();
 
   // 清理过期的已拒绝批次记录
   if (perfect_hammer_trader) {
@@ -391,7 +416,7 @@ async function print_status(): Promise<void> {
   console.log(`   K线接收: ${stats.klines_received}`);
   console.log(`   K线入库: ${db_stats.today_count} (${db_stats.today_symbols}币种)`);
   console.log(`   聚合K线: 15m=${stats.aggregated_15m}, 1h=${stats.aggregated_1h}, 4h=${stats.aggregated_4h}`);
-  console.log(`   放量报警: ${stats.volume_alerts} | 倒锤头报警: ${stats.hammer_alerts} | 完美倒锤头: ${stats.perfect_hammer_alerts}`);
+  console.log(`   放量报警: ${stats.volume_alerts} | 倒锤头: ${stats.hammer_alerts} | 完美倒锤头: ${stats.perfect_hammer_alerts} | 1h十字星: ${stats.doji_alerts}`);
 
   // 交易统计
   if (perfect_hammer_trader && perfect_hammer_trader.is_enabled()) {
@@ -421,6 +446,10 @@ async function main() {
   console.log('   - ⭐完美倒锤头形态监控（仅完结K线，独立于EMA）:');
   console.log('     · 阳线 + 下影线≥70% + 上影线≤5%');
   console.log('     · 最低价是近30根K线的最低价');
+  console.log('   - ✚ 1h十字星形态监控:');
+  console.log('     · 实体占比≤5%（实体/振幅）');
+  console.log('     · 振幅≥1%（过滤横盘小K线）');
+  console.log('     · 100根K线内涨幅≥15%且未跌破起涨点');
   console.log('   - API已集成到主服务 (端口3000)');
   console.log('   - 订单簿监控已移至主服务');
   console.log('═'.repeat(70));
