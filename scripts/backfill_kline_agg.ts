@@ -329,7 +329,7 @@ async function main() {
           const existing = await get_existing_count(connection, table_name, symbol);
 
           // 如果已有超过80%的数据，跳过
-          if (existing >= limit * 0.8) {
+          if (existing >= limit * 0.9) {
             stats.skipped++;
             process.stdout.write(`\r${progress} ${symbol.padEnd(12)} ⏭️  已有 ${existing} 根，跳过\n`);
             continue;

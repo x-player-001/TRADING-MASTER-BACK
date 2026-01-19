@@ -22,8 +22,8 @@ import { DatabaseConfig } from '@/core/config/database';
 // ==================== 配置 ====================
 const CONFIG = {
   // 回测时间范围
-  start_date: '2026-01-11',
-  end_date: '2026-01-11',
+  start_date: '2026-01-08',
+  end_date: '2026-01-15',
 
   // ========== 资金管理参数 (固定金额模式) ==========
   initial_capital: 1000,    // 初始本金 (USDT) - 增大用于获取更多样本
