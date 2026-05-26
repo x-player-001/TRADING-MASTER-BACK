@@ -145,34 +145,44 @@ async function get_all_symbols(): Promise<string[]> {
 }
 
 let ws_kline: WebSocket | null = null;
+// 每个 WS 连接最多订阅的流数量（币安限制）
+const MAX_STREAMS_PER_CONNECTION = 200;
 
 async function start_kline_websocket(symbols: string[]): Promise<void> {
   console.log(`\n📡 订阅 ${symbols.length} 个合约的 ${CONFIG.interval} K线...`);
 
-  const streams = symbols
-    .map(s => `${s.toLowerCase()}@kline_${CONFIG.interval}`)
-    .join('/');
-  const ws_url = `wss://fstream.binance.com/stream?streams=${streams}`;
-
+  // 连接组合流端点（不带 streams 参数，通过 SUBSCRIBE 消息订阅）
+  const ws_url = 'wss://fstream.binance.com/stream';
   ws_kline = new WebSocket(ws_url);
 
   ws_kline.on('open', () => {
-    console.log('✅ K线 WebSocket 连接成功');
+    console.log('✅ K线 WebSocket 连接成功，开始订阅流...');
+
+    // 构建所有流名
+    const all_streams = symbols.map(s => `${s.toLowerCase()}@kline_${CONFIG.interval}`);
+
+    // 分批发送 SUBSCRIBE 消息，每批最多 200 个
+    let req_id = 1;
+    for (let i = 0; i < all_streams.length; i += MAX_STREAMS_PER_CONNECTION) {
+      const batch = all_streams.slice(i, i + MAX_STREAMS_PER_CONNECTION);
+      ws_kline!.send(JSON.stringify({
+        method: 'SUBSCRIBE',
+        params: batch,
+        id: req_id++,
+      }));
+    }
+    console.log(`✅ 已发送 ${Math.ceil(all_streams.length / MAX_STREAMS_PER_CONNECTION)} 批订阅请求，共 ${all_streams.length} 个流`);
   });
 
-  let _dbg_total = 0;
-  let _dbg_final = 0;
   ws_kline.on('message', async (data: Buffer) => {
     try {
       const msg = JSON.parse(data.toString());
-      _dbg_total++;
-      if (_dbg_total <= 3) {
-        console.log('[DBG] raw msg keys:', Object.keys(msg), '| data.e:', msg.data?.e, '| k.x:', msg.data?.k?.x);
-      }
+
+      // 忽略订阅响应消息 {"result":null,"id":1}
+      if (msg.result !== undefined || msg.id !== undefined) return;
+
       if (msg.data?.e === 'kline') {
         if (msg.data.k?.x === true) {
-          _dbg_final++;
-          if (_dbg_final <= 5) console.log(`[DBG] final kline: ${msg.data.s} ${msg.data.k.i}`);
           await process_kline(msg.data.s, msg.data.k);
         }
       }
