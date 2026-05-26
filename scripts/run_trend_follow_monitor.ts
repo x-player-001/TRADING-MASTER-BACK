@@ -45,7 +45,6 @@ const CONFIG = {
 
 // ==================== 全局变量 ====================
 
-let ws_kline: WebSocket | null = null;
 let kline_5m_repository: Kline5mRepository;
 let kline_aggregator: KlineAggregator;
 let trend_service: TrendFollowService;
@@ -144,6 +143,8 @@ async function get_all_symbols(): Promise<string[]> {
     )
     .map((s: any) => s.symbol as string);
 }
+
+let ws_kline: WebSocket | null = null;
 
 async function start_kline_websocket(symbols: string[]): Promise<void> {
   console.log(`\n📡 订阅 ${symbols.length} 个合约的 ${CONFIG.interval} K线...`);
@@ -268,7 +269,7 @@ async function main(): Promise<void> {
   console.log('     🟡 Lv1 轻度回调 < 38.2%  缩量');
   console.log('     🟢 Lv2 黄金回调 38.2%~50%  缩量+止跌形态');
   console.log('     🔴 Lv3 深度回调 50%~61.8%  谨慎');
-  console.log('   · 废弃条件: 回调>61.8% / 连续2根大阴线 / 时间超限');
+  console.log('   · 废弃条件: 回调>61.8%');
   console.log('═'.repeat(65));
 
   // 初始化配置

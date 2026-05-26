@@ -49,7 +49,6 @@ export interface PullbackState {
   bar_count: number;         // 回调根数
   min_volume: number;        // 回调期间最小成交量（判断缩量）
   avg_volume: number;        // 回调期间平均成交量
-  big_down_bars: number;     // 连续大阴线计数
 }
 
 /** 观察区状态机（每个币种每个周期独立一个） */
@@ -104,10 +103,7 @@ const CONFIG = {
   fib_62: 0.618,
 
   volume_shrink_ratio: 0.5,         // 回调均量 < 第一波均量 × 0.5 认为缩量
-  max_pullback_bars_multiplier: 2,  // 回调根数上限 = 第一波根数 × 2
-  max_watch_abandon_bars: 20,       // 观察区超过此根数废弃（时间衰减）
-  big_down_bar_multiplier: 2.0,     // 阴线实体 > 第一波平均实体 × 2 认为大阴线
-  max_big_down_bars: 2,             // 连续大阴线超过此数废弃
+  min_alert_bars_multiplier: 2,     // 最小等待K线数 = 第一波根数 × 2，之后才开始检测报警
 
   // 止跌形态（末端止跌信号）
   reversal_upper_shadow_max: 0.3,   // 上影线 <= 30% 振幅
@@ -289,7 +285,6 @@ export class TrendFollowService {
       bar_count: 0,
       min_volume: current.volume,
       avg_volume: current.volume,
-      big_down_bars: 0,
     };
     ctx.last_alert_level = undefined;
   }
@@ -380,43 +375,46 @@ export class TrendFollowService {
     const wave = ctx.wave!;
     const pb = ctx.pullback!;
 
+    const is_bull = current.close > current.open;
+    const is_bear = current.close < current.open;
+    const body = Math.abs(current.close - current.open);
+
+    // 如果当前仍是阳线且创新高，继续累加第一波数据
+    if (is_bull && current.high > wave.end_price) {
+      wave.bar_count++;
+      wave.end_price = current.high;
+      wave.amplitude = wave.end_price - wave.start_price;
+      wave.end_time = current.close_time;
+      // 更新第一波平均成交量
+      wave.avg_volume = (wave.avg_volume * (wave.bar_count - 1) + current.volume) / wave.bar_count;
+      // 重置回调统计
+      pb.bar_count = 0;
+      pb.lowest_price = current.low;
+      pb.min_volume = current.volume;
+      pb.avg_volume = current.volume;
+      return;
+    }
+
     // 更新回调统计
     pb.bar_count++;
     pb.lowest_price = Math.min(pb.lowest_price, current.low);
     pb.avg_volume = (pb.avg_volume * (pb.bar_count - 1) + current.volume) / pb.bar_count;
     pb.min_volume = Math.min(pb.min_volume, current.volume);
 
-    // 大阴线计数（连续）
-    const is_bear = current.close < current.open;
-    const body = Math.abs(current.close - current.open);
-    if (is_bear && body > wave.avg_volume * 0 && body > wave.amplitude / wave.bar_count * CONFIG.big_down_bar_multiplier) {
-      pb.big_down_bars++;
-    } else {
-      pb.big_down_bars = 0;
-    }
-
     // ---- 废弃条件 ----
     const pullback_amount = wave.end_price - pb.lowest_price;
     const pullback_ratio = pullback_amount / wave.amplitude;
 
-    // 1. 回调超过 61.8%
+    // 回调超过 61.8%
     if (pullback_ratio > CONFIG.fib_62) {
       return this._abandon(ctx, wave, `回调幅度 ${(pullback_ratio * 100).toFixed(1)}% 超过 61.8%`);
     }
-    // 2. 连续大阴线
-    if (pb.big_down_bars >= CONFIG.max_big_down_bars) {
-      return this._abandon(ctx, wave, `出现 ${pb.big_down_bars} 根连续大阴线`);
-    }
-    // 3. 回调根数超限
-    if (pb.bar_count > wave.bar_count * CONFIG.max_pullback_bars_multiplier) {
-      return this._abandon(ctx, wave, `回调时间过长（${pb.bar_count} 根 > 第一波 ${wave.bar_count} 根 × ${CONFIG.max_pullback_bars_multiplier}）`);
-    }
-    // 4. 时间衰减
-    if (pb.bar_count > CONFIG.max_watch_abandon_bars) {
-      return this._abandon(ctx, wave, `观察区超过 ${CONFIG.max_watch_abandon_bars} 根K线`);
-    }
 
     // ---- 报警判断 ----
+    // 最小等待K线数：必须等待 第一波根数 × 2 根K线后才开始检测报警
+    const min_alert_bars = wave.bar_count * CONFIG.min_alert_bars_multiplier;
+    if (pb.bar_count < min_alert_bars) return;
+
     const volume_shrink = pb.avg_volume < wave.avg_volume * CONFIG.volume_shrink_ratio;
     const reversal = this._check_reversal_signal(current);
 
