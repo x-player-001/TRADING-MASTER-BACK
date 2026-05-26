@@ -144,35 +144,21 @@ async function get_all_symbols(): Promise<string[]> {
     .map((s: any) => s.symbol as string);
 }
 
-// 每个 WS 连接最多订阅的流数量
-const MAX_STREAMS_PER_CONNECTION = 200;
-const ws_connections: WebSocket[] = [];
+let ws_kline: WebSocket | null = null;
 
 async function start_kline_websocket(symbols: string[]): Promise<void> {
   console.log(`\n📡 订阅 ${symbols.length} 个合约的 ${CONFIG.interval} K线...`);
 
-  const all_streams = symbols.map(s => `${s.toLowerCase()}@kline_${CONFIG.interval}`);
+  const streams = symbols.map(s => `${s.toLowerCase()}@kline_${CONFIG.interval}`).join('/');
+  const ws_url = `wss://fstream.binance.com/market/stream?streams=${streams}`;
 
-  // 按 200 个一组分批，每组建一个独立 WS 连接
-  for (let i = 0; i < all_streams.length; i += MAX_STREAMS_PER_CONNECTION) {
-    const batch = all_streams.slice(i, i + MAX_STREAMS_PER_CONNECTION);
-    const conn_index = Math.floor(i / MAX_STREAMS_PER_CONNECTION);
-    create_ws_connection(batch, conn_index, symbols);
-  }
+  ws_kline = new WebSocket(ws_url);
 
-  console.log(`✅ 已建立 ${Math.ceil(all_streams.length / MAX_STREAMS_PER_CONNECTION)} 个 WS 连接`);
-}
-
-function create_ws_connection(streams: string[], conn_index: number, all_symbols: string[]): void {
-  const ws_url = `wss://fstream.binance.com/market/stream?streams=${streams.join('/')}`;
-  const ws = new WebSocket(ws_url);
-  ws_connections[conn_index] = ws;
-
-  ws.on('open', () => {
-    console.log(`✅ WS连接 #${conn_index + 1} 已连接 (${streams.length} 个流)`);
+  ws_kline.on('open', () => {
+    console.log(`✅ K线 WebSocket 连接成功 (${symbols.length} 个流)`);
   });
 
-  ws.on('message', async (data: Buffer) => {
+  ws_kline.on('message', async (data: Buffer) => {
     try {
       const msg = JSON.parse(data.toString());
       if (msg.data?.e === 'kline' && msg.data.k?.x === true) {
@@ -183,13 +169,13 @@ function create_ws_connection(streams: string[], conn_index: number, all_symbols
     }
   });
 
-  ws.on('error', (err) => {
-    console.error(`WS连接 #${conn_index + 1} 错误:`, err);
+  ws_kline.on('error', (err) => {
+    console.error('WebSocket 错误:', err);
   });
 
-  ws.on('close', () => {
-    console.log(`⚠️ WS连接 #${conn_index + 1} 断开，5 秒后重连...`);
-    setTimeout(() => create_ws_connection(streams, conn_index, all_symbols), 5000);
+  ws_kline.on('close', () => {
+    console.log('⚠️ WebSocket 断开，5 秒后重连...');
+    setTimeout(() => start_kline_websocket(symbols), 5000);
   });
 }
 
@@ -341,7 +327,7 @@ async function main(): Promise<void> {
   // 优雅退出
   process.on('SIGINT', async () => {
     console.log('\n\n⏹️  停止服务...');
-    ws_connections.forEach(ws => ws?.close());
+    ws_kline?.close();
     kline_aggregator.stop_flush_timer();
     kline_5m_repository.stop_flush_timer();
     console.log('💾 刷新缓冲区...');
