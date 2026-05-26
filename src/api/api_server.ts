@@ -20,7 +20,9 @@ import { SRLevelRoutes } from './routes/sr_level_routes';
 import volume_monitor_routes, { set_volume_monitor_repository } from './routes/volume_monitor_routes';
 import pattern_scan_routes, { set_pattern_scan_service } from './routes/pattern_scan_routes';
 import orderbook_monitor_routes, { set_orderbook_service } from './routes/orderbook_monitor_routes';
+import trend_follow_routes, { set_trend_follow_repository } from './routes/trend_follow_routes';
 import { VolumeMonitorRepository } from '@/database/volume_monitor_repository';
+import { TrendFollowRepository } from '@/database/trend_follow_repository';
 import { PatternScanService } from '@/services/pattern_scan_service';
 import { OrderBookMonitorService } from '@/services/orderbook_monitor_service';
 import { BinanceDepthUpdate } from '@/types/orderbook_types';
@@ -51,6 +53,7 @@ export class APIServer {
   private volume_monitor_repository: VolumeMonitorRepository;
   private pattern_scan_service: PatternScanService;
   private orderbook_monitor_service: OrderBookMonitorService;
+  private trend_follow_repository: TrendFollowRepository;
   private ws_depth: WebSocket | null = null;
 
   constructor(oi_data_manager: OIDataManager, port: number = 3000) {
@@ -73,10 +76,12 @@ export class APIServer {
     this.volume_monitor_repository = new VolumeMonitorRepository();
     this.pattern_scan_service = new PatternScanService();
     this.orderbook_monitor_service = new OrderBookMonitorService();
+    this.trend_follow_repository = new TrendFollowRepository();
     this.setup_middleware();
     this.setup_routes();
     this.init_volume_monitor_services();
     this.init_orderbook_monitor_service();
+    this.init_trend_follow_services();
   }
 
   /**
@@ -110,6 +115,19 @@ export class APIServer {
       logger.info('[APIServer] OrderBook monitor service initialized (WebSocket disabled)');
     } catch (error) {
       logger.error('[APIServer] Failed to init orderbook monitor service:', error);
+    }
+  }
+
+  /**
+   * 初始化趋势跟随服务
+   */
+  private async init_trend_follow_services(): Promise<void> {
+    try {
+      await this.trend_follow_repository.init_tables();
+      set_trend_follow_repository(this.trend_follow_repository);
+      logger.info('[APIServer] Trend follow services initialized');
+    } catch (error) {
+      logger.error('[APIServer] Failed to init trend follow services:', error);
     }
   }
 
@@ -315,6 +333,9 @@ export class APIServer {
 
     // 订单簿监控路由
     this.app.use('/api/orderbook', orderbook_monitor_routes);
+
+    // 趋势跟随报警路由
+    this.app.use('/api/trend-follow', trend_follow_routes);
 
     // 系统状态
     this.app.get('/api/status', async (req: Request, res: Response) => {
