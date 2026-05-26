@@ -310,6 +310,30 @@ async function main(): Promise<void> {
     print_abandon(event);
   });
 
+  trend_service.on_context_change((ctx) => {
+    if (!ctx.wave || !ctx.pullback) return;
+    const record = {
+      symbol:               ctx.symbol,
+      timeframe:            ctx.timeframe,
+      state:                ctx.state,
+      wave_start_price:     ctx.wave.start_price,
+      wave_end_price:       ctx.wave.end_price,
+      wave_amplitude_pct:   (ctx.wave.amplitude / ctx.wave.start_price) * 100,
+      wave_bar_count:       ctx.wave.bar_count,
+      wave_avg_volume:      ctx.wave.avg_volume,
+      wave_end_time:        ctx.wave.end_time,
+      pullback_lowest_price: ctx.pullback.lowest_price,
+      pullback_bar_count:   ctx.pullback.bar_count,
+      pullback_avg_volume:  ctx.pullback.avg_volume,
+      last_alert_level:     ctx.last_alert_level ?? null,
+      watch_start_time:     ctx.watch_start_time ?? Date.now(),
+      abandoned_reason:     ctx.abandoned_reason ?? null,
+    };
+    trend_follow_repository.upsert_watch_context(record).catch(err =>
+      console.error(`DB write context error:`, err.message)
+    );
+  });
+
   // 获取所有币种
   const symbols = await get_all_symbols();
   stats.symbols_count = symbols.length;

@@ -106,6 +106,43 @@ router.get('/alerts/recent', async (req: Request, res: Response): Promise<void> 
 });
 
 /**
+ * GET /api/trend-follow/watch-contexts
+ * 查询当前观察区快照
+ *
+ * Query params:
+ *   symbol    - 币种，如 BTCUSDT
+ *   timeframe - 周期，5m / 15m / 1h / 4h
+ *   state     - 状态过滤（WATCHING / ALERTED / ABANDONED），不传则返回非废弃的
+ *   limit     - 返回条数，默认 200
+ */
+router.get('/watch-contexts', async (req: Request, res: Response): Promise<void> => {
+  try {
+    const {
+      symbol,
+      timeframe,
+      state,
+      limit = '200',
+    } = req.query as Record<string, string>;
+
+    const contexts = await get_repository().get_watch_contexts({
+      symbol,
+      timeframe,
+      state,
+      limit: Number(limit),
+    });
+
+    res.json({
+      success: true,
+      data:  contexts,
+      count: contexts.length,
+    });
+  } catch (error: any) {
+    logger.error('[TrendFollow API] get_watch_contexts failed:', error);
+    res.status(500).json({ success: false, error: error.message });
+  }
+});
+
+/**
  * DELETE /api/trend-follow/alerts/cleanup
  * 清理旧报警记录
  *

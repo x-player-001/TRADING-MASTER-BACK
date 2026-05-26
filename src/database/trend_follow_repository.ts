@@ -2,7 +2,8 @@
  * 趋势跟随报警数据库操作
  *
  * 表:
- *   trend_follow_alerts  - 报警记录（Lv1/2/3）
+ *   trend_follow_alerts         - 报警记录（Lv1/2/3）
+ *   trend_follow_watch_contexts - 观察区状态快照
  */
 
 import { RowDataPacket, ResultSetHeader } from 'mysql2/promise';
@@ -25,6 +26,26 @@ export interface TrendFollowAlertRecord {
   volume_shrink: boolean;                   // 是否缩量
   reversal_signal: boolean;                 // 是否出现止跌形态
   created_at?: Date;
+}
+
+export interface TrendFollowWatchContextRecord {
+  id?: number;
+  symbol: string;
+  timeframe: string;
+  state: string;                        // WATCHING / ALERTED / ABANDONED
+  wave_start_price: number;
+  wave_end_price: number;
+  wave_amplitude_pct: number;
+  wave_bar_count: number;
+  wave_avg_volume: number;
+  wave_end_time: number;
+  pullback_lowest_price: number;
+  pullback_bar_count: number;
+  pullback_avg_volume: number;
+  last_alert_level?: number | null;
+  watch_start_time: number;
+  abandoned_reason?: string | null;
+  updated_at?: Date;
 }
 
 export class TrendFollowRepository extends BaseRepository {
@@ -57,9 +78,130 @@ export class TrendFollowRepository extends BaseRepository {
       ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COMMENT='趋势跟随报警记录'
     `;
 
+    const sql_watch = `
+      CREATE TABLE IF NOT EXISTS trend_follow_watch_contexts (
+        id               BIGINT PRIMARY KEY AUTO_INCREMENT,
+        symbol           VARCHAR(20)   NOT NULL,
+        timeframe        VARCHAR(5)    NOT NULL COMMENT '5m/15m/1h/4h',
+        state            VARCHAR(20)   NOT NULL COMMENT 'WATCHING/ALERTED/ABANDONED',
+        wave_start_price     DECIMAL(20,8) NOT NULL,
+        wave_end_price       DECIMAL(20,8) NOT NULL,
+        wave_amplitude_pct   DECIMAL(10,4) NOT NULL,
+        wave_bar_count       INT           NOT NULL,
+        wave_avg_volume      DECIMAL(30,8) NOT NULL,
+        wave_end_time        BIGINT        NOT NULL,
+        pullback_lowest_price DECIMAL(20,8) NOT NULL,
+        pullback_bar_count   INT           NOT NULL,
+        pullback_avg_volume  DECIMAL(30,8) NOT NULL,
+        last_alert_level     TINYINT       NULL,
+        watch_start_time     BIGINT        NOT NULL,
+        abandoned_reason     VARCHAR(200)  NULL,
+        updated_at       TIMESTAMP DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
+
+        UNIQUE KEY uk_symbol_tf (symbol, timeframe),
+        INDEX idx_state     (state),
+        INDEX idx_symbol    (symbol),
+        INDEX idx_updated   (updated_at)
+      ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COMMENT='趋势跟随观察区快照'
+    `;
+
     return this.execute_with_connection(async (conn) => {
       await conn.execute(sql);
-      logger.info('[TrendFollowRepository] Table ready');
+      await conn.execute(sql_watch);
+      logger.info('[TrendFollowRepository] Tables ready');
+    });
+  }
+
+  /** 插入或更新一条观察区快照（每个 symbol+timeframe 只保留最新一条） */
+  async upsert_watch_context(record: Omit<TrendFollowWatchContextRecord, 'id' | 'updated_at'>): Promise<void> {
+    return this.execute_with_connection(async (conn) => {
+      await conn.execute(
+        `INSERT INTO trend_follow_watch_contexts
+         (symbol, timeframe, state,
+          wave_start_price, wave_end_price, wave_amplitude_pct, wave_bar_count, wave_avg_volume, wave_end_time,
+          pullback_lowest_price, pullback_bar_count, pullback_avg_volume,
+          last_alert_level, watch_start_time, abandoned_reason)
+         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+         ON DUPLICATE KEY UPDATE
+           state                 = VALUES(state),
+           wave_start_price      = VALUES(wave_start_price),
+           wave_end_price        = VALUES(wave_end_price),
+           wave_amplitude_pct    = VALUES(wave_amplitude_pct),
+           wave_bar_count        = VALUES(wave_bar_count),
+           wave_avg_volume       = VALUES(wave_avg_volume),
+           wave_end_time         = VALUES(wave_end_time),
+           pullback_lowest_price = VALUES(pullback_lowest_price),
+           pullback_bar_count    = VALUES(pullback_bar_count),
+           pullback_avg_volume   = VALUES(pullback_avg_volume),
+           last_alert_level      = VALUES(last_alert_level),
+           watch_start_time      = VALUES(watch_start_time),
+           abandoned_reason      = VALUES(abandoned_reason)`,
+        [
+          record.symbol,
+          record.timeframe,
+          record.state,
+          record.wave_start_price,
+          record.wave_end_price,
+          record.wave_amplitude_pct,
+          record.wave_bar_count,
+          record.wave_avg_volume,
+          record.wave_end_time,
+          record.pullback_lowest_price,
+          record.pullback_bar_count,
+          record.pullback_avg_volume,
+          record.last_alert_level ?? null,
+          record.watch_start_time,
+          record.abandoned_reason ?? null,
+        ]
+      );
+    });
+  }
+
+  /** 查询观察区快照列表 */
+  async get_watch_contexts(options: {
+    symbol?: string;
+    timeframe?: string;
+    state?: string;
+    limit?: number;
+  } = {}): Promise<TrendFollowWatchContextRecord[]> {
+    return this.execute_with_connection(async (conn) => {
+      let sql = "SELECT * FROM trend_follow_watch_contexts WHERE state != 'ABANDONED'";
+      const params: any[] = [];
+
+      if (options.state) {
+        // 当明确传入 state 时才覆盖默认过滤
+        sql = 'SELECT * FROM trend_follow_watch_contexts WHERE 1=1';
+        sql += ' AND state = ?';
+        params.push(options.state);
+      }
+      if (options.symbol) {
+        sql += ' AND symbol = ?';
+        params.push(options.symbol.toUpperCase());
+      }
+      if (options.timeframe) {
+        sql += ' AND timeframe = ?';
+        params.push(options.timeframe);
+      }
+
+      sql += ' ORDER BY updated_at DESC';
+
+      if (options.limit) {
+        sql += ' LIMIT ?';
+        params.push(options.limit);
+      }
+
+      const [rows] = await conn.execute<RowDataPacket[]>(sql, params);
+      return rows.map(r => this._map_context(r));
+    });
+  }
+
+  /** 删除某币种某周期的观察区快照 */
+  async delete_watch_context(symbol: string, timeframe: string): Promise<void> {
+    return this.execute_with_connection(async (conn) => {
+      await conn.execute(
+        'DELETE FROM trend_follow_watch_contexts WHERE symbol = ? AND timeframe = ?',
+        [symbol.toUpperCase(), timeframe]
+      );
     });
   }
 
@@ -158,6 +300,28 @@ export class TrendFollowRepository extends BaseRepository {
       );
       return result.affectedRows;
     });
+  }
+
+  private _map_context(row: RowDataPacket): TrendFollowWatchContextRecord {
+    return {
+      id:                    row.id,
+      symbol:                row.symbol,
+      timeframe:             row.timeframe,
+      state:                 row.state,
+      wave_start_price:      parseFloat(row.wave_start_price),
+      wave_end_price:        parseFloat(row.wave_end_price),
+      wave_amplitude_pct:    parseFloat(row.wave_amplitude_pct),
+      wave_bar_count:        row.wave_bar_count,
+      wave_avg_volume:       parseFloat(row.wave_avg_volume),
+      wave_end_time:         Number(row.wave_end_time),
+      pullback_lowest_price: parseFloat(row.pullback_lowest_price),
+      pullback_bar_count:    row.pullback_bar_count,
+      pullback_avg_volume:   parseFloat(row.pullback_avg_volume),
+      last_alert_level:      row.last_alert_level ?? null,
+      watch_start_time:      Number(row.watch_start_time),
+      abandoned_reason:      row.abandoned_reason ?? null,
+      updated_at:            row.updated_at,
+    };
   }
 
   private _map(row: RowDataPacket): TrendFollowAlertRecord {
