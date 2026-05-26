@@ -170,9 +170,16 @@ function create_ws_connection(streams: string[], conn_index: number, all_symbols
 
   ws.on('open', () => {
     console.log(`✅ WS连接 #${conn_index + 1} 已连接 (${streams.length} 个流)`);
+    // 打印前3个流名确认订阅内容正确
+    console.log(`   示例流: ${streams.slice(0, 3).join(', ')}`);
   });
 
+  let _conn_msg_count = 0;
   ws.on('message', async (data: Buffer) => {
+    _conn_msg_count++;
+    if (_conn_msg_count <= 3) {
+      console.log(`[DBG #${conn_index + 1}-${_conn_msg_count}] ${data.toString().slice(0, 150)}`);
+    }
     try {
       const msg = JSON.parse(data.toString());
       if (msg.data?.e === 'kline' && msg.data.k?.x === true) {
