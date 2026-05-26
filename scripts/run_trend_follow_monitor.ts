@@ -262,6 +262,7 @@ async function main(): Promise<void> {
   console.log('   · 订阅所有合约 5m K线，聚合为 15m / 1h / 4h');
   console.log('   · 强势第一波条件: 连续阳线≥4根 + 实体占比≥80%(75%根数满足)');
   console.log('     + 波内平均实体 ≥ 前25根平均实体 × 1.5');
+  console.log('     + 波内涨幅 ≥ 5%');
   console.log('   · 进入观察区后分级报警:');
   console.log('     🟡 Lv1 轻度回调 < 38.2%  缩量');
   console.log('     🟢 Lv2 黄金回调 38.2%~50%  缩量+止跌形态');

@@ -95,6 +95,7 @@ const CONFIG = {
   min_body_ratio: 0.80,             // 连续阳线中实体占比 >= 80% 的根数比例
   min_body_ratio_bars: 0.75,        // 满足实体占比的根数 >= 总根数 75%
   amplitude_multiplier: 1.5,        // 第一波平均实体 >= 前N根平均实体 × 1.5
+  min_wave_amplitude_pct: 0.05,     // 第一波涨幅 >= 5%（相对起涨价）
   amplitude_lookback: 25,           // 计算基准平均实体的回溯根数
 
   // 回调判定
@@ -357,6 +358,9 @@ export class TrendFollowService {
     const end_price = Math.max(...seq.map(k => k.high));
     const amplitude = end_price - start_price;
     if (amplitude <= 0) return null;
+
+    // 涨幅必须 >= 5%
+    if (amplitude / start_price < CONFIG.min_wave_amplitude_pct) return null;
 
     const avg_volume = seq.reduce((s, k) => s + k.volume, 0) / seq.length;
 
