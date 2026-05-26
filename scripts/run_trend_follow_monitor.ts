@@ -160,12 +160,21 @@ async function start_kline_websocket(symbols: string[]): Promise<void> {
     console.log('✅ K线 WebSocket 连接成功');
   });
 
+  let _dbg_total = 0;
+  let _dbg_final = 0;
   ws_kline.on('message', async (data: Buffer) => {
     try {
       const msg = JSON.parse(data.toString());
-      if (msg.data?.e === 'kline' && msg.data.k?.x === true) {
-        // 只处理完结 K 线
-        await process_kline(msg.data.s, msg.data.k);
+      _dbg_total++;
+      if (_dbg_total <= 3) {
+        console.log('[DBG] raw msg keys:', Object.keys(msg), '| data.e:', msg.data?.e, '| k.x:', msg.data?.k?.x);
+      }
+      if (msg.data?.e === 'kline') {
+        if (msg.data.k?.x === true) {
+          _dbg_final++;
+          if (_dbg_final <= 5) console.log(`[DBG] final kline: ${msg.data.s} ${msg.data.k.i}`);
+          await process_kline(msg.data.s, msg.data.k);
+        }
       }
     } catch (err) {
       console.error('消息处理失败:', err);
