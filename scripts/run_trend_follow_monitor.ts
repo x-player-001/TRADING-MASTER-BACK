@@ -174,7 +174,15 @@ async function start_kline_websocket(symbols: string[]): Promise<void> {
     console.log(`✅ 已发送 ${Math.ceil(all_streams.length / MAX_STREAMS_PER_CONNECTION)} 批订阅请求，共 ${all_streams.length} 个流`);
   });
 
+  let _msg_count = 0;
   ws_kline.on('message', async (data: Buffer) => {
+    _msg_count++;
+    // 打印前10条原始消息，之后每100条打一次计数
+    if (_msg_count <= 10) {
+      console.log(`[DBG #${_msg_count}] raw:`, data.toString().slice(0, 200));
+    } else if (_msg_count % 100 === 0) {
+      console.log(`[DBG] 已收到 ${_msg_count} 条消息`);
+    }
     try {
       const msg = JSON.parse(data.toString());
 
