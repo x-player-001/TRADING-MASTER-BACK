@@ -164,7 +164,7 @@ async function start_kline_websocket(symbols: string[]): Promise<void> {
 }
 
 function create_ws_connection(streams: string[], conn_index: number, all_symbols: string[]): void {
-  const ws_url = `wss://stream.binance.com:9443/stream?streams=${streams.join('/')}`;
+  const ws_url = `wss://fstream.binance.com/market/stream?streams=${streams.join('/')}`;
   const ws = new WebSocket(ws_url);
   ws_connections[conn_index] = ws;
 
