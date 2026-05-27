@@ -92,7 +92,7 @@ const CONFIG = {
   // 强势第一波判定
   min_consecutive_bull: 4,          // 最少连续阳线根数
   allow_small_bear_gap: 1,          // 允许中间夹的小阴线根数（实体 < 平均实体 30%）
-  min_body_ratio: 0.80,             // 连续阳线中实体占比 >= 80% 的根数比例
+  min_body_ratio: 0.30,             // 连续阳线中实体占比 >= 30% 的根数比例
   min_body_ratio_bars: 0.75,        // 满足实体占比的根数 >= 总根数 75%
   amplitude_multiplier: 1.5,        // 第一波平均实体 >= 前N根平均实体 × 1.5
   min_wave_amplitude_pct: 0.05,     // 第一波涨幅 >= 5%（相对起涨价）

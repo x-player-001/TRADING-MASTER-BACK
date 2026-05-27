@@ -260,7 +260,7 @@ async function main(): Promise<void> {
   console.log('═'.repeat(65));
   console.log('\n📋 监控逻辑:');
   console.log('   · 订阅所有合约 5m K线，聚合为 15m / 1h / 4h');
-  console.log('   · 强势第一波条件: 连续阳线≥4根 + 实体占比≥80%(75%根数满足)');
+  console.log('   · 强势第一波条件: 连续阳线≥4根 + 实体占比≥30%(75%根数满足)');
   console.log('     + 波内平均实体 ≥ 前25根平均实体 × 1.5');
   console.log('     + 波内涨幅 ≥ 5%');
   console.log('   · 进入观察区后分级报警:');
