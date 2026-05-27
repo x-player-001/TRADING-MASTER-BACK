@@ -46,6 +46,7 @@ export interface TrendFollowWatchContextRecord {
   last_alert_level?: number | null;
   watch_start_time: number;
   abandoned_reason?: string | null;
+  is_deleted?: boolean;
   updated_at?: Date;
 }
 
@@ -98,6 +99,7 @@ export class TrendFollowRepository extends BaseRepository {
         last_alert_level     TINYINT       NULL,
         watch_start_time     BIGINT        NOT NULL,
         abandoned_reason     VARCHAR(200)  NULL,
+        is_deleted           TINYINT(1)    NOT NULL DEFAULT 0 COMMENT '1=手动删除',
         updated_at       TIMESTAMP DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
 
         UNIQUE KEY uk_symbol_tf (symbol, timeframe),
@@ -169,12 +171,12 @@ export class TrendFollowRepository extends BaseRepository {
     limit?: number;
   } = {}): Promise<TrendFollowWatchContextRecord[]> {
     return this.execute_with_connection(async (conn) => {
-      let sql = "SELECT * FROM trend_follow_watch_contexts WHERE state != 'ABANDONED'";
+      let sql = "SELECT * FROM trend_follow_watch_contexts WHERE state != 'ABANDONED' AND is_deleted = 0";
       const params: any[] = [];
 
       if (options.state) {
         // 当明确传入 state 时才覆盖默认过滤
-        sql = 'SELECT * FROM trend_follow_watch_contexts WHERE 1=1';
+        sql = 'SELECT * FROM trend_follow_watch_contexts WHERE is_deleted = 0';
         sql += ' AND state = ?';
         params.push(options.state);
       }
@@ -199,13 +201,14 @@ export class TrendFollowRepository extends BaseRepository {
     });
   }
 
-  /** 删除某币种某周期的观察区快照 */
-  async delete_watch_context(symbol: string, timeframe: string): Promise<void> {
+  /** 软删除某币种某周期的观察区快照（标记 is_deleted=1） */
+  async soft_delete_watch_context(symbol: string, timeframe: string): Promise<boolean> {
     return this.execute_with_connection(async (conn) => {
-      await conn.execute(
-        'DELETE FROM trend_follow_watch_contexts WHERE symbol = ? AND timeframe = ?',
+      const [result] = await conn.execute<ResultSetHeader>(
+        'UPDATE trend_follow_watch_contexts SET is_deleted = 1 WHERE symbol = ? AND timeframe = ? AND is_deleted = 0',
         [symbol.toUpperCase(), timeframe]
       );
+      return result.affectedRows > 0;
     });
   }
 
@@ -325,6 +328,7 @@ export class TrendFollowRepository extends BaseRepository {
       last_alert_level:      row.last_alert_level ?? null,
       watch_start_time:      Number(row.watch_start_time),
       abandoned_reason:      row.abandoned_reason ?? null,
+      is_deleted:            row.is_deleted === 1,
       updated_at:            row.updated_at,
     };
   }
