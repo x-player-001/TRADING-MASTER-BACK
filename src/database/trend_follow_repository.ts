@@ -3,7 +3,7 @@
  *
  * 表:
  *   trend_follow_alerts         - 报警记录（Lv1/2/3）
- *   trend_follow_watch_contexts - 观察区状态快照
+ *   trend_follow_watch_contexts - 观察区状态快照（每次进入观察区新增一条）
  */
 
 import { RowDataPacket, ResultSetHeader } from 'mysql2/promise';
@@ -102,9 +102,9 @@ export class TrendFollowRepository extends BaseRepository {
         is_deleted           TINYINT(1)    NOT NULL DEFAULT 0 COMMENT '1=手动删除',
         updated_at       TIMESTAMP DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
 
-        UNIQUE KEY uk_symbol_tf (symbol, timeframe),
         INDEX idx_state     (state),
         INDEX idx_symbol    (symbol),
+        INDEX idx_timeframe (timeframe),
         INDEX idx_updated   (updated_at)
       ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COMMENT='趋势跟随观察区快照'
     `;
@@ -116,31 +116,16 @@ export class TrendFollowRepository extends BaseRepository {
     });
   }
 
-  /** 插入或更新一条观察区快照（每个 symbol+timeframe 只保留最新一条） */
-  async upsert_watch_context(record: Omit<TrendFollowWatchContextRecord, 'id' | 'updated_at'>): Promise<void> {
+  /** 新建一条观察区记录，返回自增 id */
+  async insert_watch_context(record: Omit<TrendFollowWatchContextRecord, 'id' | 'updated_at'>): Promise<number> {
     return this.execute_with_connection(async (conn) => {
-      await conn.execute(
+      const [result] = await conn.execute<ResultSetHeader>(
         `INSERT INTO trend_follow_watch_contexts
          (symbol, timeframe, state,
           wave_start_price, wave_end_price, wave_amplitude_pct, wave_bar_count, wave_avg_volume, wave_end_time,
           pullback_lowest_price, pullback_bar_count, pullback_avg_volume,
           current_price, last_alert_level, watch_start_time, abandoned_reason)
-         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-         ON DUPLICATE KEY UPDATE
-           state                 = VALUES(state),
-           wave_start_price      = VALUES(wave_start_price),
-           wave_end_price        = VALUES(wave_end_price),
-           wave_amplitude_pct    = VALUES(wave_amplitude_pct),
-           wave_bar_count        = VALUES(wave_bar_count),
-           wave_avg_volume       = VALUES(wave_avg_volume),
-           wave_end_time         = VALUES(wave_end_time),
-           pullback_lowest_price = VALUES(pullback_lowest_price),
-           pullback_bar_count    = VALUES(pullback_bar_count),
-           pullback_avg_volume   = VALUES(pullback_avg_volume),
-           current_price         = VALUES(current_price),
-           last_alert_level      = VALUES(last_alert_level),
-           watch_start_time      = VALUES(watch_start_time),
-           abandoned_reason      = VALUES(abandoned_reason)`,
+         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
         [
           record.symbol,
           record.timeframe,
@@ -158,6 +143,48 @@ export class TrendFollowRepository extends BaseRepository {
           record.last_alert_level ?? null,
           record.watch_start_time,
           record.abandoned_reason ?? null,
+        ]
+      );
+      return result.insertId;
+    });
+  }
+
+  /** 按 id 更新观察区记录 */
+  async update_watch_context(id: number, record: Omit<TrendFollowWatchContextRecord, 'id' | 'updated_at'>): Promise<void> {
+    return this.execute_with_connection(async (conn) => {
+      await conn.execute(
+        `UPDATE trend_follow_watch_contexts SET
+           state                 = ?,
+           wave_start_price      = ?,
+           wave_end_price        = ?,
+           wave_amplitude_pct    = ?,
+           wave_bar_count        = ?,
+           wave_avg_volume       = ?,
+           wave_end_time         = ?,
+           pullback_lowest_price = ?,
+           pullback_bar_count    = ?,
+           pullback_avg_volume   = ?,
+           current_price         = ?,
+           last_alert_level      = ?,
+           watch_start_time      = ?,
+           abandoned_reason      = ?
+         WHERE id = ?`,
+        [
+          record.state,
+          record.wave_start_price,
+          record.wave_end_price,
+          record.wave_amplitude_pct,
+          record.wave_bar_count,
+          record.wave_avg_volume,
+          record.wave_end_time,
+          record.pullback_lowest_price,
+          record.pullback_bar_count,
+          record.pullback_avg_volume,
+          record.current_price,
+          record.last_alert_level ?? null,
+          record.watch_start_time,
+          record.abandoned_reason ?? null,
+          id,
         ]
       );
     });
@@ -201,12 +228,12 @@ export class TrendFollowRepository extends BaseRepository {
     });
   }
 
-  /** 软删除某币种某周期的观察区快照（标记 is_deleted=1） */
-  async soft_delete_watch_context(symbol: string, timeframe: string): Promise<boolean> {
+  /** 按 id 软删除观察区记录（标记 is_deleted=1） */
+  async soft_delete_watch_context(id: number): Promise<boolean> {
     return this.execute_with_connection(async (conn) => {
       const [result] = await conn.execute<ResultSetHeader>(
-        'UPDATE trend_follow_watch_contexts SET is_deleted = 1 WHERE symbol = ? AND timeframe = ? AND is_deleted = 0',
-        [symbol.toUpperCase(), timeframe]
+        'UPDATE trend_follow_watch_contexts SET is_deleted = 1 WHERE id = ? AND is_deleted = 0',
+        [id]
       );
       return result.affectedRows > 0;
     });

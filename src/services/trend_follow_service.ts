@@ -57,6 +57,7 @@ export interface WatchContext {
   symbol: string;
   timeframe: Timeframe;
   state: WatchState;
+  db_id?: number;                    // 数据库行 id，进入 WATCHING 后由回调写入
   wave?: FirstWave;
   pullback?: PullbackState;
   last_alert_level?: AlertLevel;
@@ -137,7 +138,8 @@ export class TrendFollowService {
   // 回调: 触发报警时调用
   private on_alert_cb?: (alert: TrendAlert) => void;
   private on_abandon_cb?: (event: AbandonEvent) => void;
-  private on_context_change_cb?: (ctx: WatchContext, current_price: number) => void;
+  // db_id 存在时为更新，不存在时为新建（回调需返回 db_id 写回 ctx）
+  private on_context_change_cb?: (ctx: WatchContext, current_price: number) => Promise<number | undefined>;
 
   /** 注册报警回调 */
   on_alert(cb: (alert: TrendAlert) => void): void {
@@ -149,8 +151,8 @@ export class TrendFollowService {
     this.on_abandon_cb = cb;
   }
 
-  /** 注册观察区状态变更回调（进入 WATCHING / ALERTED / ABANDONED 时触发） */
-  on_context_change(cb: (ctx: WatchContext, current_price: number) => void): void {
+  /** 注册观察区状态变更回调。db_id 不存在时为新建，回调应返回新建的 id；存在时为更新，返回值忽略 */
+  on_context_change(cb: (ctx: WatchContext, current_price: number) => Promise<number | undefined>): void {
     this.on_context_change_cb = cb;
   }
 
@@ -205,6 +207,7 @@ export class TrendFollowService {
    * 从数据库记录恢复观察区状态（冷启动时调用）
    */
   restore_watch_context(record: {
+    id: number;
     symbol: string;
     timeframe: Timeframe;
     state: WatchState;
@@ -227,6 +230,7 @@ export class TrendFollowService {
       symbol: record.symbol,
       timeframe: record.timeframe,
       state: record.state,
+      db_id: record.id,
       wave: {
         start_index: 0,
         start_price: record.wave_start_price,
@@ -355,7 +359,12 @@ export class TrendFollowService {
     };
     ctx.last_alert_level = undefined;
     ctx.consecutive_shrink_bars = 0;
-    this.on_context_change_cb?.({ ...ctx }, current.close);
+    // 新建记录，回调返回 db_id 写回 ctx
+    if (this.on_context_change_cb) {
+      this.on_context_change_cb({ ...ctx }, current.close).then(id => {
+        if (id !== undefined) ctx.db_id = id;
+      });
+    }
   }
 
   /**
@@ -480,7 +489,7 @@ export class TrendFollowService {
       pb.lowest_price = current.low;
       pb.min_volume = current.volume;
       pb.avg_volume = current.volume;
-      this.on_context_change_cb?.({ ...ctx }, current.close);
+      this._fire_context_change(ctx, current.close);
       return;
     }
 
@@ -514,7 +523,7 @@ export class TrendFollowService {
     // ---- 报警判断 ----
     const min_alert_bars = wave.bar_count * CONFIG.min_alert_bars_multiplier;
     if (pb.bar_count < min_alert_bars) {
-      this.on_context_change_cb?.({ ...ctx }, current.close);
+      this._fire_context_change(ctx, current.close);
       return;
     }
 
@@ -525,13 +534,13 @@ export class TrendFollowService {
       pullback_ratio, volume_shrink, reversal, ctx.consecutive_shrink_bars ?? 0
     );
     if (new_level === null) {
-      this.on_context_change_cb?.({ ...ctx }, current.close);
+      this._fire_context_change(ctx, current.close);
       return;
     }
 
     // 只升级不降级（已报警过更高等级则忽略）
     if (ctx.last_alert_level !== undefined && new_level <= ctx.last_alert_level) {
-      this.on_context_change_cb?.({ ...ctx }, current.close);
+      this._fire_context_change(ctx, current.close);
       return;
     }
 
@@ -555,7 +564,7 @@ export class TrendFollowService {
     };
 
     this.on_alert_cb?.(alert);
-    this.on_context_change_cb?.({ ...ctx }, current.close);
+    this._fire_context_change(ctx, current.close);
   }
 
   /**
@@ -623,6 +632,11 @@ export class TrendFollowService {
       reason,
       wave,
     });
-    this.on_context_change_cb?.({ ...ctx }, ctx.pullback?.lowest_price ?? wave.end_price);
+    this._fire_context_change(ctx, ctx.pullback?.lowest_price ?? wave.end_price);
+  }
+
+  /** 触发状态变更回调（更新场景，fire-and-forget） */
+  private _fire_context_change(ctx: WatchContext, current_price: number): void {
+    this.on_context_change_cb?.({ ...ctx }, current_price);
   }
 }

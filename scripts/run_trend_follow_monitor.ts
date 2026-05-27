@@ -245,7 +245,9 @@ async function restore_watch_contexts(): Promise<void> {
     const contexts = await trend_follow_repository.get_watch_contexts({ limit: 2000 });
     let restored = 0;
     for (const ctx of contexts) {
+      if (!ctx.id) continue;
       trend_service.restore_watch_context({
+        id:                   ctx.id,
         symbol:               ctx.symbol,
         timeframe:            ctx.timeframe as any,
         state:                ctx.state as any,
@@ -262,14 +264,6 @@ async function restore_watch_contexts(): Promise<void> {
         watch_start_time:     ctx.watch_start_time,
         abandoned_reason:     ctx.abandoned_reason,
       });
-
-      // current_price 为 0 说明是加字段前写入的旧数据，用 wave_end_price 补上
-      if (!ctx.current_price) {
-        trend_follow_repository.upsert_watch_context({
-          ...ctx,
-          current_price: ctx.wave_end_price,
-        }).catch(err => console.error(`修复 current_price 失败 ${ctx.symbol}:`, err.message));
-      }
 
       restored++;
     }
@@ -355,8 +349,8 @@ async function main(): Promise<void> {
     print_abandon(event);
   });
 
-  trend_service.on_context_change((ctx, current_price) => {
-    if (!ctx.wave || !ctx.pullback) return;
+  trend_service.on_context_change(async (ctx, current_price) => {
+    if (!ctx.wave || !ctx.pullback) return undefined;
     const record = {
       symbol:               ctx.symbol,
       timeframe:            ctx.timeframe,
@@ -375,9 +369,20 @@ async function main(): Promise<void> {
       watch_start_time:     ctx.watch_start_time ?? Date.now(),
       abandoned_reason:     ctx.abandoned_reason ?? null,
     };
-    trend_follow_repository.upsert_watch_context(record).catch(err =>
-      console.error(`DB write context error:`, err.message)
-    );
+    try {
+      if (ctx.db_id === undefined) {
+        // 首次进入观察区，新建记录并返回 id
+        const id = await trend_follow_repository.insert_watch_context(record);
+        return id;
+      } else {
+        // 已有记录，按 id 更新
+        await trend_follow_repository.update_watch_context(ctx.db_id, record);
+        return undefined;
+      }
+    } catch (err: any) {
+      console.error(`DB write context error:`, err.message);
+      return undefined;
+    }
   });
 
   // 获取所有币种

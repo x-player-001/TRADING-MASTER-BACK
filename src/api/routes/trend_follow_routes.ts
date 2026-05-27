@@ -143,19 +143,22 @@ router.get('/watch-contexts', async (req: Request, res: Response): Promise<void>
 });
 
 /**
- * DELETE /api/trend-follow/watch-contexts/:symbol/:timeframe
- * 软删除某币种某周期的观察区记录（标记 is_deleted，不物理删除）
+ * DELETE /api/trend-follow/watch-contexts/:id
+ * 软删除观察区记录（标记 is_deleted，不物理删除）
  *
  * Path params:
- *   symbol    - 币种，如 BTCUSDT
- *   timeframe - 周期，5m / 15m / 1h / 4h
+ *   id - 记录 id
  */
-router.delete('/watch-contexts/:symbol/:timeframe', async (req: Request, res: Response): Promise<void> => {
+router.delete('/watch-contexts/:id', async (req: Request, res: Response): Promise<void> => {
   try {
-    const { symbol, timeframe } = req.params;
-    const affected = await get_repository().soft_delete_watch_context(symbol, timeframe);
+    const id = Number(req.params.id);
+    if (!id || isNaN(id)) {
+      res.status(400).json({ success: false, error: 'id 无效' });
+      return;
+    }
+    const affected = await get_repository().soft_delete_watch_context(id);
     if (affected) {
-      res.json({ success: true, message: `${symbol.toUpperCase()} ${timeframe} 已标记删除` });
+      res.json({ success: true, message: `id=${id} 已标记删除` });
     } else {
       res.status(404).json({ success: false, error: '记录不存在或已删除' });
     }
