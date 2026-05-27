@@ -97,6 +97,7 @@ const CONFIG = {
   amplitude_multiplier: 1.5,        // 第一波平均实体 >= 前N根平均实体 × 1.5
   min_wave_amplitude_pct: 0.05,     // 第一波涨幅 >= 5%（相对起涨价）
   amplitude_lookback: 25,           // 计算基准平均实体的回溯根数
+  max_pullback_bars_before_detect: 10, // 波结束后最多允许跳过多少根回调 K 线再识别
 
   // 回调判定
   fib_38: 0.382,
@@ -104,7 +105,7 @@ const CONFIG = {
   fib_62: 0.618,
 
   volume_shrink_ratio: 0.5,         // 回调均量 < 第一波均量 × 0.5 认为缩量
-  min_alert_bars_multiplier: 2,     // 最小等待K线数 = 第一波根数 × 2，之后才开始检测报警
+  min_alert_bars_multiplier: 1,     // 最小等待K线数 = 第一波根数 × 1，之后才开始检测报警
 
   // 止跌形态（末端止跌信号）
   reversal_upper_shadow_max: 0.3,   // 上影线 <= 30% 振幅
@@ -299,25 +300,41 @@ export class TrendFollowService {
 
   /**
    * 从缓存尾部向前扫描，识别最近一段强势阳线波
+   * 允许波结束后已经有若干回调 K 线（跳过末尾非阳线再找波头）
    * 返回 null 表示未发现强势波
    */
   private _find_bull_wave(cache: UnifiedKline[]): FirstWave | null {
     const len = cache.length;
 
-    // 基准平均实体（取波前 lookback 根）
+    // 基准平均实体（取末尾前足够多的 K 线）
+    const base_end = Math.max(0, len - CONFIG.min_consecutive_bull);
     const base_klines = cache.slice(
-      Math.max(0, len - CONFIG.amplitude_lookback - CONFIG.min_consecutive_bull),
-      Math.max(0, len - CONFIG.min_consecutive_bull)
+      Math.max(0, base_end - CONFIG.amplitude_lookback),
+      base_end
     );
     if (base_klines.length < 5) return null;
     const base_avg_body = base_klines.reduce((s, k) => s + Math.abs(k.close - k.open), 0) / base_klines.length;
 
-    // 从最后一根向前找连续阳线段（最多看最近 20 根）
-    const scan_limit = Math.min(len, 20);
+    // 先跳过末尾的回调 K 线（最多跳 max_pullback_bars_before_detect 根），找到波的末端位置
+    let wave_end_idx = len - 1;
+    let skipped = 0;
+    while (
+      wave_end_idx >= 0 &&
+      skipped < CONFIG.max_pullback_bars_before_detect &&
+      cache[wave_end_idx].close <= cache[wave_end_idx].open  // 阴线或十字星
+    ) {
+      wave_end_idx--;
+      skipped++;
+    }
+    // 末端必须是阳线
+    if (wave_end_idx < 0 || cache[wave_end_idx].close <= cache[wave_end_idx].open) return null;
+
+    // 从 wave_end_idx 向前找连续阳线段（最多再向前 20 根）
+    const scan_limit = Math.min(wave_end_idx + 1, 20);
     let seq: UnifiedKline[] = [];
     let small_bear_count = 0;
 
-    for (let i = len - 1; i >= len - scan_limit; i--) {
+    for (let i = wave_end_idx; i >= wave_end_idx - scan_limit + 1; i--) {
       const k = cache[i];
       const is_bull = k.close > k.open;
       const body = Math.abs(k.close - k.open);
@@ -327,7 +344,6 @@ export class TrendFollowService {
       if (is_bull) {
         seq.unshift(k);
       } else if (is_small_bear && small_bear_count < CONFIG.allow_small_bear_gap && seq.length > 0) {
-        // 允许夹小阴线
         seq.unshift(k);
         small_bear_count++;
       } else {
