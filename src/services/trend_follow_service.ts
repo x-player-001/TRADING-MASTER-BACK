@@ -45,7 +45,8 @@ export interface FirstWave {
 
 /** 回调状态跟踪 */
 export interface PullbackState {
-  lowest_price: number;      // 回调过程中的最低价
+  lowest_price: number;      // 回调过程中的最低影线价（用于废弃判断）
+  lowest_close: number;      // 回调过程中的最低收盘价（用于报警等级判断）
   bar_count: number;         // 回调根数
   min_volume: number;        // 回调期间最小成交量（判断缩量）
   avg_volume: number;        // 回调期间平均成交量
@@ -105,6 +106,7 @@ const CONFIG = {
   fib_38: 0.382,
   fib_50: 0.500,
   fib_62: 0.618,
+  fib_abandon: 0.800,        // 废弃门槛（影线回调 > 80%）
 
   volume_shrink_ratio: 0.5,         // 回调均量 < 第一波均量 × 0.5 认为缩量
   min_alert_bars_multiplier: 1,     // 最小等待K线数 = 第一波根数 × 1，之后才开始检测报警
@@ -236,6 +238,7 @@ export class TrendFollowService {
       },
       pullback: {
         lowest_price: record.pullback_lowest_price,
+        lowest_close: record.pullback_lowest_price,  // 从DB恢复，用影线价近似
         bar_count: record.pullback_bar_count,
         min_volume: record.pullback_avg_volume,
         avg_volume: record.pullback_avg_volume,
@@ -345,6 +348,7 @@ export class TrendFollowService {
     ctx.watch_start_time = current.open_time;
     ctx.pullback = {
       lowest_price: current.low,
+      lowest_close: current.close,
       bar_count: 0,
       min_volume: current.volume,
       avg_volume: current.volume,
@@ -483,17 +487,18 @@ export class TrendFollowService {
     // 更新回调统计
     pb.bar_count++;
     pb.lowest_price = Math.min(pb.lowest_price, current.low);
+    pb.lowest_close = Math.min(pb.lowest_close, current.close);
     pb.avg_volume = (pb.avg_volume * (pb.bar_count - 1) + current.volume) / pb.bar_count;
     pb.min_volume = Math.min(pb.min_volume, current.volume);
 
-    // ---- 废弃条件 ----
-    const pullback_amount = wave.end_price - pb.lowest_price;
-    const pullback_ratio = pullback_amount / wave.amplitude;
-
-    // 回调超过 61.8%
-    if (pullback_ratio > CONFIG.fib_62) {
-      return this._abandon(ctx, wave, `回调幅度 ${(pullback_ratio * 100).toFixed(1)}% 超过 61.8%`);
+    // ---- 废弃条件：用影线最低价，门槛 80% ----
+    const abandon_ratio = (wave.end_price - pb.lowest_price) / wave.amplitude;
+    if (abandon_ratio > CONFIG.fib_abandon) {
+      return this._abandon(ctx, wave, `回调幅度 ${(abandon_ratio * 100).toFixed(1)}% 超过 80%`);
     }
+
+    // 报警等级使用收盘价最低点计算回调比例
+    const pullback_ratio = (wave.end_price - pb.lowest_close) / wave.amplitude;
 
     // ---- Lv0：高位横盘缩量 ----
     const is_shrink = current.volume < wave.avg_volume * CONFIG.volume_shrink_ratio;
