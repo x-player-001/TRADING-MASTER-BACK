@@ -460,13 +460,12 @@ export class TrendFollowService {
       wave.end_price = current.high;
       wave.amplitude = wave.end_price - wave.start_price;
       wave.end_time = current.close_time;
-      // 更新第一波平均成交量
       wave.avg_volume = (wave.avg_volume * (wave.bar_count - 1) + current.volume) / wave.bar_count;
-      // 重置回调统计
       pb.bar_count = 0;
       pb.lowest_price = current.low;
       pb.min_volume = current.volume;
       pb.avg_volume = current.volume;
+      this.on_context_change_cb?.({ ...ctx }, current.close);
       return;
     }
 
@@ -486,18 +485,26 @@ export class TrendFollowService {
     }
 
     // ---- 报警判断 ----
-    // 最小等待K线数：必须等待 第一波根数 × 2 根K线后才开始检测报警
     const min_alert_bars = wave.bar_count * CONFIG.min_alert_bars_multiplier;
-    if (pb.bar_count < min_alert_bars) return;
+    if (pb.bar_count < min_alert_bars) {
+      this.on_context_change_cb?.({ ...ctx }, current.close);
+      return;
+    }
 
     const volume_shrink = pb.avg_volume < wave.avg_volume * CONFIG.volume_shrink_ratio;
     const reversal = this._check_reversal_signal(current);
 
     const new_level = this._calc_alert_level(pullback_ratio, volume_shrink, reversal);
-    if (new_level === null) return;
+    if (new_level === null) {
+      this.on_context_change_cb?.({ ...ctx }, current.close);
+      return;
+    }
 
     // 只升级不降级（已报警过更高等级则忽略）
-    if (ctx.last_alert_level !== undefined && new_level <= ctx.last_alert_level) return;
+    if (ctx.last_alert_level !== undefined && new_level <= ctx.last_alert_level) {
+      this.on_context_change_cb?.({ ...ctx }, current.close);
+      return;
+    }
 
     ctx.last_alert_level = new_level;
     ctx.state = 'ALERTED';
