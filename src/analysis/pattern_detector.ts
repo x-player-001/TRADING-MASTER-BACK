@@ -680,6 +680,144 @@ export class PatternDetector {
   }
 
   /**
+   * 改进版上涨回调形态检测（v2）
+   *
+   * 核心改进：
+   * 1. 强制以最近一个波段高点为本次上涨的顶部
+   * 2. 起涨低点必须是该高点之前、上涨过程中连续上行阶段的起始低点（不能是高点后的低点）
+   * 3. 验证低点→高点区间的上涨连贯性：中间无更低的波段低点，且最大中途回撤不超过阈值
+   * 4. 限制高点距当前K线的上限，避免识别到过久远的行情
+   *
+   * @param klines K线数据（至少30根）
+   * @param min_surge_pct 最小上涨幅度 (%)
+   * @param max_retrace_pct 最大回调幅度（相对于涨幅，%）
+   * @param max_bars_from_high 高点距当前最多多少根K线（默认60）
+   * @param max_interim_retrace_pct 低点到高点过程中允许的最大中途回撤占涨幅的比例（%，默认40）
+   * @returns 检测结果，未检测到返回 null
+   */
+  detect_pullback_v2(
+    klines: KlineData[],
+    min_surge_pct: number,
+    max_retrace_pct: number,
+    max_bars_from_high: number = 60,
+    max_interim_retrace_pct: number = 40
+  ): PatternResult | null {
+    if (klines.length < 30) {
+      return null;
+    }
+
+    const swing_points = this.find_swing_points(klines);
+    const highs = swing_points.filter(p => p.type === 'HIGH');
+    const lows = swing_points.filter(p => p.type === 'LOW');
+
+    if (highs.length < 1 || lows.length < 1) {
+      return null;
+    }
+
+    const current_index = klines.length - 1;
+    const current_price = klines[current_index].close;
+    const max_retrace_ratio = max_retrace_pct / 100;
+
+    // 取最近的波段高点作为候选顶部（倒序遍历，优先最近的）
+    const candidate_highs = highs.slice().reverse();
+
+    for (const peak of candidate_highs) {
+      // 高点不能太近（至少5根K线的回调空间）
+      const bars_from_high = current_index - peak.index;
+      if (bars_from_high < 5) continue;
+
+      // 高点不能太远（防止识别到过期行情）
+      if (bars_from_high > max_bars_from_high) break;
+
+      // 当前价必须低于高点（处于回调中）
+      if (current_price >= peak.price) continue;
+
+      // 在高点之前寻找起涨低点：
+      // 条件：低点在高点之前，且低点之后、高点之前没有更低的波段低点（保证连续性）
+      const lows_before_peak = lows.filter(p => p.index < peak.index);
+      if (lows_before_peak.length === 0) continue;
+
+      // 取高点之前最近的几个低点作为候选起涨低点
+      const candidate_lows = lows_before_peak.slice(-5).reverse();
+
+      for (const origin of candidate_lows) {
+        // 计算涨幅
+        const surge_pct = (peak.price - origin.price) / origin.price * 100;
+        if (surge_pct < min_surge_pct) continue;
+
+        // 验证上涨连贯性：origin 到 peak 之间不能有比 origin 更低的波段低点
+        const lows_between = lows.filter(p => p.index > origin.index && p.index < peak.index);
+        const has_lower_low = lows_between.some(p => p.price < origin.price);
+        if (has_lower_low) continue;
+
+        // 验证上涨过程中途最大回撤不能过大
+        // 扫描 origin 到 peak 之间每根K线的 low，找最大中途下探
+        const surge_range = peak.price - origin.price;
+        let max_interim_drop = 0;
+        let running_high = origin.price;
+        for (let i = origin.index + 1; i <= peak.index; i++) {
+          if (klines[i].high > running_high) running_high = klines[i].high;
+          const drop = (running_high - klines[i].low) / surge_range * 100;
+          if (drop > max_interim_drop) max_interim_drop = drop;
+        }
+        if (max_interim_drop > max_interim_retrace_pct) continue;
+
+        // 当前价必须高于起涨低点（未跌破起涨点）
+        if (current_price <= origin.price) continue;
+
+        // 计算回撤比例（相对于整段涨幅）
+        const retrace_ratio = (peak.price - current_price) / surge_range;
+        const retrace_pct = retrace_ratio * 100;
+        if (retrace_pct > max_retrace_pct) continue;
+
+        // 确定斐波那契位置
+        let fib_level: string;
+        if (retrace_ratio <= 0.236) {
+          fib_level = '0.236';
+        } else if (retrace_ratio <= 0.382) {
+          fib_level = '0.382';
+        } else if (retrace_ratio <= 0.5) {
+          fib_level = '0.5';
+        } else if (retrace_ratio <= 0.618) {
+          fib_level = '0.618';
+        } else {
+          fib_level = '>0.618';
+        }
+
+        // 评分（满分100）
+        // 基础分50，涨幅加成最多25，回撤越浅加成最多25
+        let score = 50;
+        score += Math.min(25, surge_pct / min_surge_pct * 15);
+        score += Math.max(0, (1 - retrace_ratio / max_retrace_ratio) * 25);
+
+        // 高点越近加分（最多+5）
+        score += Math.max(0, 5 - bars_from_high / max_bars_from_high * 5);
+
+        // 上涨过程越连贯加分（中途回撤越小越好，最多+5）
+        score += Math.max(0, (1 - max_interim_drop / max_interim_retrace_pct) * 5);
+
+        score = Math.min(100, Math.round(score));
+
+        return {
+          pattern_type: 'PULLBACK',
+          score,
+          description: `回调企稳(v2): 涨${surge_pct.toFixed(1)}%, 回撤${retrace_pct.toFixed(1)}% (${fib_level}), 距高点${bars_from_high}根`,
+          key_levels: {
+            swing_low: origin.price,
+            swing_high: peak.price,
+            support: current_price,
+            target: peak.price * 1.1,
+            stop_loss: origin.price
+          },
+          detected_at: klines[current_index].open_time
+        };
+      }
+    }
+
+    return null;
+  }
+
+  /**
    * 自定义参数检测横盘震荡形态
    *
    * @param klines K线数据

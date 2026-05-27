@@ -8,6 +8,7 @@
  * - POST   /api/pattern-scan/double-bottom   扫描双底形态（自定义参数）
  * - POST   /api/pattern-scan/surge-w-bottom  扫描上涨后W底形态（自定义参数）
  * - POST   /api/pattern-scan/surge-ema-pullback 扫描上涨回调靠近EMA形态（自定义参数）
+ * - POST   /api/pattern-scan/pullback-v2     扫描上涨回调形态改进版（精准识别起涨高低点）
  * - POST   /api/pattern-scan/single-candle   扫描单根K线形态（自定义参数）
  * - GET    /api/pattern-scan/tasks           获取任务列表
  * - GET    /api/pattern-scan/tasks/:task_id  获取任务状态
@@ -646,6 +647,127 @@ router.post('/surge-ema-pullback', async (req: Request, res: Response): Promise<
     });
   } catch (error: any) {
     logger.error('[PatternScan API] Surge EMA pullback scan failed:', error);
+    res.status(500).json({
+      success: false,
+      error: error.message
+    });
+  }
+});
+
+/**
+ * POST /api/pattern-scan/pullback-v2
+ * 改进版回调形态扫描（精准识别起涨高低点，过滤震荡低点误识别）
+ *
+ * 请求体参数:
+ * - interval: K线周期 (5m, 15m, 1h, 4h)，默认 1h
+ * - lookback_bars: 分析的K线数量，默认 150
+ * - min_surge_pct: 最小上涨幅度 (%)，默认 20
+ * - max_retrace_pct: 最大回调幅度（相对于涨幅，%），默认 50
+ * - max_bars_from_high: 高点距当前最多多少根K线，默认 60
+ * - max_interim_retrace_pct: 上涨过程中允许的最大中途回撤占涨幅的比例 (%)，默认 40
+ * - end_time: 最后一根K线时间 (ms)，默认当前时间
+ */
+router.post('/pullback-v2', async (req: Request, res: Response): Promise<void> => {
+  try {
+    const {
+      interval = '1h',
+      lookback_bars = 150,
+      min_surge_pct = 20,
+      max_retrace_pct = 50,
+      max_bars_from_high = 60,
+      max_interim_retrace_pct = 40,
+      end_time
+    } = req.body;
+
+    // 验证参数
+    const valid_intervals = ['5m', '15m', '1h', '4h'];
+    if (!valid_intervals.includes(interval)) {
+      res.status(400).json({
+        success: false,
+        error: `Invalid interval. Valid options: ${valid_intervals.join(', ')}`
+      });
+      return;
+    }
+
+    if (lookback_bars < 30 || lookback_bars > 500) {
+      res.status(400).json({
+        success: false,
+        error: 'lookback_bars must be between 30 and 500'
+      });
+      return;
+    }
+
+    if (min_surge_pct < 5 || min_surge_pct > 200) {
+      res.status(400).json({
+        success: false,
+        error: 'min_surge_pct must be between 5 and 200'
+      });
+      return;
+    }
+
+    if (max_retrace_pct < 10 || max_retrace_pct > 100) {
+      res.status(400).json({
+        success: false,
+        error: 'max_retrace_pct must be between 10 and 100'
+      });
+      return;
+    }
+
+    if (max_bars_from_high < 5 || max_bars_from_high > 300) {
+      res.status(400).json({
+        success: false,
+        error: 'max_bars_from_high must be between 5 and 300'
+      });
+      return;
+    }
+
+    if (max_interim_retrace_pct < 10 || max_interim_retrace_pct > 80) {
+      res.status(400).json({
+        success: false,
+        error: 'max_interim_retrace_pct must be between 10 and 80'
+      });
+      return;
+    }
+
+    const parsed_end_time = end_time ? Number(end_time) : undefined;
+    if (parsed_end_time !== undefined && (isNaN(parsed_end_time) || parsed_end_time <= 0)) {
+      res.status(400).json({
+        success: false,
+        error: 'end_time must be a valid timestamp in milliseconds'
+      });
+      return;
+    }
+
+    const service = get_service();
+
+    const results = await service.scan_pullback_v2({
+      interval,
+      lookback_bars,
+      min_surge_pct,
+      max_retrace_pct,
+      max_bars_from_high,
+      max_interim_retrace_pct,
+      end_time: parsed_end_time
+    });
+
+    res.json({
+      success: true,
+      data: {
+        params: {
+          interval,
+          lookback_bars,
+          min_surge_pct,
+          max_retrace_pct,
+          max_bars_from_high,
+          max_interim_retrace_pct,
+          end_time: parsed_end_time
+        },
+        results,
+        count: results.length
+      }
+    });
+  } catch (error: any) {
+    logger.error('[PatternScan API] Pullback v2 scan failed:', error);
     res.status(500).json({
       success: false,
       error: error.message

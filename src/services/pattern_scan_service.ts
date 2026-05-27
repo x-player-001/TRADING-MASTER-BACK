@@ -69,6 +69,19 @@ export interface SurgeWBottomScanRequest {
 }
 
 /**
+ * 改进版回调扫描请求参数（v2）
+ */
+export interface PullbackV2ScanRequest {
+  interval: string;                 // K线周期: 5m, 15m, 1h, 4h
+  lookback_bars: number;            // 分析的K线数量
+  min_surge_pct: number;            // 最小上涨幅度 (%)
+  max_retrace_pct: number;          // 最大回调幅度（相对于涨幅，%）
+  max_bars_from_high: number;       // 高点距当前最多多少根K线
+  max_interim_retrace_pct: number;  // 上涨过程中允许的最大中途回撤占涨幅的比例 (%)
+  end_time?: number;                // 最后一根K线时间 (ms)，默认当前时间
+}
+
+/**
  * 上涨回调靠近EMA扫描请求参数
  */
 export interface SurgeEmaPullbackScanRequest {
@@ -1093,6 +1106,77 @@ export class PatternScanService {
     results.sort((a, b) => b.score - a.score);
 
     logger.info(`[PatternScan] Single candle scan completed: ${results.length} patterns found`);
+
+    return results;
+  }
+
+  /**
+   * 改进版回调形态扫描（v2），解决旧版误识别震荡低点的问题
+   *
+   * @param request 扫描参数
+   * @returns 符合条件的币种列表
+   */
+  async scan_pullback_v2(request: PullbackV2ScanRequest): Promise<PullbackScanResult[]> {
+    const results: PullbackScanResult[] = [];
+
+    const symbols = await this.get_symbols_from_db(request.interval);
+
+    if (symbols.length === 0) {
+      logger.warn(`[PatternScan] Pullback v2 scan: 数据库中没有 ${request.interval} K线数据`);
+      return results;
+    }
+
+    logger.info(
+      `[PatternScan] Pullback v2 scan: Scanning ${symbols.length} symbols ` +
+      `(surge>=${request.min_surge_pct}%, retrace<=${request.max_retrace_pct}%, ` +
+      `max_bars_from_high=${request.max_bars_from_high}, max_interim_retrace=${request.max_interim_retrace_pct}%` +
+      `${request.end_time ? `, end_time=${new Date(request.end_time).toISOString()}` : ''})`
+    );
+
+    for (const symbol of symbols) {
+      if (this.blacklist.has(symbol)) continue;
+
+      try {
+        const klines = await this.get_klines_from_db_only(symbol, request.interval, request.lookback_bars, request.end_time);
+
+        if (klines.length < 30) continue;
+
+        const kline_data: KlineData[] = klines.map(k => ({
+          open_time: k.open_time,
+          close_time: k.close_time,
+          open: k.open,
+          high: k.high,
+          low: k.low,
+          close: k.close,
+          volume: k.volume
+        }));
+
+        const pattern = this.detector.detect_pullback_v2(
+          kline_data,
+          request.min_surge_pct,
+          request.max_retrace_pct,
+          request.max_bars_from_high,
+          request.max_interim_retrace_pct
+        );
+
+        if (pattern) {
+          results.push({
+            symbol,
+            score: pattern.score,
+            description: pattern.description,
+            key_levels: pattern.key_levels,
+            kline_interval: request.interval,
+            detected_at: pattern.detected_at
+          });
+        }
+      } catch (error) {
+        logger.debug(`[PatternScan] Pullback v2 scan failed for ${symbol}: ${error}`);
+      }
+    }
+
+    results.sort((a, b) => b.score - a.score);
+
+    logger.info(`[PatternScan] Pullback v2 scan completed: ${results.length} patterns found`);
 
     return results;
   }
