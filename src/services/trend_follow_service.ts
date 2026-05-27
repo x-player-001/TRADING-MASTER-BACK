@@ -96,6 +96,7 @@ const CONFIG = {
   min_body_ratio_bars: 0.75,        // 满足实体占比的根数 >= 总根数 75%
   amplitude_multiplier: 1.5,        // 第一波平均实体 >= 前N根平均实体 × 1.5
   min_wave_amplitude_pct: 0.05,     // 第一波涨幅 >= 5%（相对起涨价）
+  min_bar_range_pct: 0.005,         // 波内K线振幅(high-low)/open >= 0.5%，否则不计入
   amplitude_lookback: 25,           // 计算基准平均实体的回溯根数
   max_pullback_bars_before_detect: 10, // 波结束后最多允许跳过多少根回调 K 线再识别
 
@@ -388,6 +389,9 @@ export class TrendFollowService {
       const body = Math.abs(k.close - k.open);
       const range = k.high - k.low;
       const is_small_bear = !is_bull && range > 0 && body / range < 0.3 && body < base_avg_body * 0.3;
+
+      // 振幅不足 0.5% 的K线直接终止（不论阳阴）
+      if (k.open > 0 && range / k.open < CONFIG.min_bar_range_pct) break;
 
       if (is_bull) {
         seq.unshift(k);
