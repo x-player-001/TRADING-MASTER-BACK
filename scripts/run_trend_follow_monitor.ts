@@ -261,6 +261,15 @@ async function restore_watch_contexts(): Promise<void> {
         watch_start_time:     ctx.watch_start_time,
         abandoned_reason:     ctx.abandoned_reason,
       });
+
+      // current_price 为 0 说明是加字段前写入的旧数据，用 wave_end_price 补上
+      if (!ctx.current_price) {
+        trend_follow_repository.upsert_watch_context({
+          ...ctx,
+          current_price: ctx.wave_end_price,
+        }).catch(err => console.error(`修复 current_price 失败 ${ctx.symbol}:`, err.message));
+      }
+
       restored++;
     }
     console.log(`✅ 恢复观察区状态: ${restored} 条`);
