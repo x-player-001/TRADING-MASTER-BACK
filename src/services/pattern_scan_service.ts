@@ -376,54 +376,47 @@ export class PatternScanService {
     limit: number,
     end_time?: number
   ): Promise<(Kline5mData | AggregatedKline)[]> {
-    if (interval === '5m') {
-      // 直接从数据库获取5m K线
-      return this.get_5m_klines_from_db(symbol, limit, end_time);
-    } else {
-      // 如果指定了 end_time，直接从数据库获取（不使用缓存）
-      if (end_time) {
-        const db_klines = await this.get_aggregated_klines_from_db(symbol, interval, limit, end_time);
-        if (db_klines.length >= limit * 0.5) {
-          return db_klines;
-        }
+    const interval_ms = this.get_interval_ms(interval);
+    let result: (Kline5mData | AggregatedKline)[];
 
+    if (interval === '5m') {
+      result = await this.get_5m_klines_from_db(symbol, limit, end_time);
+    } else if (end_time) {
+      // 指定了 end_time，直接从数据库获取（不使用缓存）
+      const db_klines = await this.get_aggregated_klines_from_db(symbol, interval, limit, end_time);
+      if (db_klines.length >= limit * 0.5) {
+        result = db_klines;
+      } else {
         // 聚合表数据不足，尝试从5m数据聚合
-        const interval_ms = this.get_interval_ms(interval);
         const required_5m = Math.ceil(limit * interval_ms / (5 * 60 * 1000)) + 10;
         const klines_5m = await this.get_5m_klines_from_db(symbol, required_5m, end_time);
-
-        if (klines_5m.length >= required_5m * 0.5) {
-          return this.aggregate_klines(symbol, klines_5m, interval);
-        }
-
-        return db_klines;
+        result = klines_5m.length >= required_5m * 0.5
+          ? this.aggregate_klines(symbol, klines_5m, interval)
+          : db_klines;
       }
-
+    } else {
       // 未指定 end_time，使用缓存逻辑
       const cached = this.aggregator.get_aggregated_klines(symbol, interval);
       if (cached.length >= limit) {
-        return cached.slice(-limit);
+        result = cached.slice(-limit);
+      } else {
+        // 缓存不足，从聚合表获取
+        const db_klines = await this.get_aggregated_klines_from_db(symbol, interval, limit);
+        if (db_klines.length >= limit * 0.5) {
+          result = db_klines;
+        } else {
+          // 聚合表数据不足，尝试从5m数据聚合
+          const required_5m = Math.ceil(limit * interval_ms / (5 * 60 * 1000)) + 10;
+          const klines_5m = await this.get_5m_klines_from_db(symbol, required_5m);
+          result = klines_5m.length >= required_5m * 0.5
+            ? this.aggregate_klines(symbol, klines_5m, interval)
+            : db_klines;
+        }
       }
-
-      // 缓存不足，从聚合表获取
-      const db_klines = await this.get_aggregated_klines_from_db(symbol, interval, limit);
-      if (db_klines.length >= limit * 0.5) {
-        return db_klines;
-      }
-
-      // 聚合表数据不足，尝试从5m数据聚合
-      const interval_ms = this.get_interval_ms(interval);
-      const required_5m = Math.ceil(limit * interval_ms / (5 * 60 * 1000)) + 10;
-      const klines_5m = await this.get_5m_klines_from_db(symbol, required_5m);
-
-      if (klines_5m.length >= required_5m * 0.5) {
-        // 手动聚合
-        return this.aggregate_klines(symbol, klines_5m, interval);
-      }
-
-      // 数据不足，返回已有数据
-      return db_klines;
     }
+
+    // 裁剪时间断层：只保留尾部连续的一段，防止历史残留数据污染分析
+    return this.trim_to_continuous(result, interval_ms);
   }
 
   /**
@@ -524,6 +517,38 @@ export class PatternScanService {
       case 'd': return value * 24 * 60 * 60 * 1000;
       default: return 5 * 60 * 1000;
     }
+  }
+
+  /**
+   * 裁剪K线数组，只保留尾部连续的一段（去除时间断层前的旧数据）
+   *
+   * 原理：相邻两根K线的时间间隔若超过正常间隔的 gap_tolerance 倍，
+   * 则认为存在断层，丢弃断层之前的所有数据，只保留断层之后最新的连续段。
+   *
+   * @param klines 已按时间升序排列的K线数组
+   * @param interval_ms 该周期的标准时间间隔（毫秒）
+   * @param gap_tolerance 允许的最大间隔倍数，默认3倍
+   */
+  private trim_to_continuous<T extends { open_time: number }>(
+    klines: T[],
+    interval_ms: number,
+    gap_tolerance: number = 3
+  ): T[] {
+    if (klines.length < 2) return klines;
+
+    const max_gap = interval_ms * gap_tolerance;
+
+    // 从后往前找最后一个断层位置
+    let cut_index = 0;
+    for (let i = klines.length - 1; i > 0; i--) {
+      const gap = klines[i].open_time - klines[i - 1].open_time;
+      if (gap > max_gap) {
+        cut_index = i;
+        break;
+      }
+    }
+
+    return cut_index > 0 ? klines.slice(cut_index) : klines;
   }
 
   /**
