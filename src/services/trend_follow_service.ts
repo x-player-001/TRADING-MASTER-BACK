@@ -128,7 +128,7 @@ export class TrendFollowService {
   // 回调: 触发报警时调用
   private on_alert_cb?: (alert: TrendAlert) => void;
   private on_abandon_cb?: (event: AbandonEvent) => void;
-  private on_context_change_cb?: (ctx: WatchContext) => void;
+  private on_context_change_cb?: (ctx: WatchContext, current_price: number) => void;
 
   /** 注册报警回调 */
   on_alert(cb: (alert: TrendAlert) => void): void {
@@ -141,7 +141,7 @@ export class TrendFollowService {
   }
 
   /** 注册观察区状态变更回调（进入 WATCHING / ALERTED / ABANDONED 时触发） */
-  on_context_change(cb: (ctx: WatchContext) => void): void {
+  on_context_change(cb: (ctx: WatchContext, current_price: number) => void): void {
     this.on_context_change_cb = cb;
   }
 
@@ -295,7 +295,7 @@ export class TrendFollowService {
       avg_volume: current.volume,
     };
     ctx.last_alert_level = undefined;
-    this.on_context_change_cb?.({ ...ctx });
+    this.on_context_change_cb?.({ ...ctx }, current.close);
   }
 
   /**
@@ -471,7 +471,7 @@ export class TrendFollowService {
     };
 
     this.on_alert_cb?.(alert);
-    this.on_context_change_cb?.({ ...ctx });
+    this.on_context_change_cb?.({ ...ctx }, current.close);
   }
 
   /**
@@ -534,6 +534,6 @@ export class TrendFollowService {
       reason,
       wave,
     });
-    this.on_context_change_cb?.({ ...ctx });
+    this.on_context_change_cb?.({ ...ctx }, ctx.pullback?.lowest_price ?? wave.end_price);
   }
 }

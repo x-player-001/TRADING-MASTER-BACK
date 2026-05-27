@@ -311,7 +311,7 @@ async function main(): Promise<void> {
     print_abandon(event);
   });
 
-  trend_service.on_context_change((ctx) => {
+  trend_service.on_context_change((ctx, current_price) => {
     if (!ctx.wave || !ctx.pullback) return;
     const record = {
       symbol:               ctx.symbol,
@@ -326,6 +326,7 @@ async function main(): Promise<void> {
       pullback_lowest_price: ctx.pullback.lowest_price,
       pullback_bar_count:   ctx.pullback.bar_count,
       pullback_avg_volume:  ctx.pullback.avg_volume,
+      current_price,
       last_alert_level:     ctx.last_alert_level ?? null,
       watch_start_time:     ctx.watch_start_time ?? Date.now(),
       abandoned_reason:     ctx.abandoned_reason ?? null,

@@ -42,6 +42,7 @@ export interface TrendFollowWatchContextRecord {
   pullback_lowest_price: number;
   pullback_bar_count: number;
   pullback_avg_volume: number;
+  current_price: number;
   last_alert_level?: number | null;
   watch_start_time: number;
   abandoned_reason?: string | null;
@@ -93,6 +94,7 @@ export class TrendFollowRepository extends BaseRepository {
         pullback_lowest_price DECIMAL(20,8) NOT NULL,
         pullback_bar_count   INT           NOT NULL,
         pullback_avg_volume  DECIMAL(30,8) NOT NULL,
+        current_price        DECIMAL(20,8) NOT NULL DEFAULT 0,
         last_alert_level     TINYINT       NULL,
         watch_start_time     BIGINT        NOT NULL,
         abandoned_reason     VARCHAR(200)  NULL,
@@ -120,8 +122,8 @@ export class TrendFollowRepository extends BaseRepository {
          (symbol, timeframe, state,
           wave_start_price, wave_end_price, wave_amplitude_pct, wave_bar_count, wave_avg_volume, wave_end_time,
           pullback_lowest_price, pullback_bar_count, pullback_avg_volume,
-          last_alert_level, watch_start_time, abandoned_reason)
-         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+          current_price, last_alert_level, watch_start_time, abandoned_reason)
+         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
          ON DUPLICATE KEY UPDATE
            state                 = VALUES(state),
            wave_start_price      = VALUES(wave_start_price),
@@ -133,6 +135,7 @@ export class TrendFollowRepository extends BaseRepository {
            pullback_lowest_price = VALUES(pullback_lowest_price),
            pullback_bar_count    = VALUES(pullback_bar_count),
            pullback_avg_volume   = VALUES(pullback_avg_volume),
+           current_price         = VALUES(current_price),
            last_alert_level      = VALUES(last_alert_level),
            watch_start_time      = VALUES(watch_start_time),
            abandoned_reason      = VALUES(abandoned_reason)`,
@@ -149,6 +152,7 @@ export class TrendFollowRepository extends BaseRepository {
           record.pullback_lowest_price,
           record.pullback_bar_count,
           record.pullback_avg_volume,
+          record.current_price,
           record.last_alert_level ?? null,
           record.watch_start_time,
           record.abandoned_reason ?? null,
@@ -317,6 +321,7 @@ export class TrendFollowRepository extends BaseRepository {
       pullback_lowest_price: parseFloat(row.pullback_lowest_price),
       pullback_bar_count:    row.pullback_bar_count,
       pullback_avg_volume:   parseFloat(row.pullback_avg_volume),
+      current_price:         parseFloat(row.current_price),
       last_alert_level:      row.last_alert_level ?? null,
       watch_start_time:      Number(row.watch_start_time),
       abandoned_reason:      row.abandoned_reason ?? null,
