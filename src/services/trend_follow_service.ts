@@ -192,6 +192,54 @@ export class TrendFollowService {
     this.kline_cache.set(key, klines.slice(-CONFIG.max_cache_size));
   }
 
+  /**
+   * 从数据库记录恢复观察区状态（冷启动时调用）
+   */
+  restore_watch_context(record: {
+    symbol: string;
+    timeframe: Timeframe;
+    state: WatchState;
+    wave_start_price: number;
+    wave_end_price: number;
+    wave_amplitude_pct: number;
+    wave_bar_count: number;
+    wave_avg_volume: number;
+    wave_end_time: number;
+    pullback_lowest_price: number;
+    pullback_bar_count: number;
+    pullback_avg_volume: number;
+    last_alert_level?: number | null;
+    watch_start_time: number;
+    abandoned_reason?: string | null;
+  }): void {
+    const key = this._cache_key(record.symbol, record.timeframe);
+    const amplitude = record.wave_end_price - record.wave_start_price;
+    const ctx: WatchContext = {
+      symbol: record.symbol,
+      timeframe: record.timeframe,
+      state: record.state,
+      wave: {
+        start_index: 0,
+        start_price: record.wave_start_price,
+        end_price: record.wave_end_price,
+        amplitude,
+        bar_count: record.wave_bar_count,
+        avg_volume: record.wave_avg_volume,
+        end_time: record.wave_end_time,
+      },
+      pullback: {
+        lowest_price: record.pullback_lowest_price,
+        bar_count: record.pullback_bar_count,
+        min_volume: record.pullback_avg_volume,
+        avg_volume: record.pullback_avg_volume,
+      },
+      last_alert_level: (record.last_alert_level ?? undefined) as AlertLevel | undefined,
+      watch_start_time: record.watch_start_time,
+      abandoned_reason: record.abandoned_reason ?? undefined,
+    };
+    this.watch_contexts.set(key, ctx);
+  }
+
   /** 获取所有观察中的上下文（用于状态打印） */
   get_watching_contexts(): WatchContext[] {
     return Array.from(this.watch_contexts.values())

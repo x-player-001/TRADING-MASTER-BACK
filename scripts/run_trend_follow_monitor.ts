@@ -237,6 +237,38 @@ async function preload_history(symbols: string[]): Promise<void> {
   console.log(`✅ 预加载完成: ${loaded} 个币种已加载，${failed} 个失败`);
 }
 
+// ==================== 恢复观察区状态 ====================
+
+async function restore_watch_contexts(): Promise<void> {
+  try {
+    const contexts = await trend_follow_repository.get_watch_contexts({ limit: 2000 });
+    let restored = 0;
+    for (const ctx of contexts) {
+      trend_service.restore_watch_context({
+        symbol:               ctx.symbol,
+        timeframe:            ctx.timeframe as any,
+        state:                ctx.state as any,
+        wave_start_price:     ctx.wave_start_price,
+        wave_end_price:       ctx.wave_end_price,
+        wave_amplitude_pct:   ctx.wave_amplitude_pct,
+        wave_bar_count:       ctx.wave_bar_count,
+        wave_avg_volume:      ctx.wave_avg_volume,
+        wave_end_time:        ctx.wave_end_time,
+        pullback_lowest_price: ctx.pullback_lowest_price,
+        pullback_bar_count:   ctx.pullback_bar_count,
+        pullback_avg_volume:  ctx.pullback_avg_volume,
+        last_alert_level:     ctx.last_alert_level,
+        watch_start_time:     ctx.watch_start_time,
+        abandoned_reason:     ctx.abandoned_reason,
+      });
+      restored++;
+    }
+    console.log(`✅ 恢复观察区状态: ${restored} 条`);
+  } catch (err: any) {
+    console.warn(`⚠️  恢复观察区状态失败: ${err.message}`);
+  }
+}
+
 // ==================== 状态打印 ====================
 
 function print_status(): void {
@@ -343,6 +375,9 @@ async function main(): Promise<void> {
 
   // 预加载历史K线
   await preload_history(symbols);
+
+  // 恢复观察区状态
+  await restore_watch_contexts();
 
   // 启动 WebSocket
   await start_kline_websocket(symbols);
