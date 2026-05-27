@@ -54,6 +54,7 @@ const stats = {
   start_time: Date.now(),
   symbols_count: 0,
   klines_received: 0,
+  alerts_lv0: 0,
   alerts_lv1: 0,
   alerts_lv2: 0,
   alerts_lv3: 0,
@@ -76,7 +77,7 @@ function now_str(): string {
 // ==================== 报警打印 ====================
 
 function print_alert(alert: TrendAlert): void {
-  const level_emoji = ['', '🟡', '🟢', '🔴'][alert.alert_level];
+  const level_emoji = ['⚡', '🟡', '🟢', '🔴'][alert.alert_level];
   const tf_label = alert.timeframe.toUpperCase();
   const time_str = beijing_time(alert.kline_time);
   const shrink_str = alert.volume_shrink ? '缩量✅' : '未缩量';
@@ -289,7 +290,7 @@ function print_status(): void {
   console.log(`   订阅币种: ${stats.symbols_count}`);
   console.log(`   K线接收: ${stats.klines_received}`);
   console.log(`   观察中: ${svc_stats.total_watching}  已废弃(本轮): ${svc_stats.total_abandoned}`);
-  console.log(`   报警统计: Lv1=${stats.alerts_lv1}  Lv2=${stats.alerts_lv2}  Lv3=${stats.alerts_lv3}`);
+  console.log(`   报警统计: Lv0=${stats.alerts_lv0}  Lv1=${stats.alerts_lv1}  Lv2=${stats.alerts_lv2}  Lv3=${stats.alerts_lv3}`);
   console.log(`   已废弃事件: ${stats.abandoned}`);
 }
 
@@ -305,6 +306,7 @@ async function main(): Promise<void> {
   console.log('     + 波内平均实体 ≥ 前25根平均实体 × 1.5');
   console.log('     + 波内涨幅 ≥ 5%');
   console.log('   · 进入观察区后分级报警:');
+  console.log('     ⚡ Lv0 高位横盘缩量 < 23.6%  连续缩量≥3根');
   console.log('     🟡 Lv1 轻度回调 < 38.2%  缩量');
   console.log('     🟢 Lv2 黄金回调 38.2%~50%  缩量+止跌形态');
   console.log('     🔴 Lv3 深度回调 50%~61.8%  谨慎');
@@ -324,7 +326,8 @@ async function main(): Promise<void> {
 
   // 注册回调
   trend_service.on_alert((alert) => {
-    if (alert.alert_level === 1) stats.alerts_lv1++;
+    if (alert.alert_level === 0) stats.alerts_lv0++;
+    else if (alert.alert_level === 1) stats.alerts_lv1++;
     else if (alert.alert_level === 2) stats.alerts_lv2++;
     else if (alert.alert_level === 3) stats.alerts_lv3++;
     print_alert(alert);

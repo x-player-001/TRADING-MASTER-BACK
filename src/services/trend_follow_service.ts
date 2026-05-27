@@ -17,7 +17,7 @@ import { AggregatedKline } from '@/core/data/kline_aggregator';
 
 export type Timeframe = '5m' | '15m' | '1h' | '4h';
 export type WatchState = 'IDLE' | 'DETECTING' | 'WATCHING' | 'ALERTED' | 'ABANDONED';
-export type AlertLevel = 1 | 2 | 3;
+export type AlertLevel = 0 | 1 | 2 | 3;
 
 /** 统一K线格式（5m 和聚合K线都转换为此格式） */
 export interface UnifiedKline {
@@ -61,6 +61,7 @@ export interface WatchContext {
   last_alert_level?: AlertLevel;
   watch_start_time?: number;
   abandoned_reason?: string;
+  consecutive_shrink_bars?: number;  // 当前连续缩量根数（Lv0用）
 }
 
 /** 报警结果 */
@@ -107,6 +108,11 @@ const CONFIG = {
 
   volume_shrink_ratio: 0.5,         // 回调均量 < 第一波均量 × 0.5 认为缩量
   min_alert_bars_multiplier: 1,     // 最小等待K线数 = 第一波根数 × 1，之后才开始检测报警
+
+  // Lv0 高位横盘缩量
+  lv0_max_pullback: 0.236,          // 回调幅度 < 23.6%
+  lv0_min_shrink_bars: 3,           // 连续缩量根数 >= 3
+  lv0_max_bear_body_ratio: 0.5,     // 单根阴线跌幅 < 第一波振幅 × 50%
 
   // 止跌形态（末端止跌信号）
   reversal_upper_shadow_max: 0.3,   // 上影线 <= 30% 振幅
@@ -344,6 +350,7 @@ export class TrendFollowService {
       avg_volume: current.volume,
     };
     ctx.last_alert_level = undefined;
+    ctx.consecutive_shrink_bars = 0;
     this.on_context_change_cb?.({ ...ctx }, current.close);
   }
 
@@ -488,6 +495,17 @@ export class TrendFollowService {
       return this._abandon(ctx, wave, `回调幅度 ${(pullback_ratio * 100).toFixed(1)}% 超过 61.8%`);
     }
 
+    // ---- Lv0：高位横盘缩量 ----
+    const is_shrink = current.volume < wave.avg_volume * CONFIG.volume_shrink_ratio;
+    const bear_body = current.close < current.open ? (current.open - current.close) : 0;
+    const no_big_bear = bear_body < wave.amplitude * CONFIG.lv0_max_bear_body_ratio;
+
+    if (is_shrink && no_big_bear) {
+      ctx.consecutive_shrink_bars = (ctx.consecutive_shrink_bars ?? 0) + 1;
+    } else {
+      ctx.consecutive_shrink_bars = 0;
+    }
+
     // ---- 报警判断 ----
     const min_alert_bars = wave.bar_count * CONFIG.min_alert_bars_multiplier;
     if (pb.bar_count < min_alert_bars) {
@@ -498,7 +516,9 @@ export class TrendFollowService {
     const volume_shrink = pb.avg_volume < wave.avg_volume * CONFIG.volume_shrink_ratio;
     const reversal = this._check_reversal_signal(current);
 
-    const new_level = this._calc_alert_level(pullback_ratio, volume_shrink, reversal);
+    const new_level = this._calc_alert_level(
+      pullback_ratio, volume_shrink, reversal, ctx.consecutive_shrink_bars ?? 0
+    );
     if (new_level === null) {
       this.on_context_change_cb?.({ ...ctx }, current.close);
       return;
@@ -540,24 +560,29 @@ export class TrendFollowService {
   private _calc_alert_level(
     pullback_ratio: number,
     volume_shrink: boolean,
-    reversal: boolean
+    reversal: boolean,
+    consecutive_shrink_bars: number,
   ): AlertLevel | null {
     if (pullback_ratio > CONFIG.fib_62) return null;
 
+    // 等级0：高位横盘缩量（回调极浅 + 持续缩量 + 无大阴线）
+    if (
+      pullback_ratio < CONFIG.lv0_max_pullback &&
+      consecutive_shrink_bars >= CONFIG.lv0_min_shrink_bars
+    ) return 0;
+
     if (pullback_ratio <= CONFIG.fib_38) {
-      // 等级1：轻度回调，需缩量
       if (volume_shrink) return 1;
       return null;
     }
 
     if (pullback_ratio <= CONFIG.fib_50) {
-      // 等级2：黄金区间，缩量 + 止跌形态
       if (volume_shrink && reversal) return 2;
-      if (volume_shrink) return 1;  // 缩量但无形态，先给1级
+      if (volume_shrink) return 1;
       return null;
     }
 
-    // 50% ~ 61.8%：等级3，谨慎区间
+    // 50% ~ 61.8%：等级3
     return 3;
   }
 
