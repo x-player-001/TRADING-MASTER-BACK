@@ -202,15 +202,20 @@ export class TrendFollowRepository extends BaseRepository {
     symbol?: string;
     timeframe?: string;
     state?: string;
+    deleted?: boolean;   // true=只查已手动删除；默认只查未删除
     limit?: number;
   } = {}): Promise<TrendFollowWatchContextRecord[]> {
     return this.execute_with_connection(async (conn) => {
-      let sql = "SELECT * FROM trend_follow_watch_contexts WHERE state != 'ABANDONED' AND is_deleted = 0";
+      const is_deleted_val = options.deleted ? 1 : 0;
+
+      let sql = `SELECT * FROM trend_follow_watch_contexts WHERE is_deleted = ${is_deleted_val}`;
       const params: any[] = [];
 
+      if (!options.deleted && !options.state) {
+        // 默认不传 state 时过滤掉废弃
+        sql += " AND state != 'ABANDONED'";
+      }
       if (options.state) {
-        // 当明确传入 state 时才覆盖默认过滤
-        sql = 'SELECT * FROM trend_follow_watch_contexts WHERE is_deleted = 0';
         sql += ' AND state = ?';
         params.push(options.state);
       }

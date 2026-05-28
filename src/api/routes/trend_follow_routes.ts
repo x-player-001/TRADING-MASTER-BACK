@@ -113,6 +113,7 @@ router.get('/alerts/recent', async (req: Request, res: Response): Promise<void> 
  *   symbol    - 币种，如 BTCUSDT
  *   timeframe - 周期，5m / 15m / 1h / 4h
  *   state     - 状态过滤（WATCHING / ALERTED / ABANDONED），不传则返回非废弃的
+ *   deleted   - true 时只返回手动删除的记录
  *   limit     - 返回条数，默认 200
  */
 router.get('/watch-contexts', async (req: Request, res: Response): Promise<void> => {
@@ -121,6 +122,7 @@ router.get('/watch-contexts', async (req: Request, res: Response): Promise<void>
       symbol,
       timeframe,
       state,
+      deleted,
       limit = '200',
     } = req.query as Record<string, string>;
 
@@ -128,6 +130,7 @@ router.get('/watch-contexts', async (req: Request, res: Response): Promise<void>
       symbol,
       timeframe,
       state,
+      deleted: deleted === 'true',
       limit: Number(limit),
     });
 
