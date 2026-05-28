@@ -47,6 +47,7 @@ export interface TrendFollowWatchContextRecord {
   last_alert_level?: number | null;
   watch_start_time: number;
   abandoned_reason?: string | null;
+  remark?: string | null;
   is_deleted?: boolean;
   updated_at?: Date;
 }
@@ -101,6 +102,7 @@ export class TrendFollowRepository extends BaseRepository {
         last_alert_level     TINYINT       NULL,
         watch_start_time     BIGINT        NOT NULL,
         abandoned_reason     VARCHAR(200)  NULL,
+        remark               VARCHAR(500)  NULL     COMMENT '手动备注',
         is_deleted           TINYINT(1)    NOT NULL DEFAULT 0 COMMENT '1=手动删除',
         updated_at       TIMESTAMP DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
 
@@ -233,6 +235,17 @@ export class TrendFollowRepository extends BaseRepository {
     });
   }
 
+  /** 更新观察区记录的备注 */
+  async update_watch_context_remark(id: number, remark: string | null): Promise<boolean> {
+    return this.execute_with_connection(async (conn) => {
+      const [result] = await conn.execute<ResultSetHeader>(
+        'UPDATE trend_follow_watch_contexts SET remark = ? WHERE id = ? AND is_deleted = 0',
+        [remark, id]
+      );
+      return result.affectedRows > 0;
+    });
+  }
+
   /** 按 id 软删除观察区记录（标记 is_deleted=1） */
   async soft_delete_watch_context(id: number): Promise<boolean> {
     return this.execute_with_connection(async (conn) => {
@@ -361,6 +374,7 @@ export class TrendFollowRepository extends BaseRepository {
       last_alert_level:      row.last_alert_level ?? null,
       watch_start_time:      Number(row.watch_start_time),
       abandoned_reason:      row.abandoned_reason ?? null,
+      remark:                row.remark ?? null,
       is_deleted:            row.is_deleted === 1,
       updated_at:            row.updated_at,
     };

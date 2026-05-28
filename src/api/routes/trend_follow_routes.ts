@@ -143,6 +143,36 @@ router.get('/watch-contexts', async (req: Request, res: Response): Promise<void>
 });
 
 /**
+ * PATCH /api/trend-follow/watch-contexts/:id/remark
+ * 更新观察区记录备注
+ *
+ * Body: { remark: string | null }
+ */
+router.patch('/watch-contexts/:id/remark', async (req: Request, res: Response): Promise<void> => {
+  try {
+    const id = Number(req.params.id);
+    if (!id || isNaN(id)) {
+      res.status(400).json({ success: false, error: 'id 无效' });
+      return;
+    }
+    const { remark } = req.body as { remark?: string | null };
+    if (remark !== undefined && remark !== null && typeof remark !== 'string') {
+      res.status(400).json({ success: false, error: 'remark 必须是字符串或 null' });
+      return;
+    }
+    const affected = await get_repository().update_watch_context_remark(id, remark ?? null);
+    if (affected) {
+      res.json({ success: true, message: `id=${id} 备注已更新` });
+    } else {
+      res.status(404).json({ success: false, error: '记录不存在或已删除' });
+    }
+  } catch (error: any) {
+    logger.error('[TrendFollow API] update_remark failed:', error);
+    res.status(500).json({ success: false, error: error.message });
+  }
+});
+
+/**
  * DELETE /api/trend-follow/watch-contexts/:id
  * 软删除观察区记录（标记 is_deleted，不物理删除）
  *
