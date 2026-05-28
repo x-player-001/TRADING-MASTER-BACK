@@ -43,6 +43,7 @@ export interface TrendFollowWatchContextRecord {
   pullback_bar_count: number;
   pullback_avg_volume: number;
   current_price: number;
+  quote_volume_24h?: number | null;   // 进入观察区时的24h成交额(USDT)
   last_alert_level?: number | null;
   watch_start_time: number;
   abandoned_reason?: string | null;
@@ -96,6 +97,7 @@ export class TrendFollowRepository extends BaseRepository {
         pullback_bar_count   INT           NOT NULL,
         pullback_avg_volume  DECIMAL(30,8) NOT NULL,
         current_price        DECIMAL(20,8) NOT NULL DEFAULT 0,
+        quote_volume_24h     DECIMAL(30,2) NULL     COMMENT '进入时24h成交额(USDT)',
         last_alert_level     TINYINT       NULL,
         watch_start_time     BIGINT        NOT NULL,
         abandoned_reason     VARCHAR(200)  NULL,
@@ -124,8 +126,8 @@ export class TrendFollowRepository extends BaseRepository {
          (symbol, timeframe, state,
           wave_start_price, wave_end_price, wave_amplitude_pct, wave_bar_count, wave_avg_volume, wave_end_time,
           pullback_lowest_price, pullback_bar_count, pullback_avg_volume,
-          current_price, last_alert_level, watch_start_time, abandoned_reason)
-         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+          current_price, quote_volume_24h, last_alert_level, watch_start_time, abandoned_reason)
+         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
         [
           record.symbol,
           record.timeframe,
@@ -140,6 +142,7 @@ export class TrendFollowRepository extends BaseRepository {
           record.pullback_bar_count,
           record.pullback_avg_volume,
           record.current_price,
+          record.quote_volume_24h ?? null,
           record.last_alert_level ?? null,
           record.watch_start_time,
           record.abandoned_reason ?? null,
@@ -352,6 +355,7 @@ export class TrendFollowRepository extends BaseRepository {
       pullback_bar_count:    row.pullback_bar_count,
       pullback_avg_volume:   parseFloat(row.pullback_avg_volume),
       current_price:         parseFloat(row.current_price),
+      quote_volume_24h:      row.quote_volume_24h != null ? parseFloat(row.quote_volume_24h) : null,
       last_alert_level:      row.last_alert_level ?? null,
       watch_start_time:      Number(row.watch_start_time),
       abandoned_reason:      row.abandoned_reason ?? null,
