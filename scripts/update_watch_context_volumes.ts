@@ -12,6 +12,7 @@ import * as dotenv from 'dotenv';
 dotenv.config({ override: true });
 
 import axios from 'axios';
+import { ConfigManager } from '@/core/config/config_manager';
 import { TrendFollowRepository } from '@/database/trend_follow_repository';
 
 async function fetch_quote_volume(symbol: string): Promise<number | null> {
@@ -27,6 +28,7 @@ async function fetch_quote_volume(symbol: string): Promise<number | null> {
 }
 
 async function main(): Promise<void> {
+  ConfigManager.getInstance().initialize();
   const repo = new TrendFollowRepository();
 
   // 查询所有活跃观察区记录（WATCHING + ALERTED）
