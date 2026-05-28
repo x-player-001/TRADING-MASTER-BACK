@@ -168,6 +168,7 @@ export class TrendFollowRepository extends BaseRepository {
            pullback_bar_count    = ?,
            pullback_avg_volume   = ?,
            current_price         = ?,
+           quote_volume_24h      = COALESCE(?, quote_volume_24h),
            last_alert_level      = ?,
            watch_start_time      = ?,
            abandoned_reason      = ?
@@ -184,6 +185,7 @@ export class TrendFollowRepository extends BaseRepository {
           record.pullback_bar_count,
           record.pullback_avg_volume,
           record.current_price,
+          record.quote_volume_24h ?? null,
           record.last_alert_level ?? null,
           record.watch_start_time,
           record.abandoned_reason ?? null,

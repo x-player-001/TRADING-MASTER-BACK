@@ -51,8 +51,6 @@ let kline_aggregator: KlineAggregator;
 let trend_service: TrendFollowService;
 let trend_follow_repository: TrendFollowRepository;
 
-// 24h 成交额缓存: symbol -> quoteVolume(USDT)
-const quote_volume_cache: Map<string, number> = new Map();
 
 const stats = {
   start_time: Date.now(),
@@ -149,18 +147,16 @@ async function get_all_symbols(): Promise<string[]> {
     .map((s: any) => s.symbol as string);
 }
 
-/** 拉取全量 24h 成交额并写入缓存 */
-async function fetch_quote_volumes(): Promise<void> {
+/** 查询单个合约的 24h 成交额(USDT) */
+async function fetch_quote_volume(symbol: string): Promise<number | null> {
   try {
-    const resp = await axios.get('https://fapi.binance.com/fapi/v1/ticker/24hr');
-    for (const item of resp.data) {
-      if (item.symbol && item.quoteVolume) {
-        quote_volume_cache.set(item.symbol, parseFloat(item.quoteVolume));
-      }
-    }
-    console.log(`✅ 24h 成交额已加载: ${quote_volume_cache.size} 个合约`);
+    const resp = await axios.get(
+      `https://fapi.binance.com/fapi/v1/ticker/24hr?symbol=${symbol}`
+    );
+    return parseFloat(resp.data.quoteVolume) || null;
   } catch (err: any) {
-    console.warn(`⚠️  获取 24h 成交额失败: ${err.message}`);
+    console.warn(`⚠️  获取 ${symbol} 24h 成交额失败: ${err.message}`);
+    return null;
   }
 }
 
@@ -410,7 +406,7 @@ async function main(): Promise<void> {
       pullback_bar_count:   ctx.pullback.bar_count,
       pullback_avg_volume:  ctx.pullback.avg_volume,
       current_price,
-      quote_volume_24h:     ctx.db_id === undefined ? (quote_volume_cache.get(ctx.symbol) ?? null) : undefined,
+      quote_volume_24h:     ctx.db_id === undefined ? await fetch_quote_volume(ctx.symbol) : undefined,
       last_alert_level:     ctx.last_alert_level ?? null,
       watch_start_time:     ctx.watch_start_time ?? Date.now(),
       abandoned_reason:     ctx.abandoned_reason ?? null,
@@ -435,9 +431,6 @@ async function main(): Promise<void> {
   const symbols = await get_all_symbols();
   stats.symbols_count = symbols.length;
   console.log(`\n✅ 获取到 ${symbols.length} 个合约`);
-
-  // 拉取 24h 成交额
-  await fetch_quote_volumes();
 
   // 预加载历史K线
   await preload_history(symbols);
