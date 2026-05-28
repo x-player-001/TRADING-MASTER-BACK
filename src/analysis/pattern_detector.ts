@@ -687,12 +687,14 @@ export class PatternDetector {
    * 2. 起涨低点必须是该高点之前、上涨过程中连续上行阶段的起始低点（不能是高点后的低点）
    * 3. 验证低点→高点区间的上涨连贯性：中间无更低的波段低点，且最大中途回撤不超过阈值
    * 4. 限制高点距当前K线的上限，避免识别到过久远的行情
+   * 5. 检测上涨段相邻K线高低价重叠率，过滤高重叠度的通道震荡行情
    *
    * @param klines K线数据（至少30根）
    * @param min_surge_pct 最小上涨幅度 (%)
    * @param max_retrace_pct 最大回调幅度（相对于涨幅，%）
    * @param max_bars_from_high 高点距当前最多多少根K线（默认60）
    * @param max_interim_retrace_pct 低点到高点过程中允许的最大中途回撤占涨幅的比例（%，默认40）
+   * @param max_overlap_ratio 上涨段相邻K线high/low重叠的最大比例（0-1，默认0.7）
    * @returns 检测结果，未检测到返回 null
    */
   detect_pullback_v2(
@@ -700,7 +702,8 @@ export class PatternDetector {
     min_surge_pct: number,
     max_retrace_pct: number,
     max_bars_from_high: number = 60,
-    max_interim_retrace_pct: number = 40
+    max_interim_retrace_pct: number = 40,
+    max_overlap_ratio: number = 0.7
   ): PatternResult | null {
     if (klines.length < 30) {
       return null;
@@ -762,6 +765,20 @@ export class PatternDetector {
         }
         if (max_interim_drop > max_interim_retrace_pct) continue;
 
+        // 检测上涨段相邻K线重叠率：low[i] < high[i-1] 且 high[i] > low[i-1] 视为重叠
+        // 重叠率过高说明是通道震荡而非强势上涨
+        const surge_bars = peak.index - origin.index;
+        if (surge_bars >= 2) {
+          let overlap_count = 0;
+          for (let i = origin.index + 1; i <= peak.index; i++) {
+            if (klines[i].low < klines[i - 1].high && klines[i].high > klines[i - 1].low) {
+              overlap_count++;
+            }
+          }
+          const overlap_ratio = overlap_count / surge_bars;
+          if (overlap_ratio > max_overlap_ratio) continue;
+        }
+
         // 当前价必须高于起涨低点（未跌破起涨点）
         if (current_price <= origin.price) continue;
 
@@ -785,23 +802,36 @@ export class PatternDetector {
         }
 
         // 评分（满分100）
-        // 基础分50，涨幅加成最多25，回撤越浅加成最多25
+        // 基础分50，涨幅加成最多20，回撤越浅加成最多20
+        const final_overlap_ratio = surge_bars >= 2
+          ? (() => {
+              let ov = 0;
+              for (let i = origin.index + 1; i <= peak.index; i++) {
+                if (klines[i].low < klines[i - 1].high && klines[i].high > klines[i - 1].low) ov++;
+              }
+              return ov / surge_bars;
+            })()
+          : 0;
+
         let score = 50;
-        score += Math.min(25, surge_pct / min_surge_pct * 15);
-        score += Math.max(0, (1 - retrace_ratio / max_retrace_ratio) * 25);
+        score += Math.min(20, surge_pct / min_surge_pct * 12);
+        score += Math.max(0, (1 - retrace_ratio / max_retrace_ratio) * 20);
 
         // 高点越近加分（最多+5）
         score += Math.max(0, 5 - bars_from_high / max_bars_from_high * 5);
 
-        // 上涨过程越连贯加分（中途回撤越小越好，最多+5）
+        // 上涨越连贯加分（中途回撤越小，最多+5）
         score += Math.max(0, (1 - max_interim_drop / max_interim_retrace_pct) * 5);
+
+        // 上涨段重叠率越低加分（最多+5）
+        score += Math.max(0, (1 - final_overlap_ratio / max_overlap_ratio) * 5);
 
         score = Math.min(100, Math.round(score));
 
         return {
           pattern_type: 'PULLBACK',
           score,
-          description: `回调企稳(v2): 涨${surge_pct.toFixed(1)}%, 回撤${retrace_pct.toFixed(1)}% (${fib_level}), 距高点${bars_from_high}根`,
+          description: `回调企稳(v2): 涨${surge_pct.toFixed(1)}%, 回撤${retrace_pct.toFixed(1)}% (${fib_level}), 距高点${bars_from_high}根, 上涨重叠率${(final_overlap_ratio*100).toFixed(0)}%`,
           key_levels: {
             swing_low: origin.price,
             swing_high: peak.price,

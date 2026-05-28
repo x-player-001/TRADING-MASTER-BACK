@@ -78,6 +78,7 @@ export interface PullbackV2ScanRequest {
   max_retrace_pct: number;          // 最大回调幅度（相对于涨幅，%）
   max_bars_from_high: number;       // 高点距当前最多多少根K线
   max_interim_retrace_pct: number;  // 上涨过程中允许的最大中途回撤占涨幅的比例 (%)
+  max_overlap_ratio: number;        // 上涨段相邻K线high/low重叠的最大比例 (0-1)
   end_time?: number;                // 最后一根K线时间 (ms)，默认当前时间
 }
 
@@ -1154,7 +1155,8 @@ export class PatternScanService {
     logger.info(
       `[PatternScan] Pullback v2 scan: Scanning ${symbols.length} symbols ` +
       `(surge>=${request.min_surge_pct}%, retrace<=${request.max_retrace_pct}%, ` +
-      `max_bars_from_high=${request.max_bars_from_high}, max_interim_retrace=${request.max_interim_retrace_pct}%` +
+      `max_bars_from_high=${request.max_bars_from_high}, max_interim_retrace=${request.max_interim_retrace_pct}%, ` +
+      `max_overlap=${(request.max_overlap_ratio * 100).toFixed(0)}%` +
       `${request.end_time ? `, end_time=${new Date(request.end_time).toISOString()}` : ''})`
     );
 
@@ -1181,7 +1183,8 @@ export class PatternScanService {
           request.min_surge_pct,
           request.max_retrace_pct,
           request.max_bars_from_high,
-          request.max_interim_retrace_pct
+          request.max_interim_retrace_pct,
+          request.max_overlap_ratio
         );
 
         if (pattern) {

@@ -656,7 +656,7 @@ router.post('/surge-ema-pullback', async (req: Request, res: Response): Promise<
 
 /**
  * POST /api/pattern-scan/pullback-v2
- * 改进版回调形态扫描（精准识别起涨高低点，过滤震荡低点误识别）
+ * 改进版回调形态扫描（精准识别起涨高低点，过滤震荡低点误识别和通道行情）
  *
  * 请求体参数:
  * - interval: K线周期 (5m, 15m, 1h, 4h)，默认 1h
@@ -665,6 +665,7 @@ router.post('/surge-ema-pullback', async (req: Request, res: Response): Promise<
  * - max_retrace_pct: 最大回调幅度（相对于涨幅，%），默认 50
  * - max_bars_from_high: 高点距当前最多多少根K线，默认 60
  * - max_interim_retrace_pct: 上涨过程中允许的最大中途回撤占涨幅的比例 (%)，默认 40
+ * - max_overlap_ratio: 上涨段相邻K线high/low重叠的最大比例 (0-1)，默认 0.7
  * - end_time: 最后一根K线时间 (ms)，默认当前时间
  */
 router.post('/pullback-v2', async (req: Request, res: Response): Promise<void> => {
@@ -676,6 +677,7 @@ router.post('/pullback-v2', async (req: Request, res: Response): Promise<void> =
       max_retrace_pct = 50,
       max_bars_from_high = 60,
       max_interim_retrace_pct = 40,
+      max_overlap_ratio = 0.7,
       end_time
     } = req.body;
 
@@ -729,6 +731,14 @@ router.post('/pullback-v2', async (req: Request, res: Response): Promise<void> =
       return;
     }
 
+    if (max_overlap_ratio < 0.1 || max_overlap_ratio > 1) {
+      res.status(400).json({
+        success: false,
+        error: 'max_overlap_ratio must be between 0.1 and 1'
+      });
+      return;
+    }
+
     const parsed_end_time = end_time ? Number(end_time) : undefined;
     if (parsed_end_time !== undefined && (isNaN(parsed_end_time) || parsed_end_time <= 0)) {
       res.status(400).json({
@@ -747,6 +757,7 @@ router.post('/pullback-v2', async (req: Request, res: Response): Promise<void> =
       max_retrace_pct,
       max_bars_from_high,
       max_interim_retrace_pct,
+      max_overlap_ratio,
       end_time: parsed_end_time
     });
 
@@ -760,6 +771,7 @@ router.post('/pullback-v2', async (req: Request, res: Response): Promise<void> =
           max_retrace_pct,
           max_bars_from_high,
           max_interim_retrace_pct,
+          max_overlap_ratio,
           end_time: parsed_end_time
         },
         results,
