@@ -40,7 +40,8 @@ const CONFIG = {
   interval: '5m' as const,
   blacklist: new Set(['USDCUSDT']),
   status_interval_ms: 60_000,      // 状态打印间隔
-  preload_bars: 150,               // 预加载历史K线根数（用于冷启动）
+  preload_bars: 150,               // 预加载历史5m K线根数
+  preload_agg_bars: 100,           // 预加载历史聚合K线根数（15m/1h/4h）
 };
 
 // ==================== 全局变量 ====================
@@ -183,9 +184,18 @@ async function start_kline_websocket(symbols: string[]): Promise<void> {
 // ==================== 预加载历史K线 ====================
 
 async function preload_history(symbols: string[]): Promise<void> {
-  console.log(`\n📦 预加载历史 5m K线（每币种 ${CONFIG.preload_bars} 根）...`);
+  console.log(`\n📦 预加载历史K线（5m: ${CONFIG.preload_bars}根，聚合: ${CONFIG.preload_agg_bars}根）...`);
   let loaded = 0;
   let failed = 0;
+
+  // 聚合K线查询时间范围：往前取足够多的历史
+  const now = Date.now();
+  const agg_start: Record<Timeframe, number> = {
+    '5m':  now - CONFIG.preload_bars * 5 * 60 * 1000,
+    '15m': now - CONFIG.preload_agg_bars * 15 * 60 * 1000,
+    '1h':  now - CONFIG.preload_agg_bars * 60 * 60 * 1000,
+    '4h':  now - CONFIG.preload_agg_bars * 4 * 60 * 60 * 1000,
+  };
 
   for (const symbol of symbols) {
     if (CONFIG.blacklist.has(symbol)) continue;
@@ -207,15 +217,32 @@ async function preload_history(symbols: string[]): Promise<void> {
       }));
       trend_service.init_cache(symbol, '5m', unified_5m);
 
-      // 同时初始化聚合器缓存，并把聚合结果写入 trend_service 缓存
+      // 初始化聚合器5m缓存（用于后续实时聚合）
       await kline_aggregator.init_cache(symbol, klines);
 
       for (const tf of ['15m', '1h', '4h'] as Timeframe[]) {
-        const agg_klines = kline_aggregator.get_aggregated_klines(symbol, tf);
+        // 优先从数据库加载历史聚合K线，数量不足时再用5m聚合结果补充
+        const db_klines = await kline_aggregator.get_klines_from_db(
+          symbol, tf, agg_start[tf as Timeframe], now
+        );
+
+        let agg_klines = db_klines;
+
+        // 数据库数量不足时，合并5m实时聚合结果（覆盖末尾）
+        if (agg_klines.length < CONFIG.preload_agg_bars) {
+          const realtime = kline_aggregator.get_aggregated_klines(symbol, tf);
+          if (realtime.length > 0) {
+            // 去重合并：db结果 + realtime中时间更新的部分
+            const db_last_time = agg_klines.length > 0 ? agg_klines[agg_klines.length - 1].open_time : 0;
+            const new_realtime = realtime.filter(k => k.open_time > db_last_time);
+            agg_klines = [...agg_klines, ...new_realtime];
+          }
+        }
+
         if (agg_klines.length > 0) {
           const unified: UnifiedKline[] = agg_klines.map(k => ({
             symbol: k.symbol,
-            timeframe: tf,
+            timeframe: tf as Timeframe,
             open_time: k.open_time,
             close_time: k.close_time,
             open: k.open,
@@ -224,7 +251,7 @@ async function preload_history(symbols: string[]): Promise<void> {
             close: k.close,
             volume: k.volume,
           }));
-          trend_service.init_cache(symbol, tf, unified);
+          trend_service.init_cache(symbol, tf as Timeframe, unified);
         }
       }
 
