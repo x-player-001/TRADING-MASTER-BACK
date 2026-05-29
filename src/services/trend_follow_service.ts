@@ -339,6 +339,7 @@ export class TrendFollowService {
       case 'BREAKTHROUGH':
         // 突破后重置，等待下一次机会
         ctx.state = 'IDLE';
+        ctx.db_id = undefined;
         ctx.wave = undefined;
         ctx.pullback = undefined;
         ctx.last_alert_level = undefined;
@@ -349,6 +350,7 @@ export class TrendFollowService {
       case 'ABANDONED':
         // 重置为 IDLE 等待下一波
         ctx.state = 'IDLE';
+        ctx.db_id = undefined;
         ctx.wave = undefined;
         ctx.pullback = undefined;
         ctx.last_alert_level = undefined;
