@@ -470,9 +470,10 @@ export class TrendFollowService {
     }).length;
     if (good_body_count / bull_bars.length < CONFIG.min_body_ratio_bars) return null;
 
-    // 检查幅度：波内平均实体 >= 基准平均实体 × 1.5
-    const wave_avg_body = bull_bars.reduce((s, k) => s + Math.abs(k.close - k.open), 0) / bull_bars.length;
-    if (wave_avg_body < base_avg_body * CONFIG.amplitude_multiplier) return null;
+    // 检查幅度：波内平均实体涨幅% >= 基准平均实体涨幅% × 1.5
+    const wave_avg_body_pct = bull_bars.reduce((s, k) => s + Math.abs(k.close - k.open) / k.open, 0) / bull_bars.length;
+    const base_avg_body_pct = base_klines.reduce((s, k) => s + Math.abs(k.close - k.open) / k.open, 0) / base_klines.length;
+    if (wave_avg_body_pct < base_avg_body_pct * CONFIG.amplitude_multiplier) return null;
 
     const start_price = seq[0].open;
     // 高点取最后一根阳线的收盘价（实体顶），不用影线最高价，避免把突破K线的高影纳入第一波
