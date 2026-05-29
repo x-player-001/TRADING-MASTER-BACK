@@ -473,7 +473,9 @@ export class TrendFollowService {
     if (wave_avg_body < base_avg_body * CONFIG.amplitude_multiplier) return null;
 
     const start_price = seq[0].open;
-    const end_price = Math.max(...seq.map(k => k.high));
+    // 高点取最后一根阳线的收盘价（实体顶），不用影线最高价，避免把突破K线的高影纳入第一波
+    const last_bull = [...seq].reverse().find(k => k.close > k.open)!;
+    const end_price = last_bull.close;
     const amplitude = end_price - start_price;
     if (amplitude <= 0) return null;
 
