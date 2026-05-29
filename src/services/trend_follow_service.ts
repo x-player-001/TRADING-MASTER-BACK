@@ -103,10 +103,12 @@ export interface BreakthroughEvent {
 const CONFIG = {
   // 强势第一波判定
   min_consecutive_bull: 4,          // 最少连续阳线根数
-  allow_small_bear_gap: 1,          // 允许中间夹的小阴线根数（实体 < 平均实体 30%）
+  allow_small_bear_gap: 2,          // 允许中间夹的小阴线根数（实体 < 平均实体 30%）
   min_body_ratio: 0.30,             // 连续阳线中实体占比 >= 30% 的根数比例
   min_body_ratio_bars: 0.75,        // 满足实体占比的根数 >= 总根数 75%
-  amplitude_multiplier: 1.5,        // 第一波平均实体 >= 前N根平均实体 × 1.5
+  amplitude_multiplier: 1.5,        // 第一波平均实体涨幅% >= 基准中位数 × 1.5
+  amplitude_multiplier_large: 1.1,  // 涨幅 >= 8% 时放宽到 × 1.1
+  amplitude_multiplier_threshold: 0.08, // 涨幅超过此值使用宽松乘数
   min_wave_amplitude_pct: 0.05,     // 第一波涨幅 >= 5%（相对起涨价）
   min_bar_range_pct: 0.005,         // 波内K线振幅(high-low)/open >= 0.5%，否则不计入
   amplitude_lookback: 25,           // 计算基准平均实体的回溯根数
@@ -407,13 +409,14 @@ export class TrendFollowService {
   private _find_bull_wave(cache: UnifiedKline[]): FirstWave | null {
     const len = cache.length;
 
-    // 基准平均实体（取末尾前足够多的 K 线）
+    // 基准实体强度（取末尾前足够多的 K 线，用中位数避免极端值拉高门槛）
     const base_end = Math.max(0, len - CONFIG.min_consecutive_bull);
     const base_klines = cache.slice(
       Math.max(0, base_end - CONFIG.amplitude_lookback),
       base_end
     );
     if (base_klines.length < 5) return null;
+    // 保留 base_avg_body 供小阴线过滤使用（仍用均值）
     const base_avg_body = base_klines.reduce((s, k) => s + Math.abs(k.close - k.open), 0) / base_klines.length;
 
     // 先跳过末尾的回调 K 线（最多跳 max_pullback_bars_before_detect 根），找到波的末端位置
@@ -470,11 +473,6 @@ export class TrendFollowService {
     }).length;
     if (good_body_count / bull_bars.length < CONFIG.min_body_ratio_bars) return null;
 
-    // 检查幅度：波内平均实体涨幅% >= 基准平均实体涨幅% × 1.5
-    const wave_avg_body_pct = bull_bars.reduce((s, k) => s + Math.abs(k.close - k.open) / k.open, 0) / bull_bars.length;
-    const base_avg_body_pct = base_klines.reduce((s, k) => s + Math.abs(k.close - k.open) / k.open, 0) / base_klines.length;
-    if (wave_avg_body_pct < base_avg_body_pct * CONFIG.amplitude_multiplier) return null;
-
     const start_price = seq[0].open;
     // 高点取最后一根阳线的收盘价（实体顶），不用影线最高价，避免把突破K线的高影纳入第一波
     const last_bull = [...seq].reverse().find(k => k.close > k.open)!;
@@ -484,6 +482,19 @@ export class TrendFollowService {
 
     // 涨幅必须 >= 5%
     if (amplitude / start_price < CONFIG.min_wave_amplitude_pct) return null;
+
+    // 检查实体强度：波内平均实体涨幅% >= 基准中位数实体涨幅% × 乘数
+    // 涨幅 >= 8% 时放宽乘数（大涨行情允许实体稍弱）
+    const wave_avg_body_pct = bull_bars.reduce((s, k) => s + Math.abs(k.close - k.open) / k.open, 0) / bull_bars.length;
+    const base_body_pcts = base_klines.map(k => Math.abs(k.close - k.open) / k.open).sort((a, b) => a - b);
+    const mid = Math.floor(base_body_pcts.length / 2);
+    const base_median_body_pct = base_body_pcts.length % 2 === 0
+      ? (base_body_pcts[mid - 1] + base_body_pcts[mid]) / 2
+      : base_body_pcts[mid];
+    const multiplier = amplitude / start_price >= CONFIG.amplitude_multiplier_threshold
+      ? CONFIG.amplitude_multiplier_large
+      : CONFIG.amplitude_multiplier;
+    if (wave_avg_body_pct < base_median_body_pct * multiplier) return null;
 
     const avg_volume = seq.reduce((s, k) => s + k.volume, 0) / seq.length;
 
