@@ -212,8 +212,8 @@ export class TrendFollowRepository extends BaseRepository {
       const params: any[] = [];
 
       if (!options.deleted && !options.state) {
-        // 默认不传 state 时过滤掉废弃
-        sql += " AND state != 'ABANDONED'";
+        // 默认不传 state 时只返回活跃状态
+        sql += " AND state IN ('WATCHING', 'ALERTED')";
       }
       if (options.state) {
         sql += ' AND state = ?';

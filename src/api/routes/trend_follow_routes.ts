@@ -126,18 +126,24 @@ router.get('/watch-contexts', async (req: Request, res: Response): Promise<void>
       limit = '200',
     } = req.query as Record<string, string>;
 
+    const is_deleted = deleted === 'true';
     const contexts = await get_repository().get_watch_contexts({
       symbol,
       timeframe,
       state,
-      deleted: deleted === 'true',
+      deleted: is_deleted,
       limit: Number(limit),
     });
 
+    // 已删除的记录 state 统一返回 DELETED
+    const data = is_deleted
+      ? contexts.map(c => ({ ...c, state: 'DELETED' }))
+      : contexts;
+
     res.json({
       success: true,
-      data:  contexts,
-      count: contexts.length,
+      data,
+      count: data.length,
     });
   } catch (error: any) {
     logger.error('[TrendFollow API] get_watch_contexts failed:', error);

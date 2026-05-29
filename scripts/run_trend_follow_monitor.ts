@@ -29,6 +29,7 @@ import {
   TrendFollowService,
   TrendAlert,
   AbandonEvent,
+  BreakthroughEvent,
   UnifiedKline,
   Timeframe,
 } from '@/services/trend_follow_service';
@@ -96,8 +97,15 @@ function print_alert(alert: TrendAlert): void {
 
 function print_abandon(event: AbandonEvent): void {
   const tf_label = event.timeframe.toUpperCase();
+  console.log(`\n⚫ [废弃] [${tf_label}] ${event.symbol}  ${event.reason}`);
+}
+
+function print_breakthrough(event: BreakthroughEvent): void {
+  const tf_label = event.timeframe.toUpperCase();
+  const time_str = beijing_time(event.kline_time);
   console.log(
-    `\n⚫ [废弃] [${tf_label}] ${event.symbol}  ${event.reason}`
+    `\n🚀 [突破] [${tf_label}] [${time_str}] ${event.symbol}` +
+    `  第一波高点: ${event.wave.end_price.toFixed(4)}  突破价: ${event.breakthrough_price.toFixed(4)}`
   );
 }
 
@@ -388,6 +396,10 @@ async function main(): Promise<void> {
   trend_service.on_abandon((event) => {
     stats.abandoned++;
     print_abandon(event);
+  });
+
+  trend_service.on_breakthrough((event) => {
+    print_breakthrough(event);
   });
 
   trend_service.on_context_change(async (ctx, current_price) => {

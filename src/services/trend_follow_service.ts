@@ -16,7 +16,7 @@ import { AggregatedKline } from '@/core/data/kline_aggregator';
 // ==================== 类型定义 ====================
 
 export type Timeframe = '5m' | '15m' | '1h' | '4h';
-export type WatchState = 'IDLE' | 'DETECTING' | 'WATCHING' | 'ALERTED' | 'ABANDONED';
+export type WatchState = 'IDLE' | 'DETECTING' | 'WATCHING' | 'ALERTED' | 'ABANDONED' | 'BREAKTHROUGH';
 export type AlertLevel = 0 | 1 | 2 | 3;
 
 /** 统一K线格式（5m 和聚合K线都转换为此格式） */
@@ -89,6 +89,15 @@ export interface AbandonEvent {
   wave: FirstWave;
 }
 
+/** 突破事件 */
+export interface BreakthroughEvent {
+  symbol: string;
+  timeframe: Timeframe;
+  wave: FirstWave;
+  breakthrough_price: number;   // 突破确认价（收盘价）
+  kline_time: number;
+}
+
 // ==================== 配置 ====================
 
 const CONFIG = {
@@ -114,8 +123,12 @@ const CONFIG = {
 
   // Lv0 高位横盘缩量
   lv0_max_pullback: 0.236,          // 回调幅度 < 23.6%
-  lv0_min_shrink_bars: 3,           // 连续缩量根数 >= 3
+  lv0_min_shrink_bars: 3,           // 连续缩量根数 >= 3（绝对缩量条件）
   lv0_max_bear_body_ratio: 0.5,     // 单根阴线跌幅 < 第一波振幅 × 50%
+  lv0_range_shrink_ratio: 0.6,      // 波动收窄：当前K线振幅 < 第一波平均振幅 × 60%
+
+  // 突破确认
+  breakthrough_volume_ratio: 0.8,   // 突破K线成交量 >= 第一波均量 × 0.8
 
   // 止跌形态（末端止跌信号）
   reversal_upper_shadow_max: 0.3,   // 上影线 <= 30% 振幅
@@ -138,6 +151,7 @@ export class TrendFollowService {
   // 回调: 触发报警时调用
   private on_alert_cb?: (alert: TrendAlert) => void;
   private on_abandon_cb?: (event: AbandonEvent) => void;
+  private on_breakthrough_cb?: (event: BreakthroughEvent) => void;
   // db_id 存在时为更新，不存在时为新建（回调需返回 db_id 写回 ctx）
   private on_context_change_cb?: (ctx: WatchContext, current_price: number) => Promise<number | undefined>;
 
@@ -149,6 +163,11 @@ export class TrendFollowService {
   /** 注册废弃回调 */
   on_abandon(cb: (event: AbandonEvent) => void): void {
     this.on_abandon_cb = cb;
+  }
+
+  /** 注册突破回调 */
+  on_breakthrough(cb: (event: BreakthroughEvent) => void): void {
+    this.on_breakthrough_cb = cb;
   }
 
   /** 注册观察区状态变更回调。db_id 不存在时为新建，回调应返回新建的 id；存在时为更新，返回值忽略 */
@@ -316,6 +335,16 @@ export class TrendFollowService {
       case 'ALERTED':
         this._update_pullback(ctx, cache, kline);
         break;
+      case 'BREAKTHROUGH':
+        // 突破后重置，等待下一次机会
+        ctx.state = 'IDLE';
+        ctx.wave = undefined;
+        ctx.pullback = undefined;
+        ctx.last_alert_level = undefined;
+        ctx.watch_start_time = undefined;
+        ctx.abandoned_reason = undefined;
+        this._detect_first_wave(ctx, cache, kline);
+        break;
       case 'ABANDONED':
         // 重置为 IDLE 等待下一波
         ctx.state = 'IDLE';
@@ -478,19 +507,25 @@ export class TrendFollowService {
     const is_bear = current.close < current.open;
     const body = Math.abs(current.close - current.open);
 
-    // 如果当前仍是阳线且创新高，继续累加第一波数据
-    if (is_bull && current.high > wave.end_price) {
-      wave.bar_count++;
-      wave.end_price = current.high;
-      wave.amplitude = wave.end_price - wave.start_price;
-      wave.end_time = current.close_time;
-      wave.avg_volume = (wave.avg_volume * (wave.bar_count - 1) + current.volume) / wave.bar_count;
-      pb.bar_count = 0;
-      pb.lowest_price = current.low;
-      pb.min_volume = current.volume;
-      pb.avg_volume = current.volume;
+    // 收盘价突破第一波高点 + 成交量确认 → 突破
+    if (current.close > wave.end_price &&
+        current.volume >= wave.avg_volume * CONFIG.breakthrough_volume_ratio) {
+      ctx.state = 'BREAKTHROUGH';
+      this.on_breakthrough_cb?.({
+        symbol: ctx.symbol,
+        timeframe: ctx.timeframe,
+        wave,
+        breakthrough_price: current.close,
+        kline_time: current.open_time,
+      });
       this._fire_context_change(ctx, current.close);
       return;
+    }
+
+    // 仅影线创新高（假突破），更新高点但不触发突破
+    if (current.high > wave.end_price) {
+      wave.end_price = current.high;
+      wave.amplitude = wave.end_price - wave.start_price;
     }
 
     // 更新回调统计
@@ -510,11 +545,17 @@ export class TrendFollowService {
     const pullback_ratio = (wave.end_price - pb.lowest_close) / wave.amplitude;
 
     // ---- Lv0：高位横盘缩量 ----
-    const is_shrink = current.volume < wave.avg_volume * CONFIG.volume_shrink_ratio;
+    // 波动收窄：当前K线振幅 < 第一波平均振幅 × 60%
+    const wave_avg_range = wave.amplitude / wave.bar_count;
+    const cur_range = current.high - current.low;
+    const is_range_shrink = cur_range < wave_avg_range * CONFIG.lv0_range_shrink_ratio;
+    // 成交量缩减：< 第一波均量 × 50%
+    const is_vol_shrink = current.volume < wave.avg_volume * CONFIG.volume_shrink_ratio;
     const bear_body = current.close < current.open ? (current.open - current.close) : 0;
     const no_big_bear = bear_body < wave.amplitude * CONFIG.lv0_max_bear_body_ratio;
 
-    if (is_shrink && no_big_bear) {
+    // 两种缩量条件之一满足 + 无大阴线
+    if ((is_vol_shrink || is_range_shrink) && no_big_bear) {
       ctx.consecutive_shrink_bars = (ctx.consecutive_shrink_bars ?? 0) + 1;
     } else {
       ctx.consecutive_shrink_bars = 0;
