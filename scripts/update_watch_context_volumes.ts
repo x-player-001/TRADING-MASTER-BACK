@@ -76,7 +76,7 @@ async function main(): Promise<void> {
       abandoned_reason:     ctx.abandoned_reason ?? null,
     });
 
-    const vol_str = volume >= 1e8 ? (volume / 1e8).toFixed(2) + '亿' : (volume / 1e4).toFixed(0) + '万';
+    const vol_str = (volume / 1e6).toFixed(1) + 'M';
     console.log(`✅ ${ctx.symbol.padEnd(12)} ${ctx.timeframe.padEnd(4)} ${vol_str}`);
     updated++;
 
