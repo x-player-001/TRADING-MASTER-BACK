@@ -129,6 +129,7 @@ const CONFIG = {
 
   // 突破确认
   breakthrough_volume_ratio: 0.8,   // 突破K线成交量 >= 第一波均量 × 0.8
+  breakthrough_min_pullback_bars: 3, // 至少回调了N根K线才允许判突破
 
   // 止跌形态（末端止跌信号）
   reversal_upper_shadow_max: 0.3,   // 上影线 <= 30% 振幅
@@ -507,9 +508,10 @@ export class TrendFollowService {
     const is_bear = current.close < current.open;
     const body = Math.abs(current.close - current.open);
 
-    // 收盘价突破第一波高点 + 成交量确认 → 突破
+    // 收盘价突破第一波高点 + 成交量确认 + 至少有N根回调 → 突破
     if (current.close > wave.end_price &&
-        current.volume >= wave.avg_volume * CONFIG.breakthrough_volume_ratio) {
+        current.volume >= wave.avg_volume * CONFIG.breakthrough_volume_ratio &&
+        pb.bar_count >= CONFIG.breakthrough_min_pullback_bars) {
       ctx.state = 'BREAKTHROUGH';
       this.on_breakthrough_cb?.({
         symbol: ctx.symbol,
@@ -520,12 +522,6 @@ export class TrendFollowService {
       });
       this._fire_context_change(ctx, current.close);
       return;
-    }
-
-    // 仅影线创新高（假突破），更新高点但不触发突破
-    if (current.high > wave.end_price) {
-      wave.end_price = current.high;
-      wave.amplitude = wave.end_price - wave.start_price;
     }
 
     // 更新回调统计
