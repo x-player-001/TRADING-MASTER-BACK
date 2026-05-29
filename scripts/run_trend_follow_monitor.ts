@@ -111,6 +111,38 @@ function print_breakthrough(event: BreakthroughEvent): void {
 
 // ==================== K线处理 ====================
 
+/** 更新某币种所有活跃观察区的24h成交额 */
+async function update_quote_volume_for_symbol(symbol: string): Promise<void> {
+  const contexts = trend_service.get_watching_contexts().filter(c => c.symbol === symbol && c.db_id !== undefined);
+  if (contexts.length === 0) return;
+
+  const volume = await fetch_quote_volume(symbol);
+  if (volume === null) return;
+
+  for (const ctx of contexts) {
+    if (!ctx.wave || !ctx.pullback || !ctx.db_id) continue;
+    trend_follow_repository.update_watch_context(ctx.db_id, {
+      symbol:                ctx.symbol,
+      timeframe:             ctx.timeframe,
+      state:                 ctx.state,
+      wave_start_price:      ctx.wave.start_price,
+      wave_end_price:        ctx.wave.end_price,
+      wave_amplitude_pct:    (ctx.wave.amplitude / ctx.wave.start_price) * 100,
+      wave_bar_count:        ctx.wave.bar_count,
+      wave_avg_volume:       ctx.wave.avg_volume,
+      wave_end_time:         ctx.wave.end_time,
+      pullback_lowest_price: ctx.pullback.lowest_price,
+      pullback_bar_count:    ctx.pullback.bar_count,
+      pullback_avg_volume:   ctx.pullback.avg_volume,
+      current_price:         ctx.pullback.lowest_close,
+      quote_volume_24h:      volume,
+      last_alert_level:      ctx.last_alert_level ?? null,
+      watch_start_time:      ctx.watch_start_time ?? Date.now(),
+      abandoned_reason:      ctx.abandoned_reason ?? null,
+    }).catch(err => console.error(`更新成交额失败 ${symbol}:`, err.message));
+  }
+}
+
 async function process_kline(symbol: string, kline_raw: any): Promise<void> {
   if (CONFIG.blacklist.has(symbol)) return;
 
@@ -135,7 +167,10 @@ async function process_kline(symbol: string, kline_raw: any): Promise<void> {
     console.error(`DB write error ${symbol}:`, err.message);
   });
 
-  // 3. 聚合 → 15m / 1h / 4h
+  // 3. 每根5m K线完结后，更新该币种所有活跃观察区的24h成交额（异步，不阻塞）
+  update_quote_volume_for_symbol(symbol);
+
+  // 4. 聚合 → 15m / 1h / 4h
   const aggregated = kline_aggregator.process_5m_kline(kline_data);
   for (const agg of aggregated) {
     trend_service.process_aggregated_kline(agg);
