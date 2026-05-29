@@ -129,7 +129,7 @@ const CONFIG = {
 
   // 突破确认
   breakthrough_volume_ratio: 0.8,   // 突破K线成交量 >= 第一波均量 × 0.8
-  breakthrough_min_pullback_bars: 3, // 至少回调了N根K线才允许判突破
+  breakthrough_min_pullback_bars: 6, // 至少回调了N根K线才允许判突破
 
   // 止跌形态（末端止跌信号）
   reversal_upper_shadow_max: 0.3,   // 上影线 <= 30% 振幅
