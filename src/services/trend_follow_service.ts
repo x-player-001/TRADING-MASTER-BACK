@@ -510,20 +510,37 @@ export class TrendFollowService {
     const is_bear = current.close < current.open;
     const body = Math.abs(current.close - current.open);
 
-    // 收盘价突破第一波高点 + 成交量确认 + 至少有N根回调 → 突破
-    if (current.close > wave.end_price &&
-        current.volume >= wave.avg_volume * CONFIG.breakthrough_volume_ratio &&
-        pb.bar_count >= CONFIG.breakthrough_min_pullback_bars) {
-      ctx.state = 'BREAKTHROUGH';
-      this.on_breakthrough_cb?.({
-        symbol: ctx.symbol,
-        timeframe: ctx.timeframe,
-        wave,
-        breakthrough_price: current.close,
-        kline_time: current.open_time,
-      });
-      this._fire_context_change(ctx, current.close);
-      return;
+    // 收盘价超过第一波高点
+    if (current.close > wave.end_price) {
+      if (pb.bar_count < CONFIG.breakthrough_min_pullback_bars) {
+        // 回调根数不足 → 第一波尚未结束，继续累加
+        wave.bar_count++;
+        wave.end_price = current.close;
+        wave.amplitude = wave.end_price - wave.start_price;
+        wave.end_time = current.close_time;
+        wave.avg_volume = (wave.avg_volume * (wave.bar_count - 1) + current.volume) / wave.bar_count;
+        pb.bar_count = 0;
+        pb.lowest_price = current.low;
+        pb.lowest_close = current.close;
+        pb.min_volume = current.volume;
+        pb.avg_volume = current.volume;
+        this._fire_context_change(ctx, current.close);
+        return;
+      }
+      // 已有足够回调 + 成交量确认 → 突破
+      if (current.volume >= wave.avg_volume * CONFIG.breakthrough_volume_ratio) {
+        ctx.state = 'BREAKTHROUGH';
+        this.on_breakthrough_cb?.({
+          symbol: ctx.symbol,
+          timeframe: ctx.timeframe,
+          wave,
+          breakthrough_price: current.close,
+          kline_time: current.open_time,
+        });
+        this._fire_context_change(ctx, current.close);
+        return;
+      }
+      // 有回调但量不足，不算突破，继续观察（fall through 到回调统计）
     }
 
     // 更新回调统计
