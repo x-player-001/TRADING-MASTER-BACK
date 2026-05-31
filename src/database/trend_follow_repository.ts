@@ -25,6 +25,8 @@ export interface TrendFollowAlertRecord {
   fib_zone: string;                         // 斐波那契区间描述
   volume_shrink: boolean;                   // 是否缩量
   reversal_signal: boolean;                 // 是否出现止跌形态
+  ema20_support: boolean;                   // 回调低点在 EMA20 ±5% 范围内
+  ema20?: number | null;                    // EMA20 值
   created_at?: Date;
 }
 
@@ -72,6 +74,8 @@ export class TrendFollowRepository extends BaseRepository {
         fib_zone            VARCHAR(50)   NOT NULL,
         volume_shrink       TINYINT(1)    NOT NULL DEFAULT 0,
         reversal_signal     TINYINT(1)    NOT NULL DEFAULT 0,
+        ema20_support       TINYINT(1)    NOT NULL DEFAULT 0,
+        ema20               DECIMAL(20,8) NULL,
         created_at  TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
 
         UNIQUE KEY uk_symbol_tf_time_level (symbol, timeframe, kline_time, alert_level),
@@ -270,8 +274,8 @@ export class TrendFollowRepository extends BaseRepository {
         `INSERT IGNORE INTO trend_follow_alerts
          (symbol, timeframe, alert_level, kline_time, current_price,
           wave_start_price, wave_end_price, wave_amplitude_pct, wave_bar_count,
-          pullback_ratio, fib_zone, volume_shrink, reversal_signal)
-         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+          pullback_ratio, fib_zone, volume_shrink, reversal_signal, ema20_support, ema20)
+         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
         [
           record.symbol,
           record.timeframe,
@@ -286,6 +290,8 @@ export class TrendFollowRepository extends BaseRepository {
           record.fib_zone,
           record.volume_shrink ? 1 : 0,
           record.reversal_signal ? 1 : 0,
+          record.ema20_support ? 1 : 0,
+          record.ema20 ?? null,
         ]
       );
       return result.insertId;
@@ -402,6 +408,8 @@ export class TrendFollowRepository extends BaseRepository {
       fib_zone:             row.fib_zone,
       volume_shrink:        row.volume_shrink === 1,
       reversal_signal:      row.reversal_signal === 1,
+      ema20_support:        row.ema20_support === 1,
+      ema20:                row.ema20 ? parseFloat(row.ema20) : null,
       created_at:           row.created_at,
     };
   }

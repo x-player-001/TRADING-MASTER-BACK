@@ -85,13 +85,15 @@ function print_alert(alert: TrendAlert): void {
   const time_str = beijing_time(alert.kline_time);
   const shrink_str = alert.volume_shrink ? '缩量✅' : '未缩量';
   const reversal_str = alert.reversal_signal ? ' 止跌形态✅' : '';
+  const ema20_str = alert.ema20_support
+    ? ` EMA20支撑✅(${alert.ema20?.toFixed(4)})` : '';
 
   console.log(
     `\n${level_emoji} [Lv${alert.alert_level}] [${tf_label}] [${time_str}] ${alert.symbol}  第二波入场机会`
   );
   console.log(`   第一波: ${alert.wave.start_price.toFixed(4)} → ${alert.wave.end_price.toFixed(4)}` +
     `  幅度 ${((alert.wave.amplitude / alert.wave.start_price) * 100).toFixed(2)}%  ${alert.wave.bar_count}根K线`);
-  console.log(`   回调区间: ${alert.fib_zone}  ${shrink_str}${reversal_str}`);
+  console.log(`   回调区间: ${alert.fib_zone}  ${shrink_str}${reversal_str}${ema20_str}`);
   console.log(`   当前价: ${alert.current_price.toFixed(4)}`);
 }
 
@@ -428,6 +430,8 @@ async function main(): Promise<void> {
       fib_zone:           alert.fib_zone,
       volume_shrink:      alert.volume_shrink,
       reversal_signal:    alert.reversal_signal,
+      ema20_support:      alert.ema20_support,
+      ema20:              alert.ema20 ?? null,
     }).catch(err => console.error(`DB write alert error:`, err.message));
   });
 

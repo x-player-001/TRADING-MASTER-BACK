@@ -79,6 +79,8 @@ export interface TrendAlert {
   fib_zone: string;             // 斐波那契区间描述
   volume_shrink: boolean;       // 是否缩量
   reversal_signal: boolean;     // 是否出现止跌形态
+  ema20_support: boolean;       // 回调低点在 EMA20 ±5% 范围内
+  ema20: number | null;         // 当前 EMA20 值
   current_price: number;
   kline_time: number;
 }
@@ -145,6 +147,10 @@ const CONFIG = {
   reversal_upper_shadow_max: 0.3,   // 上影线 <= 30% 振幅
   reversal_lower_shadow_min: 0.3,   // 下影线 >= 30% 振幅（或十字星实体 <= 10%）
   reversal_doji_body_max: 0.10,     // 十字星实体 <= 10% 振幅
+
+  // EMA20 支撑判断
+  ema20_period: 20,
+  ema20_support_range: 0.05,    // 回调低点在 EMA20 ±5% 范围内视为 EMA20 支撑
 
   // 缓存大小
   max_cache_size: 200,
@@ -664,6 +670,11 @@ export class TrendFollowService {
 
     const fib_zone = this._fib_zone_label(pullback_ratio);
 
+    // EMA20 支撑判断：回调最低价（影线）在 EMA20 ±5% 范围内
+    const ema20 = this._calc_ema(cache, CONFIG.ema20_period);
+    const ema20_support = ema20 !== null &&
+      Math.abs(pb.lowest_price - ema20) / ema20 <= CONFIG.ema20_support_range;
+
     const alert: TrendAlert = {
       symbol: ctx.symbol,
       timeframe: ctx.timeframe,
@@ -674,6 +685,8 @@ export class TrendFollowService {
       fib_zone,
       volume_shrink,
       reversal_signal: reversal,
+      ema20_support,
+      ema20,
       current_price: current.close,
       kline_time: current.open_time,
     };
@@ -730,6 +743,17 @@ export class TrendFollowService {
       && upper_shadow / range <= CONFIG.reversal_upper_shadow_max;
 
     return is_doji || is_hammer;
+  }
+
+  /** 计算 EMA，返回最新一根的值，不足 period 根时返回 null */
+  private _calc_ema(cache: UnifiedKline[], period: number): number | null {
+    if (cache.length < period) return null;
+    const k = 2 / (period + 1);
+    let ema = cache.slice(0, period).reduce((s, c) => s + c.close, 0) / period;
+    for (let i = period; i < cache.length; i++) {
+      ema = cache[i].close * k + ema * (1 - k);
+    }
+    return ema;
   }
 
   private _fib_zone_label(ratio: number): string {
