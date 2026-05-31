@@ -228,7 +228,8 @@ export class TrendFollowRepository extends BaseRepository {
         params.push(options.timeframe);
       }
 
-      sql += options.deleted ? ' ORDER BY updated_at DESC' : ' ORDER BY watch_start_time DESC';
+      const use_updated_at = options.deleted || options.state === 'BREAKTHROUGH';
+      sql += use_updated_at ? ' ORDER BY updated_at DESC' : ' ORDER BY watch_start_time DESC';
 
       if (options.limit) {
         sql += ' LIMIT ?';
