@@ -107,7 +107,7 @@ const CONFIG = {
   min_consecutive_bull: 4,          // 最少连续阳线根数
   allow_small_bear_gap: 2,          // 允许中间夹的小阴线根数（实体 < 平均实体 30%）
   min_body_ratio: 0.30,             // 连续阳线中实体占比 >= 30% 的根数比例
-  min_body_ratio_bars: 0.75,        // 满足实体占比的根数 >= 总根数 75%
+  min_body_ratio_bars: 0.60,        // 满足实体占比的根数 >= 总根数 60%
   amplitude_multiplier: 1.1,        // 第一波平均实体涨幅% >= 基准中位数 × 1.1
   min_wave_amplitude_pct: 0.05,     // 第一波涨幅 >= 5%（相对起涨价）
   min_bar_range_pct: 0.005,         // 波内K线振幅(high-low)/open >= 0.5%，否则不计入
@@ -511,10 +511,11 @@ export class TrendFollowService {
       : base_body_pcts[mid];
     if (wave_avg_body_pct < base_median_body_pct * CONFIG.amplitude_multiplier) return null;
 
-    // 第一波高点必须是近150根内最高点（过滤震荡行情）
+    // 第一波影线高点必须是近150根内最高点（过滤震荡行情）
+    const wave_high = Math.max(...seq.map(k => k.high));
     const lookback_start = Math.max(0, len - CONFIG.wave_high_lookback);
     const lookback_high = Math.max(...cache.slice(lookback_start, len).map(k => k.high));
-    if (end_price < lookback_high) return null;
+    if (wave_high < lookback_high) return null;
 
     const avg_volume = seq.reduce((s, k) => s + k.volume, 0) / seq.length;
 
