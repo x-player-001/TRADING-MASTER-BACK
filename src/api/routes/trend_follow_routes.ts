@@ -8,7 +8,12 @@
 
 import { Router, Request, Response } from 'express';
 import { TrendFollowRepository } from '@/database/trend_follow_repository';
+import { KlineAggregator } from '@/core/data/kline_aggregator';
+import { Kline5mRepository } from '@/database/kline_5m_repository';
 import { logger } from '@/utils/logger';
+
+const kline_aggregator = new KlineAggregator();
+const kline_5m_repo = new Kline5mRepository();
 
 const router = Router();
 
@@ -221,6 +226,63 @@ router.delete('/alerts/cleanup', async (req: Request, res: Response): Promise<vo
     res.json({ success: true, deleted });
   } catch (error: any) {
     logger.error('[TrendFollow API] cleanup failed:', error);
+    res.status(500).json({ success: false, error: error.message });
+  }
+});
+
+/**
+ * GET /api/trend-follow/klines/:symbol/:timeframe
+ * 查询观察区币种K线数据（支持5m/15m/1h/4h聚合分表）
+ *
+ * Path params:
+ *   symbol    - 币种，如 BTCUSDT
+ *   timeframe - 周期，5m / 15m / 1h / 4h
+ *
+ * Query params:
+ *   limit     - 返回根数，默认 150，最大 500
+ */
+router.get('/klines/:symbol/:timeframe', async (req: Request, res: Response): Promise<void> => {
+  try {
+    const { symbol, timeframe } = req.params;
+    const limit = Math.min(Number(req.query.limit ?? 150), 500);
+    const symbol_upper = symbol.toUpperCase();
+
+    let klines: any[] = [];
+
+    if (timeframe === '5m') {
+      const rows = await kline_5m_repo.get_recent_klines(symbol_upper, limit);
+      klines = rows.map(k => ({
+        open_time:  k.open_time,
+        close_time: k.close_time,
+        open:       k.open,
+        high:       k.high,
+        low:        k.low,
+        close:      k.close,
+        volume:     k.volume,
+      }));
+    } else if (['15m', '1h', '4h'].includes(timeframe)) {
+      const end_time = Date.now();
+      const interval_ms: Record<string, number> = { '15m': 15*60*1000, '1h': 60*60*1000, '4h': 4*60*60*1000 };
+      const start_time = end_time - limit * interval_ms[timeframe] * 1.5; // 多取一些保证够数
+      const rows = await kline_aggregator.get_klines_from_db(symbol_upper, timeframe, start_time, end_time);
+      // 取最新 limit 根
+      klines = rows.slice(-limit).map(k => ({
+        open_time:  k.open_time,
+        close_time: k.close_time,
+        open:       k.open,
+        high:       k.high,
+        low:        k.low,
+        close:      k.close,
+        volume:     k.volume,
+      }));
+    } else {
+      res.status(400).json({ success: false, error: `不支持的周期: ${timeframe}` });
+      return;
+    }
+
+    res.json({ success: true, data: klines, count: klines.length });
+  } catch (error: any) {
+    logger.error('[TrendFollow API] get_klines failed:', error);
     res.status(500).json({ success: false, error: error.message });
   }
 });
