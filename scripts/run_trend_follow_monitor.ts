@@ -119,6 +119,9 @@ async function update_quote_volume_for_symbol(symbol: string): Promise<void> {
   const volume = await fetch_quote_volume(symbol);
   if (volume === null) return;
 
+  // 同步到内存，供废弃条件判断使用
+  trend_service.update_quote_volume(symbol, volume);
+
   for (const ctx of contexts) {
     if (!ctx.wave || !ctx.pullback || !ctx.db_id) continue;
     trend_follow_repository.update_watch_context(ctx.db_id, {

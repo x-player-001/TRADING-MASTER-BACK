@@ -64,6 +64,7 @@ export interface WatchContext {
   watch_start_time?: number;
   abandoned_reason?: string;
   consecutive_shrink_bars?: number;  // 当前连续缩量根数（Lv0用）
+  quote_volume_24h?: number | null;  // 24h成交额，由外部写入
 }
 
 /** 报警结果 */
@@ -117,9 +118,16 @@ const CONFIG = {
   fib_50: 0.500,
   fib_62: 0.618,
   fib_abandon: 0.800,        // 废弃门槛（影线回调 > 80%）
+  max_pullback_bars: 60,     // 回调根数超过此值废弃
 
   volume_shrink_ratio: 0.5,         // 回调均量 < 第一波均量 × 0.5 认为缩量
   min_alert_bars_multiplier: 1,     // 最小等待K线数 = 第一波根数 × 1，之后才开始检测报警
+
+  // 第一波高点必须是近N根内最高点
+  wave_high_lookback: 150,          // 回溯根数
+  // 成交额过滤：进入观察区后超过此时间（ms）仍低于门槛则废弃
+  min_quote_volume: 5_000_000,      // 5M USDT
+  quote_volume_check_delay_ms: 30 * 60 * 1000, // 进入30分钟后检查
 
   // Lv0 高位横盘缩量
   lv0_max_pullback: 0.236,          // 回调幅度 < 23.6%
@@ -272,6 +280,15 @@ export class TrendFollowService {
       abandoned_reason: record.abandoned_reason ?? undefined,
     };
     this.watch_contexts.set(key, ctx);
+  }
+
+  /** 更新某币种所有观察区的成交额（由外部监控脚本写入） */
+  update_quote_volume(symbol: string, volume: number): void {
+    for (const ctx of this.watch_contexts.values()) {
+      if (ctx.symbol === symbol && (ctx.state === 'WATCHING' || ctx.state === 'ALERTED')) {
+        ctx.quote_volume_24h = volume;
+      }
+    }
   }
 
   /** 获取所有观察中的上下文（用于状态打印） */
@@ -490,6 +507,11 @@ export class TrendFollowService {
       : base_body_pcts[mid];
     if (wave_avg_body_pct < base_median_body_pct * CONFIG.amplitude_multiplier) return null;
 
+    // 第一波高点必须是近150根内最高点（过滤震荡行情）
+    const lookback_start = Math.max(0, len - CONFIG.wave_high_lookback);
+    const lookback_high = Math.max(...cache.slice(lookback_start, len).map(k => k.high));
+    if (end_price < lookback_high) return null;
+
     const avg_volume = seq.reduce((s, k) => s + k.volume, 0) / seq.length;
 
     return {
@@ -558,10 +580,24 @@ export class TrendFollowService {
     pb.avg_volume = (pb.avg_volume * (pb.bar_count - 1) + current.volume) / pb.bar_count;
     pb.min_volume = Math.min(pb.min_volume, current.volume);
 
-    // ---- 废弃条件：用影线最低价，门槛 80% ----
+    // ---- 废弃条件1：影线回调超过 80% ----
     const abandon_ratio = (wave.end_price - pb.lowest_price) / wave.amplitude;
     if (abandon_ratio > CONFIG.fib_abandon) {
       return this._abandon(ctx, wave, `回调幅度 ${(abandon_ratio * 100).toFixed(1)}% 超过 80%`);
+    }
+
+    // ---- 废弃条件2：回调根数超限 ----
+    if (pb.bar_count > CONFIG.max_pullback_bars) {
+      return this._abandon(ctx, wave, `回调根数 ${pb.bar_count} 超过 ${CONFIG.max_pullback_bars} 根`);
+    }
+
+    // ---- 废弃条件3：进入30分钟后成交额仍低于5M ----
+    const elapsed = current.open_time - (ctx.watch_start_time ?? current.open_time);
+    if (elapsed >= CONFIG.quote_volume_check_delay_ms &&
+        ctx.quote_volume_24h !== undefined &&
+        ctx.quote_volume_24h !== null &&
+        ctx.quote_volume_24h < CONFIG.min_quote_volume) {
+      return this._abandon(ctx, wave, `24h成交额 ${(ctx.quote_volume_24h / 1e6).toFixed(2)}M 低于 5M`);
     }
 
     // 报警等级使用收盘价最低点计算回调比例
