@@ -585,7 +585,12 @@ export class TrendFollowService {
     pb.avg_volume = (pb.avg_volume * (pb.bar_count - 1) + current.volume) / pb.bar_count;
     pb.min_volume = Math.min(pb.min_volume, current.volume);
 
-    // ---- 废弃条件1：收盘价回调超过75%，且连续2根 ----
+    // ---- 废弃条件1：影线跌破起涨价，直接废弃 ----
+    if (pb.lowest_price < wave.start_price) {
+      return this._abandon(ctx, wave, `影线跌破起涨价 ${wave.start_price.toFixed(4)}`);
+    }
+
+    // ---- 废弃条件2：收盘价回调超过75%，且连续2根 ----
     const close_pullback_ratio = (wave.end_price - current.close) / wave.amplitude;
     if (close_pullback_ratio > CONFIG.fib_abandon) {
       ctx.consecutive_deep_pullback_bars = (ctx.consecutive_deep_pullback_bars ?? 0) + 1;
