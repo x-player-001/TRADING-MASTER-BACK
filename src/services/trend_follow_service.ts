@@ -63,8 +63,9 @@ export interface WatchContext {
   last_alert_level?: AlertLevel;
   watch_start_time?: number;
   abandoned_reason?: string;
-  consecutive_shrink_bars?: number;  // 当前连续缩量根数（Lv0用）
-  quote_volume_24h?: number | null;  // 24h成交额，由外部写入
+  consecutive_shrink_bars?: number;       // 当前连续缩量根数（Lv0用）
+  consecutive_deep_pullback_bars?: number; // 连续收盘价回调超过75%的根数
+  quote_volume_24h?: number | null;        // 24h成交额，由外部写入
 }
 
 /** 报警结果 */
@@ -117,8 +118,9 @@ const CONFIG = {
   fib_38: 0.382,
   fib_50: 0.500,
   fib_62: 0.618,
-  fib_abandon: 0.800,        // 废弃门槛（影线回调 > 80%）
-  max_pullback_bars: 60,     // 回调根数超过此值废弃
+  fib_abandon: 0.750,              // 废弃门槛（收盘价回调 > 75%，连续2根）
+  fib_abandon_confirm_bars: 2,     // 连续N根收盘价超过门槛才废弃
+  max_pullback_bars: 60,           // 回调根数超过此值废弃
 
   volume_shrink_ratio: 0.5,         // 回调均量 < 第一波均量 × 0.5 认为缩量
   min_alert_bars_multiplier: 1,     // 最小等待K线数 = 第一波根数 × 1，之后才开始检测报警
@@ -278,6 +280,7 @@ export class TrendFollowService {
       last_alert_level: (record.last_alert_level ?? undefined) as AlertLevel | undefined,
       watch_start_time: record.watch_start_time,
       abandoned_reason: record.abandoned_reason ?? undefined,
+      consecutive_deep_pullback_bars: 0,
     };
     this.watch_contexts.set(key, ctx);
   }
@@ -408,6 +411,7 @@ export class TrendFollowService {
     };
     ctx.last_alert_level = undefined;
     ctx.consecutive_shrink_bars = 0;
+    ctx.consecutive_deep_pullback_bars = 0;
     // 新建记录，回调返回 db_id 写回 ctx
     if (this.on_context_change_cb) {
       this.on_context_change_cb({ ...ctx }, current.close).then(id => {
@@ -580,10 +584,15 @@ export class TrendFollowService {
     pb.avg_volume = (pb.avg_volume * (pb.bar_count - 1) + current.volume) / pb.bar_count;
     pb.min_volume = Math.min(pb.min_volume, current.volume);
 
-    // ---- 废弃条件1：影线回调超过 80% ----
-    const abandon_ratio = (wave.end_price - pb.lowest_price) / wave.amplitude;
-    if (abandon_ratio > CONFIG.fib_abandon) {
-      return this._abandon(ctx, wave, `回调幅度 ${(abandon_ratio * 100).toFixed(1)}% 超过 80%`);
+    // ---- 废弃条件1：收盘价回调超过75%，且连续2根 ----
+    const close_pullback_ratio = (wave.end_price - current.close) / wave.amplitude;
+    if (close_pullback_ratio > CONFIG.fib_abandon) {
+      ctx.consecutive_deep_pullback_bars = (ctx.consecutive_deep_pullback_bars ?? 0) + 1;
+    } else {
+      ctx.consecutive_deep_pullback_bars = 0;
+    }
+    if ((ctx.consecutive_deep_pullback_bars ?? 0) >= CONFIG.fib_abandon_confirm_bars) {
+      return this._abandon(ctx, wave, `收盘价回调 ${(close_pullback_ratio * 100).toFixed(1)}% 连续 ${ctx.consecutive_deep_pullback_bars} 根超过 75%`);
     }
 
     // ---- 废弃条件2：回调根数超限 ----
