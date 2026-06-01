@@ -21,8 +21,10 @@ import volume_monitor_routes, { set_volume_monitor_repository } from './routes/v
 import pattern_scan_routes, { set_pattern_scan_service } from './routes/pattern_scan_routes';
 import orderbook_monitor_routes, { set_orderbook_service } from './routes/orderbook_monitor_routes';
 import trend_follow_routes, { set_trend_follow_repository } from './routes/trend_follow_routes';
+import ema20_push_routes, { set_ema20_push_repository } from './routes/ema20_push_routes';
 import { VolumeMonitorRepository } from '@/database/volume_monitor_repository';
 import { TrendFollowRepository } from '@/database/trend_follow_repository';
+import { EMA20PushRepository } from '@/database/ema20_push_repository';
 import { PatternScanService } from '@/services/pattern_scan_service';
 import { OrderBookMonitorService } from '@/services/orderbook_monitor_service';
 import { BinanceDepthUpdate } from '@/types/orderbook_types';
@@ -54,6 +56,7 @@ export class APIServer {
   private pattern_scan_service: PatternScanService;
   private orderbook_monitor_service: OrderBookMonitorService;
   private trend_follow_repository: TrendFollowRepository;
+  private ema20_push_repository: EMA20PushRepository;
   private ws_depth: WebSocket | null = null;
 
   constructor(oi_data_manager: OIDataManager, port: number = 3000) {
@@ -77,11 +80,13 @@ export class APIServer {
     this.pattern_scan_service = new PatternScanService();
     this.orderbook_monitor_service = new OrderBookMonitorService();
     this.trend_follow_repository = new TrendFollowRepository();
+    this.ema20_push_repository = new EMA20PushRepository();
     this.setup_middleware();
     this.setup_routes();
     this.init_volume_monitor_services();
     this.init_orderbook_monitor_service();
     this.init_trend_follow_services();
+    this.init_ema20_push_services();
   }
 
   /**
@@ -128,6 +133,16 @@ export class APIServer {
       logger.info('[APIServer] Trend follow services initialized');
     } catch (error) {
       logger.error('[APIServer] Failed to init trend follow services:', error);
+    }
+  }
+
+  private async init_ema20_push_services(): Promise<void> {
+    try {
+      await this.ema20_push_repository.init_tables();
+      set_ema20_push_repository(this.ema20_push_repository);
+      logger.info('[APIServer] EMA20 push services initialized');
+    } catch (error) {
+      logger.error('[APIServer] Failed to init ema20 push services:', error);
     }
   }
 
@@ -336,6 +351,9 @@ export class APIServer {
 
     // 趋势跟随报警路由
     this.app.use('/api/trend-follow', trend_follow_routes);
+
+    // EMA20 均线推动路由
+    this.app.use('/api/ema20-push', ema20_push_routes);
 
     // 系统状态
     this.app.get('/api/status', async (req: Request, res: Response) => {

@@ -34,6 +34,8 @@ import {
   Timeframe,
 } from '@/services/trend_follow_service';
 import { TrendFollowRepository } from '@/database/trend_follow_repository';
+import { EMA20PushService, EMA20PushAlert } from '@/services/ema20_push_service';
+import { EMA20PushRepository } from '@/database/ema20_push_repository';
 
 // ==================== 配置 ====================
 
@@ -51,6 +53,8 @@ let kline_5m_repository: Kline5mRepository;
 let kline_aggregator: KlineAggregator;
 let trend_service: TrendFollowService;
 let trend_follow_repository: TrendFollowRepository;
+let ema20_push_service: EMA20PushService;
+let ema20_push_repository: EMA20PushRepository;
 
 
 const stats = {
@@ -108,6 +112,18 @@ function print_breakthrough(event: BreakthroughEvent): void {
   console.log(
     `\n🚀 [突破] [${tf_label}] [${time_str}] ${event.symbol}` +
     `  第一波高点: ${event.wave.end_price.toFixed(4)}  突破价: ${event.breakthrough_price.toFixed(4)}`
+  );
+}
+
+function print_ema20_push(alert: EMA20PushAlert): void {
+  const tf_label = alert.timeframe.toUpperCase();
+  const time_str = beijing_time(alert.kline_time);
+  const dist_str = alert.push_record.distance_pct >= 0
+    ? `+${alert.push_record.distance_pct.toFixed(2)}%`
+    : `${alert.push_record.distance_pct.toFixed(2)}%`;
+  console.log(
+    `\n📈 [EMA20推动×${alert.push_count}] [${tf_label}] [${time_str}] ${alert.symbol}` +
+    `  涨幅 ${alert.amplitude_pct.toFixed(2)}%  EMA20=${alert.ema20.toFixed(4)}(${dist_str})`
   );
 }
 
@@ -179,6 +195,8 @@ async function process_kline(symbol: string, kline_raw: any): Promise<void> {
   const aggregated = kline_aggregator.process_5m_kline(kline_data);
   for (const agg of aggregated) {
     trend_service.process_aggregated_kline(agg);
+    // EMA20 推动监控
+    ema20_push_service.process_kline(agg);
   }
 }
 
@@ -314,6 +332,8 @@ async function preload_history(symbols: string[]): Promise<void> {
             volume: k.volume,
           }));
           trend_service.init_cache(symbol, tf as Timeframe, unified);
+          // 预热 EMA20 缓存
+          ema20_push_service.init_cache(symbol, tf as any, agg_klines);
         }
       }
 
@@ -406,6 +426,35 @@ async function main(): Promise<void> {
   trend_service = new TrendFollowService();
   trend_follow_repository = new TrendFollowRepository();
   await trend_follow_repository.init_tables();
+  ema20_push_service = new EMA20PushService();
+  ema20_push_repository = new EMA20PushRepository();
+  await ema20_push_repository.init_tables();
+
+  // EMA20 推动回调
+  ema20_push_service.on_push((alert) => {
+    print_ema20_push(alert);
+    const amplitude_pct = alert.amplitude_pct;
+    ema20_push_repository.upsert_context({
+      symbol:        alert.symbol,
+      timeframe:     alert.timeframe,
+      push_count:    alert.push_count,
+      start_price:   alert.current_price / (1 + amplitude_pct / 100),
+      current_price: alert.current_price,
+      amplitude_pct,
+      ema20:         alert.ema20,
+      last_push_time: alert.kline_time,
+    }).catch(err => console.error('EMA20 upsert_context error:', err.message));
+    ema20_push_repository.insert_push_record({
+      symbol:       alert.symbol,
+      timeframe:    alert.timeframe,
+      push_index:   alert.push_record.push_index,
+      kline_time:   alert.push_record.kline_time,
+      low_price:    alert.push_record.low_price,
+      close_price:  alert.push_record.close_price,
+      ema20:        alert.push_record.ema20,
+      distance_pct: alert.push_record.distance_pct,
+    }).catch(err => console.error('EMA20 insert_push_record error:', err.message));
+  });
 
   // 注册回调
   trend_service.on_alert((alert) => {
