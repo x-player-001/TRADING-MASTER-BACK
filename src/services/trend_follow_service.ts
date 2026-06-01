@@ -131,7 +131,7 @@ const CONFIG = {
   wave_high_lookback: 150,          // 回溯根数
   // 成交额过滤：进入观察区后超过此时间（ms）仍低于门槛则废弃
   min_quote_volume: 5_000_000,      // 5M USDT
-  quote_volume_check_delay_ms: 30 * 60 * 1000, // 进入30分钟后检查
+  quote_volume_check_delay_bars: 3,             // 进入观察区N根K线后检查成交额
 
   // Lv0 高位横盘缩量
   lv0_max_pullback: 0.236,          // 回调幅度 < 23.6%
@@ -612,9 +612,8 @@ export class TrendFollowService {
       return this._abandon(ctx, wave, `回调根数 ${pb.bar_count} 超过 ${CONFIG.max_pullback_bars} 根`);
     }
 
-    // ---- 废弃条件3：进入30分钟后成交额仍低于5M ----
-    const elapsed = current.open_time - (ctx.watch_start_time ?? current.open_time);
-    if (elapsed >= CONFIG.quote_volume_check_delay_ms &&
+    // ---- 废弃条件3：进入N根K线后成交额仍低于5M ----
+    if (pb.bar_count >= CONFIG.quote_volume_check_delay_bars &&
         ctx.quote_volume_24h !== undefined &&
         ctx.quote_volume_24h !== null &&
         ctx.quote_volume_24h < CONFIG.min_quote_volume) {
