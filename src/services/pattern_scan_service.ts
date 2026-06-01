@@ -1288,7 +1288,11 @@ export class PatternScanService {
           const in_range = Math.abs(distance) <= request.support_range;
           const interval_ok = i - last_push_bar >= request.min_push_interval;
 
-          if (is_bull && in_range && interval_ok) {
+          // 每次推动收盘价必须高于上一次（价格逐步抬高，排除横盘震荡）
+          const last_close = pushes.length > 0 ? pushes[pushes.length - 1].close_price : 0;
+          const higher_close = (bar.close as number) > last_close;
+
+          if (is_bull && in_range && interval_ok && higher_close) {
             if (pushes.length === 0) start_price = bar.close as number;
             pushes.push({
               push_index:   pushes.length + 1,
