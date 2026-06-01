@@ -102,8 +102,9 @@ export interface SurgeEmaPullbackScanRequest {
 export interface EMA20PushScanRequest {
   interval: string;           // K线周期: 15m / 1h / 4h
   lookback_bars: number;      // 分析的K线数量，默认 200
+  ema_period: number;         // EMA 周期，默认 20
   min_push_count: number;     // 最少推动次数，默认 2
-  support_range: number;      // EMA20 ±范围（小数），默认 0.05
+  support_range: number;      // EMA ±范围（小数），默认 0.05
   min_push_interval: number;  // 两次推动最少间隔根数，默认 3
   end_time?: number;          // 最后一根K线时间 (ms)，默认当前时间
 }
@@ -1252,7 +1253,7 @@ export class PatternScanService {
 
     logger.info(`[PatternScan] EMA20 push scan: ${symbols.length} symbols, min_push=${request.min_push_count}, range=±${(request.support_range * 100).toFixed(0)}%`);
 
-    const ema_period = 20;
+    const ema_period = request.ema_period;
     const k = 2 / (ema_period + 1);
 
     for (const symbol of symbols) {
