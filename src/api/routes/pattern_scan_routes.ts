@@ -10,6 +10,7 @@
  * - POST   /api/pattern-scan/surge-ema-pullback 扫描上涨回调靠近EMA形态（自定义参数）
  * - POST   /api/pattern-scan/pullback-v2     扫描上涨回调形态改进版（精准识别起涨高低点）
  * - POST   /api/pattern-scan/single-candle   扫描单根K线形态（自定义参数）
+ * - POST   /api/pattern-scan/ema20-push      扫描EMA20多次推动形态（历史数据）
  * - GET    /api/pattern-scan/tasks           获取任务列表
  * - GET    /api/pattern-scan/tasks/:task_id  获取任务状态
  * - GET    /api/pattern-scan/results/:task_id 获取扫描结果
@@ -1292,6 +1293,60 @@ router.delete('/all', async (req: Request, res: Response) => {
       success: false,
       error: error.message
     });
+  }
+});
+
+/**
+ * POST /api/pattern-scan/ema20-push
+ * 扫描 EMA20 多次推动形态（对历史数据扫描）
+ *
+ * 请求体参数:
+ * - interval:          K线周期 15m/1h/4h，默认 1h
+ * - lookback_bars:     分析的K线数量，默认 200
+ * - min_push_count:    最少推动次数，默认 2
+ * - support_range:     EMA20 ±范围（小数），默认 0.05
+ * - min_push_interval: 两次推动最少间隔根数，默认 3
+ * - end_time:          最后一根K线时间 (ms)，默认当前时间
+ */
+router.post('/ema20-push', async (req: Request, res: Response): Promise<void> => {
+  try {
+    const {
+      interval = '1h',
+      lookback_bars = 200,
+      min_push_count = 2,
+      support_range = 0.05,
+      min_push_interval = 3,
+      end_time,
+    } = req.body;
+
+    const valid_intervals = ['15m', '1h', '4h'];
+    if (!valid_intervals.includes(interval)) {
+      res.status(400).json({ success: false, error: `interval 只支持 ${valid_intervals.join(', ')}` });
+      return;
+    }
+
+    const parsed_end_time = end_time ? Number(end_time) : undefined;
+    const service = get_service();
+    const results = await service.scan_ema20_push({
+      interval,
+      lookback_bars: Number(lookback_bars),
+      min_push_count: Number(min_push_count),
+      support_range: Number(support_range),
+      min_push_interval: Number(min_push_interval),
+      end_time: parsed_end_time,
+    });
+
+    res.json({
+      success: true,
+      data: {
+        params: { interval, lookback_bars, min_push_count, support_range, min_push_interval, end_time: parsed_end_time },
+        results,
+        count: results.length,
+      },
+    });
+  } catch (error: any) {
+    logger.error('[PatternScan API] EMA20 push scan failed:', error);
+    res.status(500).json({ success: false, error: error.message });
   }
 });
 

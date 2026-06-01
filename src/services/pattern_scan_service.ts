@@ -97,6 +97,37 @@ export interface SurgeEmaPullbackScanRequest {
 }
 
 /**
+ * EMA20 推动扫描请求参数
+ */
+export interface EMA20PushScanRequest {
+  interval: string;           // K线周期: 15m / 1h / 4h
+  lookback_bars: number;      // 分析的K线数量，默认 200
+  min_push_count: number;     // 最少推动次数，默认 2
+  support_range: number;      // EMA20 ±范围（小数），默认 0.05
+  min_push_interval: number;  // 两次推动最少间隔根数，默认 3
+  end_time?: number;          // 最后一根K线时间 (ms)，默认当前时间
+}
+
+export interface EMA20PushScanResult {
+  symbol: string;
+  push_count: number;
+  amplitude_pct: number;      // 第一次推动以来涨幅
+  start_price: number;
+  current_price: number;
+  ema20: number;
+  last_push_time: number;
+  pushes: Array<{
+    push_index: number;
+    kline_time: number;
+    low_price: number;
+    close_price: number;
+    ema20: number;
+    distance_pct: number;
+  }>;
+  kline_interval: string;
+}
+
+/**
  * 单根K线形态扫描请求参数
  */
 export interface SingleCandleScanRequest {
@@ -1206,6 +1237,94 @@ export class PatternScanService {
 
     logger.info(`[PatternScan] Pullback v2 scan completed: ${results.length} patterns found`);
 
+    return results;
+  }
+
+  /** 扫描 EMA20 多次推动形态（历史数据） */
+  async scan_ema20_push(request: EMA20PushScanRequest): Promise<EMA20PushScanResult[]> {
+    const results: EMA20PushScanResult[] = [];
+    const symbols = await this.get_symbols_from_db(request.interval);
+
+    if (symbols.length === 0) {
+      logger.warn(`[PatternScan] EMA20 push scan: 数据库中没有 ${request.interval} K线数据`);
+      return results;
+    }
+
+    logger.info(`[PatternScan] EMA20 push scan: ${symbols.length} symbols, min_push=${request.min_push_count}, range=±${(request.support_range * 100).toFixed(0)}%`);
+
+    const ema_period = 20;
+    const k = 2 / (ema_period + 1);
+
+    for (const symbol of symbols) {
+      if (this.blacklist.has(symbol)) continue;
+
+      try {
+        const klines = await this.get_klines_from_db_only(symbol, request.interval, request.lookback_bars, request.end_time);
+        if (klines.length < ema_period + request.min_push_count) continue;
+
+        // 计算 EMA20 序列
+        const closes = klines.map(k => k.close as number);
+        let ema = closes.slice(0, ema_period).reduce((s, c) => s + c, 0) / ema_period;
+        const emas: number[] = new Array(ema_period - 1).fill(null);
+        emas.push(ema);
+        for (let i = ema_period; i < closes.length; i++) {
+          ema = closes[i] * k + ema * (1 - k);
+          emas.push(ema);
+        }
+
+        // 扫描推动
+        const pushes: EMA20PushScanResult['pushes'] = [];
+        let last_push_bar = -request.min_push_interval - 1;
+        let start_price = 0;
+
+        for (let i = ema_period; i < klines.length; i++) {
+          const bar = klines[i];
+          const cur_ema = emas[i];
+          if (cur_ema === null) continue;
+
+          const is_bull = (bar.close as number) > (bar.open as number);
+          const distance = ((bar.low as number) - cur_ema) / cur_ema;
+          const in_range = Math.abs(distance) <= request.support_range;
+          const interval_ok = i - last_push_bar >= request.min_push_interval;
+
+          if (is_bull && in_range && interval_ok) {
+            if (pushes.length === 0) start_price = bar.close as number;
+            pushes.push({
+              push_index:   pushes.length + 1,
+              kline_time:   bar.open_time as number,
+              low_price:    bar.low as number,
+              close_price:  bar.close as number,
+              ema20:        cur_ema,
+              distance_pct: distance * 100,
+            });
+            last_push_bar = i;
+          }
+        }
+
+        if (pushes.length < request.min_push_count) continue;
+
+        const last = klines[klines.length - 1];
+        const current_price = last.close as number;
+        const amplitude_pct = start_price > 0 ? (current_price - start_price) / start_price * 100 : 0;
+
+        results.push({
+          symbol,
+          push_count:    pushes.length,
+          amplitude_pct,
+          start_price,
+          current_price,
+          ema20:         emas[emas.length - 1] ?? 0,
+          last_push_time: pushes[pushes.length - 1].kline_time,
+          pushes,
+          kline_interval: request.interval,
+        });
+      } catch (error) {
+        logger.debug(`[PatternScan] EMA20 push scan failed for ${symbol}: ${error}`);
+      }
+    }
+
+    results.sort((a, b) => b.push_count - a.push_count || b.amplitude_pct - a.amplitude_pct);
+    logger.info(`[PatternScan] EMA20 push scan completed: ${results.length} symbols found`);
     return results;
   }
 }
