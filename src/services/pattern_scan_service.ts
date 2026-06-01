@@ -100,13 +100,14 @@ export interface SurgeEmaPullbackScanRequest {
  * EMA20 推动扫描请求参数
  */
 export interface EMA20PushScanRequest {
-  interval: string;           // K线周期: 15m / 1h / 4h
-  lookback_bars: number;      // 分析的K线数量，默认 200
-  ema_period: number;         // EMA 周期，默认 20
-  min_push_count: number;     // 最少推动次数，默认 2
-  support_range: number;      // EMA ±范围（小数），默认 0.05
-  min_push_interval: number;  // 两次推动最少间隔根数，默认 3
-  end_time?: number;          // 最后一根K线时间 (ms)，默认当前时间
+  interval: string;             // K线周期: 15m / 1h / 4h
+  lookback_bars: number;        // 分析的K线数量，默认 200
+  ema_period: number;           // EMA 周期，默认 20
+  min_push_count: number;       // 最少推动次数，默认 2
+  support_range: number;        // EMA ±范围（小数），默认 0.05
+  min_push_interval: number;    // 两次推动最少间隔根数，默认 3
+  max_close_above_ema: number;  // 推动时收盘价高于EMA的最大幅度（小数），默认 0.08
+  end_time?: number;            // 最后一根K线时间 (ms)，默认当前时间
 }
 
 export interface EMA20PushScanResult {
@@ -1288,11 +1289,15 @@ export class PatternScanService {
           const in_range = Math.abs(distance) <= request.support_range;
           const interval_ok = i - last_push_bar >= request.min_push_interval;
 
+          // 收盘价必须在EMA上方（排除空头走势），且不能距EMA太远（排除高位回调）
+          const close_dist = ((bar.close as number) - cur_ema) / cur_ema;
+          const close_above_ema = close_dist > 0 && close_dist <= request.max_close_above_ema;
+
           // 每次推动收盘价必须高于上一次（价格逐步抬高，排除横盘震荡）
           const last_close = pushes.length > 0 ? pushes[pushes.length - 1].close_price : 0;
           const higher_close = (bar.close as number) > last_close;
 
-          if (is_bull && in_range && interval_ok && higher_close) {
+          if (is_bull && in_range && interval_ok && higher_close && close_above_ema) {
             if (pushes.length === 0) start_price = bar.close as number;
             pushes.push({
               push_index:   pushes.length + 1,

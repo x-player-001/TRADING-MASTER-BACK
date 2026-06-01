@@ -1305,8 +1305,9 @@ router.delete('/all', async (req: Request, res: Response) => {
  * - lookback_bars:     分析的K线数量，默认 200
  * - ema_period:        EMA 周期，默认 20（可选 10/20/50/60 等）
  * - min_push_count:    最少推动次数，默认 2
- * - support_range:     EMA ±范围（小数），默认 0.05
- * - min_push_interval: 两次推动最少间隔根数，默认 3
+ * - support_range:        EMA ±范围（小数），默认 0.05
+ * - min_push_interval:   两次推动最少间隔根数，默认 3
+ * - max_close_above_ema: 推动时收盘价高于EMA的最大幅度（小数），默认 0.08
  * - end_time:          最后一根K线时间 (ms)，默认当前时间
  */
 router.post('/ema20-push', async (req: Request, res: Response): Promise<void> => {
@@ -1318,6 +1319,7 @@ router.post('/ema20-push', async (req: Request, res: Response): Promise<void> =>
       min_push_count = 2,
       support_range = 0.05,
       min_push_interval = 3,
+      max_close_above_ema = 0.08,
       end_time,
     } = req.body;
 
@@ -1331,18 +1333,19 @@ router.post('/ema20-push', async (req: Request, res: Response): Promise<void> =>
     const service = get_service();
     const results = await service.scan_ema20_push({
       interval,
-      lookback_bars:     Number(lookback_bars),
-      ema_period:        Number(ema_period),
-      min_push_count:    Number(min_push_count),
-      support_range:     Number(support_range),
-      min_push_interval: Number(min_push_interval),
-      end_time:          parsed_end_time,
+      lookback_bars:        Number(lookback_bars),
+      ema_period:           Number(ema_period),
+      min_push_count:       Number(min_push_count),
+      support_range:        Number(support_range),
+      min_push_interval:    Number(min_push_interval),
+      max_close_above_ema:  Number(max_close_above_ema),
+      end_time:             parsed_end_time,
     });
 
     res.json({
       success: true,
       data: {
-        params: { interval, lookback_bars, ema_period, min_push_count, support_range, min_push_interval, end_time: parsed_end_time },
+        params: { interval, lookback_bars, ema_period, min_push_count, support_range, min_push_interval, max_close_above_ema, end_time: parsed_end_time },
         results,
         count: results.length,
       },
