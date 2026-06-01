@@ -56,6 +56,7 @@ const CONFIG = {
   ema20_period: 20,
   support_range: 0.05,       // EMA20 ±5% 范围
   min_push_interval: 3,      // 两次推动最少间隔根数
+  min_amplitude_pct: 5,      // 第一次推动到当前价最小涨幅%
   max_cache_size: 200,
 };
 
@@ -172,6 +173,9 @@ export class EMA20PushService {
       ctx.pushes.push(record);
 
       const amplitude_pct = (kline.close - ctx.start_price) / ctx.start_price * 100;
+
+      // 涨幅不足时不触发回调（但推动已计入ctx，等待涨幅达标后下次推动时触发）
+      if (amplitude_pct < CONFIG.min_amplitude_pct) return;
 
       this.on_push_cb?.({
         symbol:       kline.symbol,
