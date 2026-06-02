@@ -1308,6 +1308,9 @@ router.delete('/all', async (req: Request, res: Response) => {
  * - support_range:        EMA ±范围（小数），默认 0.05
  * - min_push_interval:   两次推动最少间隔根数，默认 3
  * - max_close_above_ema: 推动时收盘价高于EMA的最大幅度（小数），默认 0.08
+ * - ema_slope_bars:      EMA斜率回溯根数，默认 5
+ * - ema_slope_min_pct:   EMA在slope_bars内最小上涨幅度（小数），默认 0.005
+ * - max_below_ema_ratio: 推动区间内收盘跌破EMA的最大比例，默认 0.2
  * - end_time:          最后一根K线时间 (ms)，默认当前时间
  */
 router.post('/ema20-push', async (req: Request, res: Response): Promise<void> => {
@@ -1320,6 +1323,9 @@ router.post('/ema20-push', async (req: Request, res: Response): Promise<void> =>
       support_range = 0.05,
       min_push_interval = 3,
       max_close_above_ema = 0.08,
+      ema_slope_bars = 5,
+      ema_slope_min_pct = 0.005,
+      max_below_ema_ratio = 0.25,
       end_time,
     } = req.body;
 
@@ -1339,6 +1345,9 @@ router.post('/ema20-push', async (req: Request, res: Response): Promise<void> =>
       support_range:        Number(support_range),
       min_push_interval:    Number(min_push_interval),
       max_close_above_ema:  Number(max_close_above_ema),
+      ema_slope_bars:       Number(ema_slope_bars),
+      ema_slope_min_pct:    Number(ema_slope_min_pct),
+      max_below_ema_ratio:  Number(max_below_ema_ratio),
       end_time:             parsed_end_time,
     });
 

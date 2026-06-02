@@ -107,6 +107,9 @@ export interface EMA20PushScanRequest {
   support_range: number;        // EMA ±范围（小数），默认 0.05
   min_push_interval: number;    // 两次推动最少间隔根数，默认 3
   max_close_above_ema: number;  // 推动时收盘价高于EMA的最大幅度（小数），默认 0.08
+  ema_slope_bars: number;       // EMA斜率检查回溯根数，默认 5
+  ema_slope_min_pct: number;    // EMA在slope_bars内最小上涨幅度（小数），默认 0.005
+  max_below_ema_ratio: number;  // 推动区间内收盘跌破EMA的最大比例，默认 0.2
   end_time?: number;            // 最后一根K线时间 (ms)，默认当前时间
 }
 
@@ -1316,6 +1319,19 @@ export class PatternScanService {
         const last = klines[klines.length - 1];
         const current_price = last.close as number;
         const amplitude_pct = start_price > 0 ? (current_price - start_price) / start_price * 100 : 0;
+
+        // 条件1：EMA斜率检查 — 当前EMA必须高于N根前的EMA（均线本身在上升）
+        const last_ema = emas[emas.length - 1]!;
+        const slope_ref_idx = emas.length - 1 - request.ema_slope_bars;
+        const slope_ref_ema = slope_ref_idx >= 0 ? emas[slope_ref_idx] : null;
+        if (!slope_ref_ema || (last_ema - slope_ref_ema) / slope_ref_ema < request.ema_slope_min_pct) continue;
+
+        // 条件2：推动区间内收盘跌破EMA的根数不超过max_below_ema_ratio
+        const first_push_time = pushes[0].kline_time;
+        const push_bars = klines.filter(k => (k.open_time as number) >= first_push_time);
+        const below_count = push_bars.filter(k => (k.close as number) < emas[klines.indexOf(k)]!).length;
+        const below_ratio = push_bars.length > 0 ? below_count / push_bars.length : 0;
+        if (below_ratio > request.max_below_ema_ratio) continue;
 
         results.push({
           symbol,
