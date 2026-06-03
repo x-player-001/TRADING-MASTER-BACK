@@ -20,6 +20,7 @@ export interface EMA20PushContextRecord {
   amplitude_pct: number;
   ema20: number;
   last_push_time: number | null;
+  created_at?: Date;
   updated_at?: Date;
 }
 
@@ -50,6 +51,7 @@ export class EMA20PushRepository extends BaseRepository {
         amplitude_pct    DECIMAL(10,4) NOT NULL DEFAULT 0,
         ema20            DECIMAL(20,8) NOT NULL,
         last_push_time   BIGINT        NULL,
+        created_at       TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
         updated_at       TIMESTAMP DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
 
         UNIQUE KEY uk_symbol_tf (symbol, timeframe),
@@ -188,6 +190,7 @@ export class EMA20PushRepository extends BaseRepository {
       amplitude_pct:  parseFloat(row.amplitude_pct),
       ema20:          parseFloat(row.ema20),
       last_push_time: row.last_push_time ? Number(row.last_push_time) : null,
+      created_at:     row.created_at,
       updated_at:     row.updated_at,
     };
   }
