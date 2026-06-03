@@ -382,6 +382,42 @@ async function restore_watch_contexts(): Promise<void> {
   }
 }
 
+// ==================== 恢复 EMA20 推动状态 ====================
+
+async function restore_ema20_contexts(): Promise<void> {
+  try {
+    const contexts = await ema20_push_repository.get_contexts({ limit: 5000 });
+    let restored = 0;
+    for (const ctx of contexts) {
+      // 读取该币种周期的推动详细记录
+      const records = await ema20_push_repository.get_push_records(ctx.symbol, ctx.timeframe);
+      const pushes = records.map(r => ({
+        push_index:   r.push_index,
+        kline_time:   r.kline_time,
+        low_price:    r.low_price,
+        close_price:  r.close_price,
+        ema20:        r.ema20,
+        distance_pct: r.distance_pct,
+      }));
+      ema20_push_service.restore_context({
+        symbol:        ctx.symbol,
+        timeframe:     ctx.timeframe as any,
+        push_count:    ctx.push_count,
+        start_price:   ctx.start_price,
+        current_price: ctx.current_price,
+        amplitude_pct: ctx.amplitude_pct,
+        ema20:         ctx.ema20,
+        last_push_time: ctx.last_push_time,
+        pushes,
+      });
+      restored++;
+    }
+    console.log(`✅ 恢复 EMA20 推动状态: ${restored} 条`);
+  } catch (err: any) {
+    console.warn(`⚠️  恢复 EMA20 推动状态失败: ${err.message}`);
+  }
+}
+
 // ==================== 状态打印 ====================
 
 function print_status(): void {
@@ -540,6 +576,9 @@ async function main(): Promise<void> {
 
   // 恢复观察区状态
   await restore_watch_contexts();
+
+  // 恢复 EMA20 推动状态
+  await restore_ema20_contexts();
 
   // 启动 WebSocket
   await start_kline_websocket(symbols);

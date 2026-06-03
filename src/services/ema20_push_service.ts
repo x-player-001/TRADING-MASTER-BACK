@@ -202,9 +202,42 @@ export class EMA20PushService {
     return this.push_contexts.get(this._key(symbol, timeframe));
   }
 
+  /** 从数据库记录恢复上下文（冷启动时调用） */
+  restore_context(record: {
+    symbol: string;
+    timeframe: EMA20Timeframe;
+    push_count: number;
+    start_price: number;
+    current_price: number;
+    amplitude_pct: number;
+    ema20: number;
+    last_push_time: number | null;
+    pushes: EMA20PushRecord[];
+  }): void {
+    const key = this._key(record.symbol, record.timeframe);
+    if (this.push_contexts.has(key)) return; // 已有内存状态，不覆盖
+    const ctx: EMA20PushContext = {
+      symbol:              record.symbol,
+      timeframe:           record.timeframe,
+      push_count:          record.push_count,
+      pushes:              record.pushes,
+      ema20:               record.ema20,
+      current_price:       record.current_price,
+      start_price:         record.start_price,
+      last_push_time:      record.last_push_time,
+      last_push_bar_index: -CONFIG.min_push_interval - 1, // 重启后允许立即触发
+      bar_index:           0,
+      updated_at:          Date.now(),
+    };
+    this.push_contexts.set(key, ctx);
+    // EMA 缓存也需要恢复，否则下一根K线无法增量更新
+    this.ema_cache.set(key, record.ema20);
+  }
+
   /** 重置某币种某周期的推动计数（手动清除） */
   reset_context(symbol: string, timeframe: EMA20Timeframe): void {
     this.push_contexts.delete(this._key(symbol, timeframe));
+    this.ema_cache.delete(this._key(symbol, timeframe));
   }
 
   private _key(symbol: string, timeframe: EMA20Timeframe): string {
