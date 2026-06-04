@@ -103,13 +103,12 @@ export interface EMA20PushScanRequest {
   interval: string;             // K线周期: 15m / 1h / 4h
   lookback_bars: number;        // 分析的K线数量，默认 200
   ema_period: number;           // EMA 周期，默认 20
-  min_push_count: number;       // 最少推动次数，默认 2
-  support_range: number;        // EMA ±范围（小数），默认 0.05
-  min_push_interval: number;    // 两次推动最少间隔根数，默认 3
-  max_close_above_ema: number;  // 推动时收盘价高于EMA的最大幅度（小数），默认 0.08
+  min_push_count: number;       // 最少有效推动次数，默认 2
+  support_range: number;        // 起跳判定：影线进入 EMA ±范围（小数），默认 0.05
+  min_push_interval: number;    // 两次推动最少间隔根数，默认 10
+  min_push_gain_pct: number;    // 每次推动从起跳到最高点的最小涨幅（小数），默认 0.06
   ema_slope_bars: number;       // EMA斜率检查回溯根数，默认 5
   ema_slope_min_pct: number;    // EMA在slope_bars内最小上涨幅度（小数），默认 0.005
-  max_below_ema_ratio: number;  // 推动区间内收盘跌破EMA的最大比例，默认 0.2
   end_time?: number;            // 最后一根K线时间 (ms)，默认当前时间
 }
 
@@ -1277,41 +1276,64 @@ export class PatternScanService {
           emas.push(ema);
         }
 
-        // 扫描推动
+        // 扫描推动：找"从EMA起跳→最高点"涨幅 >= min_push_gain_pct 的有效推动
         const pushes: EMA20PushScanResult['pushes'] = [];
         let last_push_bar = -request.min_push_interval - 1;
         let start_price = 0;
+        let i = ema_period;
 
-        for (let i = ema_period; i < klines.length; i++) {
+        while (i < klines.length) {
           const bar = klines[i];
           const cur_ema = emas[i];
-          if (cur_ema === null) continue;
+          if (cur_ema === null) { i++; continue; }
 
-          const is_bull = (bar.close as number) > (bar.open as number);
-          const distance = ((bar.low as number) - cur_ema) / cur_ema;
-          const in_range = Math.abs(distance) <= request.support_range;
+          const c = bar.close as number;
+          const o = bar.open as number;
+          const lo = bar.low as number;
+
+          const is_bull = c > o;
+          const dist_low = (lo - cur_ema) / cur_ema;
+          const in_range = Math.abs(dist_low) <= request.support_range;
+          const close_above = c > cur_ema;
           const interval_ok = i - last_push_bar >= request.min_push_interval;
 
-          // 收盘价必须在EMA上方（排除空头走势），且不能距EMA太远（排除高位回调）
-          const close_dist = ((bar.close as number) - cur_ema) / cur_ema;
-          const close_above_ema = close_dist > 0 && close_dist <= request.max_close_above_ema;
+          if (is_bull && in_range && close_above && interval_ok) {
+            // 找到起跳点，向后追踪最高收盘价
+            const launch_price = c;
+            const launch_ema = cur_ema;
+            let peak_price = c;
+            let peak_idx = i;
+            let j = i + 1;
+            // 向后找：直到价格回到EMA附近（dist < support_range）或到末尾
+            while (j < klines.length) {
+              const nxt_ema = emas[j];
+              const nxt_close = klines[j].close as number;
+              if (nxt_close > peak_price) { peak_price = nxt_close; peak_idx = j; }
+              // 价格回落到EMA ±range，本次推动结束
+              if (nxt_ema && Math.abs((nxt_close - nxt_ema) / nxt_ema) <= request.support_range) break;
+              j++;
+            }
 
-          // 每次推动收盘价必须高于上一次（价格逐步抬高，排除横盘震荡）
-          const last_close = pushes.length > 0 ? pushes[pushes.length - 1].close_price : 0;
-          const higher_close = (bar.close as number) > last_close;
-
-          if (is_bull && in_range && interval_ok && higher_close && close_above_ema) {
-            if (pushes.length === 0) start_price = bar.close as number;
-            pushes.push({
-              push_index:   pushes.length + 1,
-              kline_time:   bar.open_time as number,
-              low_price:    bar.low as number,
-              close_price:  bar.close as number,
-              ema20:        cur_ema,
-              distance_pct: distance * 100,
-            });
-            last_push_bar = i;
+            const gain = (peak_price - launch_price) / launch_price;
+            if (gain >= request.min_push_gain_pct) {
+              const last_close = pushes.length > 0 ? pushes[pushes.length - 1].close_price : 0;
+              if (c > last_close) { // 起跳价逐步抬高
+                if (pushes.length === 0) start_price = launch_price;
+                pushes.push({
+                  push_index:   pushes.length + 1,
+                  kline_time:   bar.open_time as number,
+                  low_price:    lo,
+                  close_price:  c,
+                  ema20:        launch_ema,
+                  distance_pct: dist_low * 100,
+                });
+                last_push_bar = i;
+                i = j; // 跳到本次推动结束后继续扫
+                continue;
+              }
+            }
           }
+          i++;
         }
 
         if (pushes.length < request.min_push_count) continue;
@@ -1320,18 +1342,11 @@ export class PatternScanService {
         const current_price = last.close as number;
         const amplitude_pct = start_price > 0 ? (current_price - start_price) / start_price * 100 : 0;
 
-        // 条件1：EMA斜率检查 — 当前EMA必须高于N根前的EMA（均线本身在上升）
+        // EMA斜率检查：均线本身要上升
         const last_ema = emas[emas.length - 1]!;
         const slope_ref_idx = emas.length - 1 - request.ema_slope_bars;
         const slope_ref_ema = slope_ref_idx >= 0 ? emas[slope_ref_idx] : null;
         if (!slope_ref_ema || (last_ema - slope_ref_ema) / slope_ref_ema < request.ema_slope_min_pct) continue;
-
-        // 条件2：推动区间内收盘跌破EMA的根数不超过max_below_ema_ratio
-        const first_push_time = pushes[0].kline_time;
-        const push_bars = klines.filter(k => (k.open_time as number) >= first_push_time);
-        const below_count = push_bars.filter(k => (k.close as number) < emas[klines.indexOf(k)]!).length;
-        const below_ratio = push_bars.length > 0 ? below_count / push_bars.length : 0;
-        if (below_ratio > request.max_below_ema_ratio) continue;
 
         results.push({
           symbol,
