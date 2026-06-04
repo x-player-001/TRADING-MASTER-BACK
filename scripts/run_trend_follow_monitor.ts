@@ -487,6 +487,8 @@ async function main(): Promise<void> {
       kline_time:   alert.push_record.kline_time,
       low_price:    alert.push_record.low_price,
       close_price:  alert.push_record.close_price,
+      peak_price:   alert.push_record.peak_price,
+      gain_pct:     alert.push_record.gain_pct,
       ema20:        alert.push_record.ema20,
       distance_pct: alert.push_record.distance_pct,
     }).catch(err => console.error('EMA20 insert_push_record error:', err.message));

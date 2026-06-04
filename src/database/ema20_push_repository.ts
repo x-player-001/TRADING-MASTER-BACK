@@ -32,6 +32,8 @@ export interface EMA20PushDetailRecord {
   kline_time: number;
   low_price: number;
   close_price: number;
+  peak_price: number;
+  gain_pct: number;
   ema20: number;
   distance_pct: number;
   created_at?: Date;
@@ -69,6 +71,8 @@ export class EMA20PushRepository extends BaseRepository {
         kline_time   BIGINT        NOT NULL,
         low_price    DECIMAL(20,8) NOT NULL,
         close_price  DECIMAL(20,8) NOT NULL,
+        peak_price   DECIMAL(20,8) NOT NULL DEFAULT 0,
+        gain_pct     DECIMAL(10,4) NOT NULL DEFAULT 0,
         ema20        DECIMAL(20,8) NOT NULL,
         distance_pct DECIMAL(10,4) NOT NULL,
         created_at   TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
@@ -113,11 +117,12 @@ export class EMA20PushRepository extends BaseRepository {
     return this.execute_with_connection(async (conn) => {
       await conn.execute(
         `INSERT IGNORE INTO ema20_push_records
-         (symbol, timeframe, push_index, kline_time, low_price, close_price, ema20, distance_pct)
-         VALUES (?, ?, ?, ?, ?, ?, ?, ?)`,
+         (symbol, timeframe, push_index, kline_time, low_price, close_price, peak_price, gain_pct, ema20, distance_pct)
+         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
         [
           record.symbol, record.timeframe, record.push_index,
           record.kline_time, record.low_price, record.close_price,
+          record.peak_price, record.gain_pct,
           record.ema20, record.distance_pct,
         ]
       );
@@ -204,6 +209,8 @@ export class EMA20PushRepository extends BaseRepository {
       kline_time:   Number(row.kline_time),
       low_price:    parseFloat(row.low_price),
       close_price:  parseFloat(row.close_price),
+      peak_price:   parseFloat(row.peak_price),
+      gain_pct:     parseFloat(row.gain_pct),
       ema20:        parseFloat(row.ema20),
       distance_pct: parseFloat(row.distance_pct),
       created_at:   row.created_at,
