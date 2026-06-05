@@ -396,6 +396,8 @@ async function restore_ema20_contexts(): Promise<void> {
         kline_time:   r.kline_time,
         low_price:    r.low_price,
         close_price:  r.close_price,
+        peak_price:   r.peak_price,
+        gain_pct:     r.gain_pct,
         ema20:        r.ema20,
         distance_pct: r.distance_pct,
       }));
