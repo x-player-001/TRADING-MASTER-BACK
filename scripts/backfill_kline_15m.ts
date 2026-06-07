@@ -27,7 +27,7 @@ const CONFIG = {
   interval: '15m',
   interval_ms: 15 * 60 * 1000,
   batch_size: 1000,
-  request_delay_ms: 500,
+  request_delay_ms: 1200,         // 请求间隔（1200ms，约500权重/分钟）
   retry_delay_ms: 30000,
   max_retries: 3,
 };
@@ -91,15 +91,29 @@ async function ensure_table(conn: any, table: string): Promise<void> {
   `);
 }
 
+async function get_latest_15m_time(symbol: string, conn: any): Promise<number> {
+  // 查今天和昨天分表的最新时间
+  const today = new Date().toISOString().slice(0, 10).replace(/-/g, '');
+  const yesterday = new Date(Date.now() - 86400000).toISOString().slice(0, 10).replace(/-/g, '');
+  for (const d of [today, yesterday]) {
+    try {
+      const [r] = await conn.execute(`SELECT MAX(open_time) t FROM kline_15m_agg_${d} WHERE symbol=?`, [symbol]);
+      if (r[0].t) return Number(r[0].t);
+    } catch (e) {}
+  }
+  return 0;
+}
+
 async function backfill_symbol(
   symbol: string,
   start_time: number,
   end_time: number,
-  limit: number,
   conn: any
 ): Promise<number> {
-  // 计算实际起始时间：从 end_time 往前推 limit 根
-  const actual_start = Math.max(start_time, end_time - limit * CONFIG.interval_ms);
+  // 从数据库最新时间断点续传
+  const latest = await get_latest_15m_time(symbol, conn);
+  const actual_start = latest > start_time ? latest + CONFIG.interval_ms : start_time;
+  if (actual_start >= end_time) return -1; // -1 表示跳过
   let current = actual_start;
   let total = 0;
 
@@ -168,9 +182,10 @@ async function main() {
   let done = 0, failed = 0;
   for (const symbol of symbols) {
     try {
-      const n = await backfill_symbol(symbol, start_time, end_time, limit, connection);
+      const n = await backfill_symbol(symbol, start_time, end_time, connection);
       done++;
-      if (n > 0) process.stdout.write(`✅ ${symbol} +${n}根\n`);
+      if (n === -1) process.stdout.write(`⏭️  ${symbol} 已最新，跳过\n`);
+      else if (n > 0) process.stdout.write(`✅ ${symbol} +${n}根\n`);
     } catch (err: any) {
       failed++;
       console.error(`❌ ${symbol}: ${err.message}`);

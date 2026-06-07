@@ -25,11 +25,11 @@ import { Kline5mRepository, Kline5mData } from '../src/database/kline_5m_reposit
 // ==================== 配置 ====================
 const CONFIG = {
   interval: '5m',
-  interval_ms: 5 * 60 * 1000,     // 5分钟
-  batch_size: 1000,               // 每次API请求的K线数量
-  request_delay_ms: 500,          // 请求间隔，避免限流 (500ms)
-  retry_delay_ms: 10000,          // 429错误后等待时间 (10秒)
-  max_retries: 3                  // 最大重试次数
+  interval_ms: 5 * 60 * 1000,
+  batch_size: 1000,
+  request_delay_ms: 1200,         // 请求间隔（1200ms，约500权重/分钟）
+  retry_delay_ms: 30000,
+  max_retries: 3
 };
 
 // ==================== 解析命令行参数 ====================
@@ -242,21 +242,22 @@ async function main() {
     try {
       process.stdout.write(`\r${progress} ${symbol.padEnd(12)} 检查数据...`);
 
-      // 先检查是否已有数据
-      const { has_data, existing_count } = await check_existing_data(
-        kline_repository, symbol, start_ts, end_ts, expected_klines_per_symbol
-      );
+      // 查数据库最新时间，从断点续传
+      const { existing_count } = await check_existing_data(kline_repository, symbol, start_ts, end_ts, expected_klines_per_symbol);
+      const latest_klines = await kline_repository.get_recent_klines(symbol, 1);
+      const latest_ts = latest_klines.length > 0 ? latest_klines[0].open_time : 0;
+      const actual_start = latest_ts > start_ts ? latest_ts + CONFIG.interval_ms : start_ts;
 
-      if (has_data) {
+      if (actual_start >= end_ts) {
         stats.skipped++;
-        process.stdout.write(`\r${progress} ${symbol.padEnd(12)} ⏭️  已有 ${existing_count} 根K线，跳过\n`);
+        process.stdout.write(`\r${progress} ${symbol.padEnd(12)} ⏭️  已最新(${existing_count}根)，跳过\n`);
         continue;
       }
 
-      process.stdout.write(`\r${progress} ${symbol.padEnd(12)} 正在拉取...`);
+      process.stdout.write(`\r${progress} ${symbol.padEnd(12)} 从断点拉取...`);
 
-      // 拉取K线数据
-      const klines = await fetch_klines(symbol, start_ts, end_ts);
+      // 从断点开始拉取
+      const klines = await fetch_klines(symbol, actual_start, end_ts);
 
       if (klines.length === 0) {
         process.stdout.write(`\r${progress} ${symbol.padEnd(12)} ⚠️ 无数据\n`);
