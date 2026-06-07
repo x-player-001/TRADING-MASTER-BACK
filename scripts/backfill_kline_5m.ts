@@ -27,9 +27,10 @@ const CONFIG = {
   interval: '5m',
   interval_ms: 5 * 60 * 1000,
   batch_size: 1000,
-  request_delay_ms: 1200,         // 请求间隔（1200ms，约500权重/分钟）
+  request_delay_ms: 300,          // 单任务请求间隔（并发5时约1500权重/分钟）
   retry_delay_ms: 30000,
-  max_retries: 3
+  max_retries: 3,
+  concurrency: 5,
 };
 
 // ==================== 解析命令行参数 ====================
@@ -234,53 +235,41 @@ async function main() {
     start_time: Date.now()
   };
 
-  // 逐个处理交易对
-  for (const symbol of symbols) {
-    stats.processed++;
-    const progress = `[${stats.processed}/${stats.total_symbols}]`;
+  // 并发处理
+  const queue = [...symbols];
 
-    try {
-      process.stdout.write(`\r${progress} ${symbol.padEnd(12)} 检查数据...`);
-
-      // 查数据库最新时间，从断点续传
-      const { existing_count } = await check_existing_data(kline_repository, symbol, start_ts, end_ts, expected_klines_per_symbol);
-      const latest_klines = await kline_repository.get_recent_klines(symbol, 1);
-      const latest_ts = latest_klines.length > 0 ? latest_klines[0].open_time : 0;
-      const actual_start = latest_ts > start_ts ? latest_ts + CONFIG.interval_ms : start_ts;
-
-      if (actual_start >= end_ts) {
-        stats.skipped++;
-        process.stdout.write(`\r${progress} ${symbol.padEnd(12)} ⏭️  已最新(${existing_count}根)，跳过\n`);
-        continue;
+  async function worker(): Promise<void> {
+    const repo = new Kline5mRepository();
+    while (queue.length > 0) {
+      const symbol = queue.shift();
+      if (!symbol) break;
+      stats.processed++;
+      const progress = `[${stats.processed}/${stats.total_symbols}]`;
+      try {
+        const latest_klines = await repo.get_recent_klines(symbol, 1);
+        const latest_ts = latest_klines.length > 0 ? latest_klines[0].open_time : 0;
+        const actual_start = latest_ts > start_ts ? latest_ts + CONFIG.interval_ms : start_ts;
+        if (actual_start >= end_ts) {
+          stats.skipped++;
+          console.log(`${progress} ${symbol.padEnd(12)} ⏭️  已最新，跳过`);
+          continue;
+        }
+        const klines = await fetch_klines(symbol, actual_start, end_ts);
+        if (klines.length === 0) continue;
+        await repo.add_klines(klines);
+        stats.total_klines += klines.length;
+        stats.success++;
+        console.log(`${progress} ${symbol.padEnd(12)} ✅ +${klines.length}根`);
+      } catch (error: any) {
+        stats.failed++;
+        console.error(`${progress} ${symbol.padEnd(12)} ❌ ${error.message}`);
       }
-
-      process.stdout.write(`\r${progress} ${symbol.padEnd(12)} 从断点拉取...`);
-
-      // 从断点开始拉取
-      const klines = await fetch_klines(symbol, actual_start, end_ts);
-
-      if (klines.length === 0) {
-        process.stdout.write(`\r${progress} ${symbol.padEnd(12)} ⚠️ 无数据\n`);
-        continue;
-      }
-
-      // 写入数据库
-      await kline_repository.add_klines(klines);
-      stats.total_klines += klines.length;
-      stats.success++;
-
-      process.stdout.write(`\r${progress} ${symbol.padEnd(12)} ✅ ${klines.length} 根K线\n`);
-
-    } catch (error: any) {
-      stats.failed++;
-      process.stdout.write(`\r${progress} ${symbol.padEnd(12)} ❌ ${error.message}\n`);
     }
+    repo.stop_flush_timer();
+    await repo.flush();
   }
 
-  // 刷新缓冲区
-  console.log('\n💾 正在刷新写入缓冲区...');
-  kline_repository.stop_flush_timer();
-  await kline_repository.flush();
+  await Promise.all(Array.from({ length: CONFIG.concurrency }, () => worker()));
 
   // 打印统计
   const elapsed = Math.round((Date.now() - stats.start_time) / 1000);

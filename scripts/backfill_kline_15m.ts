@@ -27,9 +27,10 @@ const CONFIG = {
   interval: '15m',
   interval_ms: 15 * 60 * 1000,
   batch_size: 1000,
-  request_delay_ms: 1200,         // 请求间隔（1200ms，约500权重/分钟）
+  request_delay_ms: 300,          // 单任务请求间隔（并发5时约1500权重/分钟）
   retry_delay_ms: 30000,
   max_retries: 3,
+  concurrency: 5,                 // 并发数
 };
 
 function sleep(ms: number) { return new Promise(r => setTimeout(r, ms)); }
@@ -167,34 +168,51 @@ async function backfill_symbol(
 }
 
 async function main() {
-  const { start_time, end_time, symbols: arg_symbols, limit } = parse_args();
+  const { start_time, end_time, symbols: arg_symbols } = parse_args();
 
   ConfigManager.getInstance().initialize();
-  const connection = await DatabaseConfig.get_mysql_connection();
 
   const start_str = new Date(start_time).toISOString().slice(0, 16);
   const end_str   = new Date(end_time).toISOString().slice(0, 16);
-  console.log(`\n📦 15m K线补全: ${start_str} ~ ${end_str}  limit=${limit}`);
+  console.log(`\n📦 15m K线补全: ${start_str} ~ ${end_str}  并发=${CONFIG.concurrency}`);
 
   const symbols = arg_symbols ?? await get_all_symbols();
   console.log(`📋 共 ${symbols.length} 个合约\n`);
 
-  let done = 0, failed = 0;
-  for (const symbol of symbols) {
-    try {
-      const n = await backfill_symbol(symbol, start_time, end_time, connection);
-      done++;
-      if (n === -1) process.stdout.write(`⏭️  ${symbol} 已最新，跳过\n`);
-      else if (n > 0) process.stdout.write(`✅ ${symbol} +${n}根\n`);
-    } catch (err: any) {
-      failed++;
-      console.error(`❌ ${symbol}: ${err.message}`);
+  let done = 0, skipped = 0, failed = 0, total_klines = 0;
+  const start_ts = Date.now();
+
+  const queue = [...symbols];
+
+  async function worker(): Promise<void> {
+    while (queue.length > 0) {
+      const symbol = queue.shift();
+      if (!symbol) break;
+      const conn = await DatabaseConfig.get_mysql_connection();
+      try {
+        const n = await backfill_symbol(symbol, start_time, end_time, conn);
+        if (n === -1) {
+          skipped++;
+        } else {
+          done++;
+          total_klines += n;
+          if (n > 0) console.log(`✅ [${done + skipped}/${symbols.length}] ${symbol} +${n}根`);
+        }
+      } catch (err: any) {
+        failed++;
+        console.error(`❌ ${symbol}: ${err.message}`);
+      } finally {
+        conn.release();
+      }
     }
-    if (done % 50 === 0) console.log(`进度: ${done}/${symbols.length}`);
   }
 
-  connection.release();
-  console.log(`\n完成: 成功 ${done} 个，失败 ${failed} 个`);
+  // 启动并发工作线程
+  const workers = Array.from({ length: CONFIG.concurrency }, () => worker());
+  await Promise.all(workers);
+
+  const elapsed = Math.round((Date.now() - start_ts) / 1000);
+  console.log(`\n完成: 新增 ${done} 个，跳过 ${skipped} 个，失败 ${failed} 个，共 ${total_klines} 根K线，耗时 ${elapsed}s`);
 }
 
 main().catch(err => { console.error('Fatal:', err); process.exit(1); });

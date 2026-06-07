@@ -28,10 +28,11 @@ import { DatabaseConfig } from '../src/core/config/database';
 
 // ==================== 配置 ====================
 const CONFIG = {
-  request_delay_ms: 1200,         // 请求间隔（1200ms，约500权重/分钟）
+  request_delay_ms: 300,          // 单任务请求间隔（并发5时约1500权重/分钟）
   retry_delay_ms: 30000,          // 429错误后等待时间 (30秒)
   max_retries: 3,                 // 最大重试次数
-  batch_insert_size: 500          // 批量插入大小
+  batch_insert_size: 500,         // 批量插入大小
+  concurrency: 5,                 // 并发数
 };
 
 // 周期配置
@@ -300,43 +301,39 @@ async function main() {
       const { table_name, interval_ms } = INTERVAL_CONFIG[interval];
       const stats = { processed: 0, success: 0, skipped: 0, failed: 0, total_klines: 0, start_time: Date.now() };
 
-      for (const symbol of symbols) {
-        stats.processed++;
-        const progress = `[${stats.processed}/${symbols.length}]`;
-
+      const queue = [...symbols];
+      async function worker(): Promise<void> {
+        const conn = await DatabaseConfig.get_mysql_connection();
         try {
-          // V2: 检查最近时间段内的数据完整性
-          const { is_complete, count } = await check_recent_data_completeness(
-            connection, table_name, symbol, interval_ms, limit
-          );
-
-          if (is_complete) {
-            stats.skipped++;
-            process.stdout.write(`\r${progress} ${symbol.padEnd(12)} ⏭️  最近已有 ${count}/${limit} 根，跳过\n`);
-            continue;
+          while (queue.length > 0) {
+            const symbol = queue.shift();
+            if (!symbol) break;
+            stats.processed++;
+            const progress = `[${stats.processed}/${symbols.length}]`;
+            try {
+              const { is_complete, count } = await check_recent_data_completeness(conn, table_name, symbol, interval_ms, limit);
+              if (is_complete) {
+                stats.skipped++;
+                console.log(`${progress} ${symbol.padEnd(12)} ⏭️  最近已有 ${count}/${limit} 根，跳过`);
+                continue;
+              }
+              const klines = await fetch_klines(symbol, interval, limit);
+              if (klines.length === 0) continue;
+              const inserted = await batch_insert_klines(conn, table_name, klines);
+              stats.total_klines += inserted;
+              stats.success++;
+              console.log(`${progress} ${symbol.padEnd(12)} ✅ ${klines.length}根 (新增${inserted})`);
+              await sleep(CONFIG.request_delay_ms);
+            } catch (error: any) {
+              stats.failed++;
+              console.error(`${progress} ${symbol.padEnd(12)} ❌ ${error.message}`);
+            }
           }
-
-          process.stdout.write(`\r${progress} ${symbol.padEnd(12)} 正在拉取...`);
-
-          const klines = await fetch_klines(symbol, interval, limit);
-
-          if (klines.length === 0) {
-            process.stdout.write(`\r${progress} ${symbol.padEnd(12)} ⚠️ 无数据\n`);
-            continue;
-          }
-
-          const inserted = await batch_insert_klines(connection, table_name, klines);
-          stats.total_klines += inserted;
-          stats.success++;
-
-          process.stdout.write(`\r${progress} ${symbol.padEnd(12)} ✅ ${klines.length} 根K线 (新增 ${inserted})\n`);
-          await sleep(CONFIG.request_delay_ms);
-
-        } catch (error: any) {
-          stats.failed++;
-          process.stdout.write(`\r${progress} ${symbol.padEnd(12)} ❌ ${error.message}\n`);
+        } finally {
+          conn.release();
         }
       }
+      await Promise.all(Array.from({ length: CONFIG.concurrency }, () => worker()));
 
       const elapsed = Math.round((Date.now() - stats.start_time) / 1000);
       console.log('─'.repeat(70));
