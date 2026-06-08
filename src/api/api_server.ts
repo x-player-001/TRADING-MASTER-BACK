@@ -22,6 +22,8 @@ import pattern_scan_routes, { set_pattern_scan_service } from './routes/pattern_
 import orderbook_monitor_routes, { set_orderbook_service } from './routes/orderbook_monitor_routes';
 import trend_follow_routes, { set_trend_follow_repository } from './routes/trend_follow_routes';
 import ema20_push_routes, { set_ema20_push_repository } from './routes/ema20_push_routes';
+import { TradeJournalRoutes } from './routes/trade_journal_routes';
+import { TradeJournalService } from '@/services/trade_journal_service';
 import { VolumeMonitorRepository } from '@/database/volume_monitor_repository';
 import { TrendFollowRepository } from '@/database/trend_follow_repository';
 import { EMA20PushRepository } from '@/database/ema20_push_repository';
@@ -57,6 +59,7 @@ export class APIServer {
   private orderbook_monitor_service: OrderBookMonitorService;
   private trend_follow_repository: TrendFollowRepository;
   private ema20_push_repository: EMA20PushRepository;
+  private trade_journal_routes: TradeJournalRoutes;
   private ws_depth: WebSocket | null = null;
 
   constructor(oi_data_manager: OIDataManager, port: number = 3000) {
@@ -81,10 +84,12 @@ export class APIServer {
     this.orderbook_monitor_service = new OrderBookMonitorService();
     this.trend_follow_repository = new TrendFollowRepository();
     this.ema20_push_repository = new EMA20PushRepository();
+    this.trade_journal_routes = new TradeJournalRoutes();
     this.setup_middleware();
     this.setup_routes();
     this.init_volume_monitor_services();
     this.init_orderbook_monitor_service();
+    this.init_trade_journal_service();
     this.init_trend_follow_services();
     this.init_ema20_push_services();
   }
@@ -133,6 +138,18 @@ export class APIServer {
       logger.info('[APIServer] Trend follow services initialized');
     } catch (error) {
       logger.error('[APIServer] Failed to init trend follow services:', error);
+    }
+  }
+
+  /**
+   * 初始化交易日志服务
+   */
+  private async init_trade_journal_service(): Promise<void> {
+    try {
+      await TradeJournalService.get_instance().init();
+      logger.info('[APIServer] Trade journal service initialized');
+    } catch (error) {
+      logger.error('[APIServer] Failed to init trade journal service:', error);
     }
   }
 
@@ -354,6 +371,9 @@ export class APIServer {
 
     // EMA20 均线推动路由
     this.app.use('/api/ema20-push', ema20_push_routes);
+
+    // 交易日志路由
+    this.app.use('/api/journal', this.trade_journal_routes.get_router());
 
     // 系统状态
     this.app.get('/api/status', async (req: Request, res: Response) => {
