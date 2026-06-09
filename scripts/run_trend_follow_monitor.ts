@@ -56,6 +56,10 @@ let trend_follow_repository: TrendFollowRepository;
 let ema20_push_service: EMA20PushService;
 let ema20_push_repository: EMA20PushRepository;
 
+// 24h 成交额请求节流：每个 symbol 最少间隔 5 分钟请求一次
+const quote_volume_last_fetch: Map<string, number> = new Map();
+const QUOTE_VOLUME_THROTTLE_MS = 5 * 60 * 1000;
+
 
 const stats = {
   start_time: Date.now(),
@@ -129,10 +133,15 @@ function print_ema20_push(alert: EMA20PushAlert): void {
 
 // ==================== K线处理 ====================
 
-/** 更新某币种所有活跃观察区的24h成交额 */
+/** 更新某币种所有活跃观察区的24h成交额（节流：每币种最多5分钟一次） */
 async function update_quote_volume_for_symbol(symbol: string): Promise<void> {
   const contexts = trend_service.get_watching_contexts().filter(c => c.symbol === symbol && c.db_id !== undefined);
   if (contexts.length === 0) return;
+
+  const now = Date.now();
+  const last = quote_volume_last_fetch.get(symbol) ?? 0;
+  if (now - last < QUOTE_VOLUME_THROTTLE_MS) return;
+  quote_volume_last_fetch.set(symbol, now);
 
   const volume = await fetch_quote_volume(symbol);
   if (volume === null) return;

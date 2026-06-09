@@ -807,7 +807,7 @@ export class VolumeMonitorRepository extends BaseRepository {
 
       if (options.limit) {
         sql += ' LIMIT ?';
-        params.push(options.limit);
+        params.push(Number(options.limit));
       }
 
       const [rows] = await conn.execute<RowDataPacket[]>(sql, params);

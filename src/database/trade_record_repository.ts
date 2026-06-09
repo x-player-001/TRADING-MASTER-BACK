@@ -405,11 +405,11 @@ export class TradeRecordRepository extends BaseRepository {
 
     if (options.limit) {
       sql += ` LIMIT ?`;
-      params.push(options.limit);
+      params.push(Number(options.limit));
 
       if (options.offset) {
         sql += ` OFFSET ?`;
-        params.push(options.offset);
+        params.push(Number(options.offset));
       }
     }
 
