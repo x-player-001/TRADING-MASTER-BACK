@@ -18,6 +18,7 @@ export interface AnalyzeEntryParams {
   planned_entry_price?: number;
   planned_stop_loss?: number;
   planned_take_profit?: number;
+  end_time?: number;  // 可选截止时间戳(ms)，不传则使用当前时间，用于测试历史数据
 }
 
 export interface ReassessParams {
@@ -84,7 +85,7 @@ export class TradeJournalService {
     journal_id: number;
     market_snapshot: object;
   }> {
-    const { symbol, direction, entry_reason, planned_entry_price, planned_stop_loss, planned_take_profit } = params;
+    const { symbol, direction, entry_reason, planned_entry_price, planned_stop_loss, planned_take_profit, end_time } = params;
 
     const journal_id = await this.repository.create_journal({
       symbol,
@@ -96,7 +97,7 @@ export class TradeJournalService {
       status: 'analyzing',
     });
 
-    const market_snapshot = await this.build_market_snapshot(symbol);
+    const market_snapshot = await this.build_market_snapshot(symbol, end_time);
 
     const claude_result = await this.call_claude_for_entry({
       symbol, direction, entry_reason,
@@ -240,8 +241,8 @@ export class TradeJournalService {
   /**
    * 聚合当前市场快照：多周期K线 + 支撑阻力位
    */
-  private async build_market_snapshot(symbol: string): Promise<object> {
-    const now = Date.now();
+  private async build_market_snapshot(symbol: string, end_time?: number): Promise<object> {
+    const now = end_time ?? Date.now();
     const intervals = ['15m', '1h', '4h', '1d'];
     const klines_data: Record<string, any[]> = {};
 
@@ -285,7 +286,7 @@ export class TradeJournalService {
     return {
       symbol,
       current_price,
-      snapshot_time: new Date().toISOString(),
+      snapshot_time: new Date(now).toISOString(),
       klines: klines_data,
       sr_levels,
     };
