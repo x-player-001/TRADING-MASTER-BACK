@@ -371,7 +371,7 @@ export class PatternScanRepository extends BaseRepository {
       }
       if (options.min_score) {
         sql += ' AND score >= ?';
-        params.push(options.min_score);
+        params.push(Number(options.min_score));
       }
       if (options.symbol) {
         sql += ' AND symbol = ?';

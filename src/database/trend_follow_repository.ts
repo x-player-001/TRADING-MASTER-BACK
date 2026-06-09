@@ -322,7 +322,7 @@ export class TrendFollowRepository extends BaseRepository {
       }
       if (options.alert_level !== undefined) {
         sql += ' AND alert_level = ?';
-        params.push(options.alert_level);
+        params.push(Number(options.alert_level));
       }
 
       // 日期范围（北京时间）
@@ -334,11 +334,11 @@ export class TrendFollowRepository extends BaseRepository {
       } else {
         if (options.start_time !== undefined) {
           sql += ' AND kline_time >= ?';
-          params.push(options.start_time);
+          params.push(Number(options.start_time));
         }
         if (options.end_time !== undefined) {
           sql += ' AND kline_time <= ?';
-          params.push(options.end_time);
+          params.push(Number(options.end_time));
         }
       }
 

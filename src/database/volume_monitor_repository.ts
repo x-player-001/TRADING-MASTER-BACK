@@ -431,7 +431,7 @@ export class VolumeMonitorRepository extends BaseRepository {
         params.push(date_start_time);
       } else if (options.start_time) {
         sql += ' AND kline_time >= ?';
-        params.push(options.start_time);
+        params.push(Number(options.start_time));
       }
 
       if (date_end_time !== undefined) {
@@ -439,12 +439,12 @@ export class VolumeMonitorRepository extends BaseRepository {
         params.push(date_end_time);
       } else if (options.end_time) {
         sql += ' AND kline_time <= ?';
-        params.push(options.end_time);
+        params.push(Number(options.end_time));
       }
 
       if (options.min_ratio) {
         sql += ' AND volume_ratio >= ?';
-        params.push(options.min_ratio);
+        params.push(Number(options.min_ratio));
       }
       if (options.direction) {
         sql += ' AND direction = ?';
@@ -571,7 +571,7 @@ export class VolumeMonitorRepository extends BaseRepository {
         params.push(date_start_time);
       } else if (options.start_time) {
         sql += ' AND kline_time >= ?';
-        params.push(options.start_time);
+        params.push(Number(options.start_time));
       }
 
       if (date_end_time !== undefined) {
@@ -579,7 +579,7 @@ export class VolumeMonitorRepository extends BaseRepository {
         params.push(date_end_time);
       } else if (options.end_time) {
         sql += ' AND kline_time <= ?';
-        params.push(options.end_time);
+        params.push(Number(options.end_time));
       }
 
       if (options.pattern_type) {
@@ -782,7 +782,7 @@ export class VolumeMonitorRepository extends BaseRepository {
         params.push(date_start_time);
       } else if (options.start_time) {
         sql += ' AND kline_time >= ?';
-        params.push(options.start_time);
+        params.push(Number(options.start_time));
       }
 
       if (date_end_time !== undefined) {
@@ -790,7 +790,7 @@ export class VolumeMonitorRepository extends BaseRepository {
         params.push(date_end_time);
       } else if (options.end_time) {
         sql += ' AND kline_time <= ?';
-        params.push(options.end_time);
+        params.push(Number(options.end_time));
       }
 
       if (options.action) {

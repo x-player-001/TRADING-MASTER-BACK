@@ -150,7 +150,7 @@ export class EMA20PushRepository extends BaseRepository {
       }
       if (options.min_push_count !== undefined) {
         sql += ' AND push_count >= ?';
-        params.push(options.min_push_count);
+        params.push(Number(options.min_push_count));
       }
 
       sql += ' ORDER BY push_count DESC, updated_at DESC';

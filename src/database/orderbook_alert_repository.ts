@@ -210,7 +210,7 @@ export class OrderBookAlertRepository extends BaseRepository {
         params.push(date_start_time);
       } else if (options.start_time) {
         sql += ' AND alert_time >= ?';
-        params.push(options.start_time);
+        params.push(Number(options.start_time));
       }
 
       if (date_end_time !== undefined) {
@@ -218,7 +218,7 @@ export class OrderBookAlertRepository extends BaseRepository {
         params.push(date_end_time);
       } else if (options.end_time) {
         sql += ' AND alert_time <= ?';
-        params.push(options.end_time);
+        params.push(Number(options.end_time));
       }
 
       sql += ' ORDER BY alert_time ASC';
