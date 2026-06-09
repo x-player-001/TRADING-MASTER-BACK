@@ -191,13 +191,13 @@ export class TradeJournalRepository extends BaseRepository {
   async find_list(status?: TradeStatus, limit: number = 20, offset: number = 0): Promise<TradeJournal[]> {
     if (status) {
       return this.execute_query(
-        'SELECT * FROM trade_journal WHERE status = ? ORDER BY created_at DESC LIMIT ? OFFSET ?',
-        [status, limit, offset]
+        `SELECT * FROM trade_journal WHERE status = ? ORDER BY created_at DESC LIMIT ${Number(limit)} OFFSET ${Number(offset)}`,
+        [status]
       );
     }
     return this.execute_query(
-      'SELECT * FROM trade_journal ORDER BY created_at DESC LIMIT ? OFFSET ?',
-      [limit, offset]
+      `SELECT * FROM trade_journal ORDER BY created_at DESC LIMIT ${Number(limit)} OFFSET ${Number(offset)}`,
+      []
     );
   }
 

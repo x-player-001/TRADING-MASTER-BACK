@@ -142,10 +142,10 @@ export class BoundaryAlertRepository {
       const sql = `
         SELECT * FROM ${this.table_name}
         ORDER BY alert_time DESC
-        LIMIT ?
+        LIMIT ${Number(limit)}
       `;
 
-      const [rows] = await connection.execute(sql, [limit]);
+      const [rows] = await connection.execute(sql);
       return rows as BoundaryAlertData[];
     } finally {
       connection.release();
@@ -165,10 +165,10 @@ export class BoundaryAlertRepository {
         SELECT * FROM ${this.table_name}
         WHERE symbol = ?
         ORDER BY alert_time DESC
-        LIMIT ?
+        LIMIT ${Number(limit)}
       `;
 
-      const [rows] = await connection.execute(sql, [symbol, limit]);
+      const [rows] = await connection.execute(sql, [symbol]);
       return rows as BoundaryAlertData[];
     } finally {
       connection.release();

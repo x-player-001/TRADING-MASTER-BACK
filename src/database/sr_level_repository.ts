@@ -378,8 +378,7 @@ export class SRLevelRepository extends BaseRepository {
         params.push(`%${keyword}%`);
       }
 
-      query += ' ORDER BY created_at DESC LIMIT ?';
-      params.push(limit);
+      query += ` ORDER BY created_at DESC LIMIT ${Number(limit)}`;
 
       const [rows] = await conn.execute<RowDataPacket[]>(query, params);
       return rows.map(row => this.map_to_alert(row));

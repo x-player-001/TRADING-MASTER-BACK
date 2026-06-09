@@ -228,10 +228,10 @@ export class SignalProcessingRepository {
       const sql = `
         SELECT * FROM signal_processing_records
         ORDER BY signal_received_at DESC
-        LIMIT ?
+        LIMIT ${Number(limit)}
       `;
 
-      const [rows] = await conn.query<RowDataPacket[]>(sql, [limit]);
+      const [rows] = await conn.query<RowDataPacket[]>(sql);
 
       return rows.map(row => this.map_row_to_record(row));
     } catch (error) {

@@ -236,8 +236,7 @@ export class TrendFollowRepository extends BaseRepository {
       sql += use_updated_at ? ' ORDER BY updated_at DESC' : ' ORDER BY watch_start_time DESC';
 
       if (options.limit) {
-        sql += ' LIMIT ?';
-        params.push(Number(options.limit));
+        sql += ` LIMIT ${Number(options.limit)}`;
       }
 
       const [rows] = await conn.execute<RowDataPacket[]>(sql, params);
@@ -345,8 +344,7 @@ export class TrendFollowRepository extends BaseRepository {
       sql += ' ORDER BY kline_time DESC, alert_level DESC';
 
       if (options.limit) {
-        sql += ' LIMIT ?';
-        params.push(Number(options.limit));
+        sql += ` LIMIT ${Number(options.limit)}`;
       }
 
       const [rows] = await conn.execute<RowDataPacket[]>(sql, params);

@@ -91,10 +91,10 @@ export class KlineBreakoutRepository {
       const sql = `
         SELECT * FROM kline_breakout_signals
         ORDER BY signal_time DESC
-        LIMIT ?
+        LIMIT ${Number(limit)}
       `;
 
-      const [rows] = await connection.execute(sql, [limit]);
+      const [rows] = await connection.execute(sql);
       return rows as KlineBreakoutSignal[];
     } catch (error) {
       logger.error('[KlineBreakout] Failed to get recent signals:', error);
@@ -115,10 +115,10 @@ export class KlineBreakoutRepository {
         SELECT * FROM kline_breakout_signals
         WHERE symbol = ?
         ORDER BY signal_time DESC
-        LIMIT ?
+        LIMIT ${Number(limit)}
       `;
 
-      const [rows] = await connection.execute(sql, [symbol, limit]);
+      const [rows] = await connection.execute(sql, [symbol]);
       return rows as KlineBreakoutSignal[];
     } catch (error) {
       logger.error(`[KlineBreakout] Failed to get signals for ${symbol}:`, error);
@@ -139,10 +139,10 @@ export class KlineBreakoutRepository {
         SELECT * FROM kline_breakout_signals
         WHERE direction = ?
         ORDER BY signal_time DESC
-        LIMIT ?
+        LIMIT ${Number(limit)}
       `;
 
-      const [rows] = await connection.execute(sql, [direction, limit]);
+      const [rows] = await connection.execute(sql, [direction]);
       return rows as KlineBreakoutSignal[];
     } catch (error) {
       logger.error(`[KlineBreakout] Failed to get signals by direction:`, error);
@@ -167,10 +167,10 @@ export class KlineBreakoutRepository {
         SELECT * FROM kline_breakout_signals
         WHERE signal_time >= ? AND signal_time <= ?
         ORDER BY signal_time DESC
-        LIMIT ?
+        LIMIT ${Number(limit)}
       `;
 
-      const [rows] = await connection.execute(sql, [start_time, end_time, limit]);
+      const [rows] = await connection.execute(sql, [start_time, end_time]);
       return rows as KlineBreakoutSignal[];
     } catch (error) {
       logger.error('[KlineBreakout] Failed to get signals by time range:', error);

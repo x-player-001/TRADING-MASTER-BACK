@@ -285,8 +285,7 @@ export class PatternScanRepository extends BaseRepository {
       sql += ' ORDER BY created_at DESC';
 
       if (options.limit) {
-        sql += ' LIMIT ?';
-        params.push(Number(options.limit));
+        sql += ` LIMIT ${Number(options.limit)}`;
       }
 
       const [rows] = await conn.execute<RowDataPacket[]>(sql, params);
@@ -381,8 +380,7 @@ export class PatternScanRepository extends BaseRepository {
       sql += ' ORDER BY score DESC';
 
       if (options.limit) {
-        sql += ' LIMIT ?';
-        params.push(Number(options.limit));
+        sql += ` LIMIT ${Number(options.limit)}`;
       }
 
       const [rows] = await conn.execute<RowDataPacket[]>(sql, params);

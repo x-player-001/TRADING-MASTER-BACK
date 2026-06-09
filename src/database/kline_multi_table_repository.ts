@@ -215,8 +215,7 @@ export class KlineMultiTableRepository extends BaseRepository {
       if (start_time && end_time) {
         sql += ' ORDER BY open_time DESC';
       } else {
-        sql += ' ORDER BY open_time DESC LIMIT ?';
-        params.push(Math.floor(Number(limit)) || 300);
+        sql += ` ORDER BY open_time DESC LIMIT ${Math.floor(Number(limit)) || 300}`;
       }
 
       const [rows] = await conn.execute<RowDataPacket[]>(sql, params);
@@ -238,12 +237,11 @@ export class KlineMultiTableRepository extends BaseRepository {
         FROM ${table_name}
         WHERE symbol = ?
         ORDER BY open_time DESC
-        LIMIT ?
+        LIMIT ${Math.floor(Number(limit)) || 100}
       `;
 
       const [rows] = await conn.execute<RowDataPacket[]>(sql, [
-        symbol.toUpperCase(),
-        Math.floor(Number(limit)) || 100
+        symbol.toUpperCase()
       ]);
 
       const records = rows as KlineMultiTableRecord[];

@@ -62,8 +62,7 @@ export class SignalRepository extends BaseRepository {
         values.push(interval);
       }
 
-      query += ` ORDER BY created_at DESC LIMIT ?`;
-      values.push(limit);
+      query += ` ORDER BY created_at DESC LIMIT ${Number(limit)}`;
 
       try {
         const [rows] = await conn.execute<RowDataPacket[]>(query, values);
@@ -170,11 +169,11 @@ export class SignalRepository extends BaseRepository {
         SELECT * FROM pattern_detections
         WHERE symbol = ? AND \`interval\` = ?
         ORDER BY detected_at DESC
-        LIMIT ?
+        LIMIT ${Number(limit)}
       `;
 
       try {
-        const [rows] = await conn.execute<RowDataPacket[]>(query, [symbol, interval, limit]);
+        const [rows] = await conn.execute<RowDataPacket[]>(query, [symbol, interval]);
         return rows.map((row: any) => this.map_to_pattern(row));
       } catch (error) {
         logger.error('Failed to get recent patterns', error);

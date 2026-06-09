@@ -152,10 +152,10 @@ export class ErrorLogRepository extends BaseRepository {
         SELECT * FROM error_logs
         ${error_type ? 'WHERE error_type = ?' : ''}
         ORDER BY created_at DESC
-        LIMIT ?
+        LIMIT ${Number(limit)}
       `;
 
-      const params = error_type ? [error_type, limit] : [limit];
+      const params = error_type ? [error_type] : [];
       const rows = await this.execute_query(sql, params);
 
       return rows.map(row => ({
@@ -177,10 +177,10 @@ export class ErrorLogRepository extends BaseRepository {
         SELECT * FROM error_logs
         WHERE symbol = ?
         ORDER BY created_at DESC
-        LIMIT ?
+        LIMIT ${Number(limit)}
       `;
 
-      const rows = await this.execute_query(sql, [symbol, limit]);
+      const rows = await this.execute_query(sql, [symbol]);
 
       return rows.map(row => ({
         ...row,

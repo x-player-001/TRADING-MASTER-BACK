@@ -246,9 +246,9 @@ export class HistoricalDataCacheRepository extends BaseRepository {
     const sql = `
       SELECT * FROM historical_data_cache
       ORDER BY created_at DESC
-      LIMIT ?
+      LIMIT ${Number(limit)}
     `;
 
-    return await this.execute_query(sql, [limit]);
+    return await this.execute_query(sql);
   }
 }

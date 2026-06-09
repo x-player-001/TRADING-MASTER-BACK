@@ -404,12 +404,10 @@ export class TradeRecordRepository extends BaseRepository {
     sql += ` ORDER BY closed_at DESC`;
 
     if (options.limit) {
-      sql += ` LIMIT ?`;
-      params.push(Number(options.limit));
+      sql += ` LIMIT ${Number(options.limit)}`;
 
       if (options.offset) {
-        sql += ` OFFSET ?`;
-        params.push(Number(options.offset));
+        sql += ` OFFSET ${Number(options.offset)}`;
       }
     }
 

@@ -347,12 +347,10 @@ export class OrderRecordRepository extends BaseRepository {
     sql += ` ORDER BY order_time DESC`;
 
     if (options.limit) {
-      sql += ` LIMIT ?`;
-      params.push(Number(options.limit));
+      sql += ` LIMIT ${Number(options.limit)}`;
 
       if (options.offset) {
-        sql += ` OFFSET ?`;
-        params.push(Number(options.offset));
+        sql += ` OFFSET ${Number(options.offset)}`;
       }
     }
 
@@ -519,8 +517,7 @@ export class OrderRecordRepository extends BaseRepository {
     const params: any[] = [symbol, trading_mode];
 
     if (limit) {
-      sql += ` LIMIT ?`;
-      params.push(limit);
+      sql += ` LIMIT ${Number(limit)}`;
     }
 
     const rows = await this.execute_query(sql, params);

@@ -806,8 +806,7 @@ export class VolumeMonitorRepository extends BaseRepository {
       sql += ' ORDER BY kline_time DESC';
 
       if (options.limit) {
-        sql += ' LIMIT ?';
-        params.push(Number(options.limit));
+        sql += ` LIMIT ${Number(options.limit)}`;
       }
 
       const [rows] = await conn.execute<RowDataPacket[]>(sql, params);

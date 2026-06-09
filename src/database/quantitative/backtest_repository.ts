@@ -70,8 +70,8 @@ export class BacktestRepository extends BaseRepository {
         `SELECT * FROM quant_backtest_results
          WHERE strategy_id = ?
          ORDER BY created_at DESC
-         LIMIT ?`,
-        [strategy_id, limit]
+         LIMIT ${Number(limit)}`,
+        [strategy_id]
       );
       return this.parse_json_fields(rows as any[]);
     } catch (error) {
@@ -86,8 +86,8 @@ export class BacktestRepository extends BaseRepository {
   async find_all(limit: number = 50, offset: number = 0): Promise<BacktestResult[]> {
     try {
       const rows = await this.execute_query(
-        'SELECT * FROM quant_backtest_results ORDER BY created_at DESC LIMIT ? OFFSET ?',
-        [limit, offset]
+        `SELECT * FROM quant_backtest_results ORDER BY created_at DESC LIMIT ${Number(limit)} OFFSET ${Number(offset)}`,
+        []
       );
       return this.parse_json_fields(rows as any[]);
     } catch (error) {
@@ -109,8 +109,8 @@ export class BacktestRepository extends BaseRepository {
         `SELECT * FROM quant_backtest_results
          WHERE symbol = ? AND \`interval\` = ?
          ORDER BY created_at DESC
-         LIMIT ?`,
-        [symbol, interval, limit]
+         LIMIT ${Number(limit)}`,
+        [symbol, interval]
       );
       return this.parse_json_fields(rows as any[]);
     } catch (error) {
@@ -125,8 +125,8 @@ export class BacktestRepository extends BaseRepository {
   async find_best_results(limit: number = 10): Promise<BacktestResult[]> {
     try {
       const rows = await this.execute_query(
-        'SELECT * FROM quant_backtest_results ORDER BY sharpe_ratio DESC LIMIT ?',
-        [limit]
+        `SELECT * FROM quant_backtest_results ORDER BY sharpe_ratio DESC LIMIT ${Number(limit)}`,
+        []
       );
       return this.parse_json_fields(rows as any[]);
     } catch (error) {

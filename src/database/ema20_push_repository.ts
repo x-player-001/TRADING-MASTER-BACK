@@ -156,8 +156,7 @@ export class EMA20PushRepository extends BaseRepository {
       sql += ' ORDER BY push_count DESC, updated_at DESC';
 
       if (options.limit) {
-        sql += ' LIMIT ?';
-        params.push(Number(options.limit));
+        sql += ` LIMIT ${Number(options.limit)}`;
       }
 
       const [rows] = await conn.execute<RowDataPacket[]>(sql, params);

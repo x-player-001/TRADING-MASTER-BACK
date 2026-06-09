@@ -99,8 +99,8 @@ export class TradeRepository extends BaseRepository {
   async find_by_strategy(strategy_id: number, limit: number = 100): Promise<Trade[]> {
     try {
       const rows = await this.execute_query(
-        'SELECT * FROM quant_trades WHERE strategy_id = ? ORDER BY entry_time DESC LIMIT ?',
-        [strategy_id, limit]
+        `SELECT * FROM quant_trades WHERE strategy_id = ? ORDER BY entry_time DESC LIMIT ${Number(limit)}`,
+        [strategy_id]
       );
       return this.parse_json_fields(rows as any[]);
     } catch (error) {
@@ -115,8 +115,8 @@ export class TradeRepository extends BaseRepository {
   async find_by_symbol(symbol: string, limit: number = 100): Promise<Trade[]> {
     try {
       const rows = await this.execute_query(
-        'SELECT * FROM quant_trades WHERE symbol = ? ORDER BY entry_time DESC LIMIT ?',
-        [symbol, limit]
+        `SELECT * FROM quant_trades WHERE symbol = ? ORDER BY entry_time DESC LIMIT ${Number(limit)}`,
+        [symbol]
       );
       return this.parse_json_fields(rows as any[]);
     } catch (error) {

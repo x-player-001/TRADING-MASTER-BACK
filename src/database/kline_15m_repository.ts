@@ -231,9 +231,9 @@ export class Kline15mRepository {
         SELECT * FROM ${today}
         WHERE symbol = ?
         ORDER BY open_time DESC
-        LIMIT ?
+        LIMIT ${Number(limit)}
       `;
-      const [rows] = await connection.execute(sql, [symbol, limit]);
+      const [rows] = await connection.execute(sql, [symbol]);
       const result = rows as Kline15mData[];
 
       // 如果不够，再查昨天的表
@@ -244,9 +244,9 @@ export class Kline15mRepository {
             SELECT * FROM ${yesterday}
             WHERE symbol = ?
             ORDER BY open_time DESC
-            LIMIT ?
+            LIMIT ${Number(remaining)}
           `;
-          const [rows2] = await connection.execute(sql2, [symbol, remaining]);
+          const [rows2] = await connection.execute(sql2, [symbol]);
           result.push(...(rows2 as Kline15mData[]));
         } catch {
           // 昨天的表可能不存在

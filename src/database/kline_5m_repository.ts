@@ -250,9 +250,9 @@ export class Kline5mRepository {
         SELECT * FROM ${today}
         WHERE symbol = ?
         ORDER BY open_time DESC
-        LIMIT ?
+        LIMIT ${Number(limit)}
       `;
-      const [rows] = await connection.execute(sql, [symbol, limit]);
+      const [rows] = await connection.execute(sql, [symbol]);
       const result = (rows as any[]).map(row => this.convert_row_types(row));
 
       // 如果不够，再查昨天的表
@@ -263,9 +263,9 @@ export class Kline5mRepository {
             SELECT * FROM ${yesterday}
             WHERE symbol = ?
             ORDER BY open_time DESC
-            LIMIT ?
+            LIMIT ${Number(remaining)}
           `;
-          const [rows2] = await connection.execute(sql2, [symbol, remaining]);
+          const [rows2] = await connection.execute(sql2, [symbol]);
           result.push(...(rows2 as any[]).map(row => this.convert_row_types(row)));
         } catch {
           // 昨天的表可能不存在

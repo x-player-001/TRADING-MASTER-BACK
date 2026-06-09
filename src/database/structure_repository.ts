@@ -89,8 +89,7 @@ export class StructureRepository extends BaseRepository {
         values.push(interval);
       }
 
-      query += ` ORDER BY created_at DESC LIMIT ?`;
-      values.push(limit);
+      query += ` ORDER BY created_at DESC LIMIT ${Number(limit)}`;
 
       try {
         const [rows] = await conn.execute<RowDataPacket[]>(query, values);
@@ -220,8 +219,7 @@ export class StructureRepository extends BaseRepository {
         values.push(interval);
       }
 
-      query += ` ORDER BY breakout_time DESC LIMIT ?`;
-      values.push(limit);
+      query += ` ORDER BY breakout_time DESC LIMIT ${Number(limit)}`;
 
       try {
         const [rows] = await conn.execute<RowDataPacket[]>(query, values);
