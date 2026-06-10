@@ -564,18 +564,81 @@ ${analysis_section}
   }
 
   /**
-   * 将 K 线数据格式化为紧凑的文本，减少 token 占用
+   * 将 K 线数据格式化为紧凑的文本，并附带 EMA20 和 MACD 指标
    * 每根格式：o h l c v（空格分隔），每个周期单独一段
    */
   private format_klines_for_prompt(klines: Record<string, any[]>): string {
     return ['5m', '15m', '1h', '4h'].map(interval => {
       const ks = klines[interval] ?? [];
       if (ks.length === 0) return `### ${interval}\n暂无数据`;
+
+      const closes = ks.map((k: any) => Number(k.close));
+
+      const ema20 = this.calc_ema(closes, 20);
+      const macd = this.calc_macd(closes);
+
+      const indicator_text = [
+        ema20 != null ? `EMA20=${ema20.toFixed(4)}` : null,
+        macd != null ? `MACD=${macd.macd.toFixed(4)} 信号线=${macd.signal.toFixed(4)} 柱=${macd.histogram.toFixed(4)}` : null,
+      ].filter(Boolean).join('  ');
+
       const rows = ks.map((k: any) =>
         `${k.open} ${k.high} ${k.low} ${k.close} ${Number(k.volume).toFixed(2)}`
       ).join('\n');
-      return `### ${interval}（${ks.length}根）\n${rows}`;
+
+      return `### ${interval}（${ks.length}根）  ${indicator_text}\n${rows}`;
     }).join('\n\n');
+  }
+
+  /**
+   * 计算 EMA
+   */
+  private calc_ema(values: number[], period: number): number | null {
+    if (values.length < period) return null;
+    const k = 2 / (period + 1);
+    let ema = values.slice(0, period).reduce((a, b) => a + b, 0) / period;
+    for (let i = period; i < values.length; i++) {
+      ema = values[i] * k + ema * (1 - k);
+    }
+    return ema;
+  }
+
+  /**
+   * 计算标准 MACD（12/26/9）
+   */
+  private calc_macd(closes: number[]): { macd: number; signal: number; histogram: number } | null {
+    if (closes.length < 35) return null;
+
+    const k12 = 2 / 13;
+    const k26 = 2 / 27;
+    const k9  = 2 / 10;
+
+    // 计算每根的 EMA12 和 EMA26
+    let ema12 = closes.slice(0, 12).reduce((a, b) => a + b, 0) / 12;
+    let ema26 = closes.slice(0, 26).reduce((a, b) => a + b, 0) / 26;
+
+    const macd_line: number[] = [];
+
+    for (let i = 1; i < closes.length; i++) {
+      if (i < 12) { ema12 = closes.slice(0, i + 1).reduce((a, b) => a + b, 0) / (i + 1); }
+      else { ema12 = closes[i] * k12 + ema12 * (1 - k12); }
+
+      if (i < 26) { ema26 = closes.slice(0, i + 1).reduce((a, b) => a + b, 0) / (i + 1); }
+      else { ema26 = closes[i] * k26 + ema26 * (1 - k26); }
+
+      if (i >= 25) macd_line.push(ema12 - ema26);
+    }
+
+    if (macd_line.length < 9) return null;
+
+    // 信号线 = MACD 的 9 期 EMA
+    let signal = macd_line.slice(0, 9).reduce((a, b) => a + b, 0) / 9;
+    for (let i = 9; i < macd_line.length; i++) {
+      signal = macd_line[i] * k9 + signal * (1 - k9);
+    }
+
+    const macd = macd_line[macd_line.length - 1];
+    return { macd, signal, histogram: macd - signal };
   }
 
   /**
