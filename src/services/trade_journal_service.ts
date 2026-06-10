@@ -352,13 +352,7 @@ export class TradeJournalService {
       ? snapshot.sr_levels.map((l: any) => `  - ${l.type} @ ${l.price}（强度 ${l.strength}，触碰 ${l.touch_count} 次）`).join('\n')
       : '  暂无数据';
 
-    const kline_summary = ['5m', '15m', '1h', '4h'].map(interval => {
-      const ks = (snapshot.klines?.[interval] ?? []).slice(-5);
-      if (ks.length === 0) return `  ${interval}: 暂无数据`;
-      const last = ks[ks.length - 1];
-      const pct = last.open > 0 ? ((last.close - last.open) / last.open * 100).toFixed(2) : 'N/A';
-      return `  ${interval}: 收盘 ${last.close}，涨跌 ${pct}%`;
-    }).join('\n');
+    const kline_section = this.format_klines_for_prompt(snapshot.klines ?? {});
 
     const prompt = `
 你是一位拥有10年经验的专业加密货币交易员，擅长技术分析。
@@ -374,8 +368,9 @@ export class TradeJournalService {
 - 入场理由：${entry_reason}
 
 ## 市场数据（${snapshot.snapshot_time}）
-各周期K线（最近5根）：
-${kline_summary}
+字段说明：o=开盘 h=最高 l=最低 c=收盘 v=成交量，按时间从旧到新排列
+
+${kline_section}
 
 支撑阻力位：
 ${sr_text}
@@ -411,13 +406,7 @@ ${sr_text}
       ? snapshot.sr_levels.map((l: any) => `  - ${l.type} @ ${l.price}（强度 ${l.strength}）`).join('\n')
       : '  暂无数据';
 
-    const kline_summary = ['5m', '15m', '1h', '4h'].map(interval => {
-      const ks = (snapshot.klines?.[interval] ?? []).slice(-5);
-      if (ks.length === 0) return `  ${interval}: 暂无数据`;
-      const last = ks[ks.length - 1];
-      const pct = last.open > 0 ? ((last.close - last.open) / last.open * 100).toFixed(2) : 'N/A';
-      return `  ${interval}: 收盘 ${last.close}，涨跌 ${pct}%`;
-    }).join('\n');
+    const kline_section = this.format_klines_for_prompt(snapshot.klines ?? {});
 
     const prompt = `
 你是一位拥有10年经验的专业加密货币交易员。
@@ -435,8 +424,9 @@ ${sr_text}
 - 我的疑虑：${concern}
 
 ## 最新市场数据（${snapshot.snapshot_time}）
-各周期K线（最近5根）：
-${kline_summary}
+字段说明：o=开盘 h=最高 l=最低 c=收盘 v=成交量，按时间从旧到新排列
+
+${kline_section}
 
 支撑阻力位：
 ${sr_text}
@@ -571,6 +561,21 @@ ${analysis_section}
       messages: [{ role: 'user', content: prompt }],
     });
     return (response.content[0] as any).text as string;
+  }
+
+  /**
+   * 将 K 线数据格式化为紧凑的文本，减少 token 占用
+   * 每根格式：o h l c v（空格分隔），每个周期单独一段
+   */
+  private format_klines_for_prompt(klines: Record<string, any[]>): string {
+    return ['5m', '15m', '1h', '4h'].map(interval => {
+      const ks = klines[interval] ?? [];
+      if (ks.length === 0) return `### ${interval}\n暂无数据`;
+      const rows = ks.map((k: any) =>
+        `${k.open} ${k.high} ${k.low} ${k.close} ${Number(k.volume).toFixed(2)}`
+      ).join('\n');
+      return `### ${interval}（${ks.length}根）\n${rows}`;
+    }).join('\n\n');
   }
 
   /**
