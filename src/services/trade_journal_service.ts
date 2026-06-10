@@ -570,7 +570,7 @@ ${analysis_section}
   }
 
   async get_journal_list(status?: string, limit = 20, offset = 0) {
-    return this.repository.find_list_with_analysis(status as any, limit, offset);
+    return this.repository.find_list(status as any, limit, offset);
   }
 
   async get_stats() {
