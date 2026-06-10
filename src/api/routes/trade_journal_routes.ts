@@ -66,6 +66,8 @@ export class TradeJournalRoutes {
         timeframe: timeframe as string | undefined,
       });
 
+      // 立即返回 journal_id，AI 分析在后台异步执行
+      // 前端轮询 GET /api/journal/:id，analyses 有数据则分析完成
       res.json({ success: true, data: result, timestamp: Date.now() });
     } catch (error) {
       logger.error('[TradeJournalAPI] analyze_entry failed:', error);

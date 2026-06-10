@@ -98,12 +98,10 @@ export class TradeJournalService {
   // ==================== 核心方法 ====================
 
   /**
-   * 入场前评估：创建记录（analyzing）→ 聚合市场数据 → Claude 分析 → 保存
+   * 入场前评估：立即创建记录并返回 journal_id，AI 分析异步在后台执行
+   * 前端拿到 journal_id 后轮询 GET /api/journal/:id，analyses 有数据即分析完成
    */
-  async analyze_entry(params: AnalyzeEntryParams): Promise<ClaudeAnalysisResult & {
-    journal_id: number;
-    market_snapshot: object;
-  }> {
+  async analyze_entry(params: AnalyzeEntryParams): Promise<{ journal_id: number }> {
     const { symbol, direction, entry_reason, planned_entry_price, planned_stop_loss, planned_take_profit, end_time, timeframe } = params;
 
     const journal_id = await this.repository.create_journal({
@@ -115,6 +113,20 @@ export class TradeJournalService {
       planned_take_profit,
       status: 'analyzing',
     });
+
+    // 异步执行，不阻塞响应
+    this.run_entry_analysis(journal_id, params).catch(err => {
+      logger.error(`[TradeJournal] Background analysis failed for journal #${journal_id}:`, err);
+    });
+
+    return { journal_id };
+  }
+
+  /**
+   * 后台执行入场分析（拉K线 + 调AI + 存库）
+   */
+  private async run_entry_analysis(journal_id: number, params: AnalyzeEntryParams): Promise<void> {
+    const { symbol, direction, entry_reason, planned_entry_price, planned_stop_loss, planned_take_profit, end_time, timeframe } = params;
 
     const market_snapshot = await this.build_market_snapshot(symbol, end_time, timeframe);
 
@@ -136,7 +148,6 @@ export class TradeJournalService {
     });
 
     logger.info(`[TradeJournal] Entry analysis done for journal #${journal_id}`);
-    return { journal_id, market_snapshot, ...claude_result };
   }
 
   /**
