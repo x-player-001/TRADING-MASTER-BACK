@@ -277,18 +277,15 @@ export class TradeJournalService {
 
     // 各周期数量配置
     const limit_map: Record<string, number> = {
-      '5m': 100, '15m': 96, '1h': 100,
+      '5m': 100, '15m': 96, '1h': 100, '4h': 90,
     };
-    const db_intervals = active_intervals
-      .filter(i => i !== '4h')
-      .map(i => ({ interval: i, limit: limit_map[i] ?? 100 }));
 
-    // 5m/15m/1h 走 HistoricalDataManager（Redis→MySQL→API 降级）
+    // 全部直接从币安 API 拉取，确保包含当前未收盘K线，数据最新
     await Promise.all(
-      db_intervals.map(async ({ interval, limit }) => {
+      active_intervals.map(async (interval) => {
         try {
-          const klines = await this.historical_data_manager.get_historical_klines(
-            symbol, interval, undefined, now, limit
+          const klines = await this.binance_api.get_klines(
+            symbol, interval, undefined, end_time, limit_map[interval] ?? 100
           );
           klines_data[interval] = klines.map(k => ({
             open_time: k.open_time,
@@ -305,25 +302,6 @@ export class TradeJournalService {
       })
     );
 
-    // 4h 走 KlineAggregator（kline_4h_agg 聚合表）
-    if (active_intervals.includes('4h')) {
-      try {
-        const start_4h = now - 90 * 4 * 60 * 60 * 1000; // 约15天
-        const klines_4h = await this.kline_aggregator.get_klines_from_db(symbol, '4h', start_4h, now);
-        klines_data['4h'] = klines_4h.map(k => ({
-          open_time: k.open_time,
-          open: k.open,
-          high: k.high,
-          low: k.low,
-          close: k.close,
-          volume: k.volume,
-        }));
-      } catch {
-        logger.warn(`[TradeJournal] Failed to fetch 4h klines for ${symbol}`);
-        klines_data['4h'] = [];
-      }
-    }
-
     let sr_levels: any[] = [];
     try {
       const levels = await this.sr_repository.get_active_levels(symbol, '1h');
@@ -337,22 +315,10 @@ export class TradeJournalService {
       logger.warn(`[TradeJournal] Failed to fetch SR levels for ${symbol}`);
     }
 
-    // 实时价格优先从币安 ticker 获取，避免与最新已收盘K线差距过大
-    // 测试历史数据时（传了 end_time）则用最后一根 K 线的收盘价
-    let current_price: number | null = null;
-    if (end_time) {
-      const last_kline = klines_data['1h']?.slice(-1)[0] ?? klines_data['15m']?.slice(-1)[0];
-      current_price = last_kline?.close ?? null;
-    } else {
-      try {
-        const ticker = await this.binance_api.get_ticker_price(symbol);
-        current_price = ticker?.price ? Number(ticker.price) : null;
-      } catch {
-        logger.warn(`[TradeJournal] Failed to fetch ticker price for ${symbol}, fallback to last kline close`);
-        const last_kline = klines_data['1h']?.slice(-1)[0] ?? klines_data['15m']?.slice(-1)[0];
-        current_price = last_kline?.close ?? null;
-      }
-    }
+    // 当前价格取最小周期最后一根 K 线的收盘价（包含未收盘K线的实时价）
+    const price_interval = active_intervals[0];
+    const last_kline = klines_data[price_interval]?.slice(-1)[0];
+    const current_price: number | null = last_kline?.close ? Number(last_kline.close) : null;
 
     return {
       symbol,
