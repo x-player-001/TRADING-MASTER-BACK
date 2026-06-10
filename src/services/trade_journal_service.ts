@@ -617,16 +617,14 @@ ${analysis_section}
         macd != null ? `MACD=${macd.macd.toFixed(4)} 信号线=${macd.signal.toFixed(4)} 柱=${macd.histogram.toFixed(4)}` : null,
       ].filter(Boolean).join('  ');
 
-      // 只取最近30根展示，更早的仅用于指标计算
-      const recent = ks.slice(-30);
-      const rows = recent.map((k: any) => {
+      const rows = ks.map((k: any, i: number) => {
         const t = new Date(k.open_time);
         const time_str = `${String(t.getUTCMonth() + 1).padStart(2,'0')}/${String(t.getUTCDate()).padStart(2,'0')} ${String((t.getUTCHours() + 8) % 24).padStart(2,'0')}:${String(t.getUTCMinutes()).padStart(2,'0')}`;
         const body_pct = k.open > 0 ? ((k.close - k.open) / k.open * 100).toFixed(2) : '0';
-        return `${time_str} o:${k.open} h:${k.high} l:${k.low} c:${k.close} v:${Number(k.volume).toFixed(0)} (${Number(body_pct) >= 0 ? '+' : ''}${body_pct}%)`;
+        return `[${i + 1}] ${time_str} o:${k.open} h:${k.high} l:${k.low} c:${k.close} v:${Number(k.volume).toFixed(0)} (${Number(body_pct) >= 0 ? '+' : ''}${body_pct}%)`;
       }).join('\n');
 
-      return `### ${interval}（共${ks.length}根，展示最近${recent.length}根）  ${indicator_text}\n${rows}`;
+      return `### ${interval}（${ks.length}根）  ${indicator_text}\n${rows}`;
     }).join('\n\n');
   }
 
