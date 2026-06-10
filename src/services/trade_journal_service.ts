@@ -264,7 +264,7 @@ export class TradeJournalService {
     const db_intervals: { interval: string; limit: number }[] = [
       { interval: '5m',  limit: 100 },  // 约8小时
       { interval: '15m', limit: 96  },  // 约1天
-      { interval: '1h',  limit: 168 },  // 约1周
+      { interval: '1h',  limit: 100 },  // 约4天
     ];
 
     // 5m/15m/1h 走 HistoricalDataManager（Redis→MySQL→API 降级）
