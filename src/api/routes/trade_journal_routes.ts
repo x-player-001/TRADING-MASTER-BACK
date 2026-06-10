@@ -44,7 +44,7 @@ export class TradeJournalRoutes {
    */
   private async analyze_entry(req: Request, res: Response): Promise<void> {
     try {
-      const { symbol, direction, entry_reason, planned_entry_price, planned_stop_loss, planned_take_profit, end_time } = req.body;
+      const { symbol, direction, entry_reason, planned_entry_price, planned_stop_loss, planned_take_profit, end_time, timeframe } = req.body;
 
       if (!symbol || !direction || entry_reason === undefined || entry_reason === null) {
         res.status(400).json({ success: false, error: 'Missing required fields: symbol, direction, entry_reason' });
@@ -63,6 +63,7 @@ export class TradeJournalRoutes {
         planned_stop_loss: planned_stop_loss != null ? Number(planned_stop_loss) : undefined,
         planned_take_profit: planned_take_profit != null ? Number(planned_take_profit) : undefined,
         end_time: end_time != null ? Number(end_time) : undefined,
+        timeframe: timeframe as string | undefined,
       });
 
       res.json({ success: true, data: result, timestamp: Date.now() });

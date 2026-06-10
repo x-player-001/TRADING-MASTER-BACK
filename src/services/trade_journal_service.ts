@@ -21,7 +21,8 @@ export interface AnalyzeEntryParams {
   planned_entry_price?: number;
   planned_stop_loss?: number;
   planned_take_profit?: number;
-  end_time?: number;  // 可选截止时间戳(ms)，不传则使用当前时间，用于测试历史数据
+  end_time?: number;      // 可选截止时间戳(ms)，不传则使用当前时间，用于测试历史数据
+  timeframe?: string;     // 入场周期，决定提供哪些K线：5m/15m/1h/4h，不传则全部
 }
 
 export interface ReassessParams {
@@ -100,7 +101,7 @@ export class TradeJournalService {
     journal_id: number;
     market_snapshot: object;
   }> {
-    const { symbol, direction, entry_reason, planned_entry_price, planned_stop_loss, planned_take_profit, end_time } = params;
+    const { symbol, direction, entry_reason, planned_entry_price, planned_stop_loss, planned_take_profit, end_time, timeframe } = params;
 
     const journal_id = await this.repository.create_journal({
       symbol,
@@ -112,7 +113,7 @@ export class TradeJournalService {
       status: 'analyzing',
     });
 
-    const market_snapshot = await this.build_market_snapshot(symbol, end_time);
+    const market_snapshot = await this.build_market_snapshot(symbol, end_time, timeframe);
 
     const claude_result = await this.call_claude_for_entry({
       symbol, direction, entry_reason,
@@ -256,16 +257,28 @@ export class TradeJournalService {
   /**
    * 聚合当前市场快照：多周期K线 + 支撑阻力位
    */
-  private async build_market_snapshot(symbol: string, end_time?: number): Promise<object> {
+  private async build_market_snapshot(symbol: string, end_time?: number, timeframe?: string): Promise<object> {
     const now = end_time ?? Date.now();
     const klines_data: Record<string, any[]> = {};
 
+    // 根据入场周期决定提供哪些周期的K线
+    const interval_map: Record<string, string[]> = {
+      '5m':  ['5m', '15m', '1h'],
+      '15m': ['15m', '1h', '4h'],
+      '1h':  ['1h', '4h'],
+      '4h':  ['4h'],
+    };
+    const active_intervals = timeframe && interval_map[timeframe]
+      ? interval_map[timeframe]
+      : ['5m', '15m', '1h', '4h'];
+
     // 各周期数量配置
-    const db_intervals: { interval: string; limit: number }[] = [
-      { interval: '5m',  limit: 100 },  // 约8小时
-      { interval: '15m', limit: 96  },  // 约1天
-      { interval: '1h',  limit: 100 },  // 约4天
-    ];
+    const limit_map: Record<string, number> = {
+      '5m': 100, '15m': 96, '1h': 100,
+    };
+    const db_intervals = active_intervals
+      .filter(i => i !== '4h')
+      .map(i => ({ interval: i, limit: limit_map[i] ?? 100 }));
 
     // 5m/15m/1h 走 HistoricalDataManager（Redis→MySQL→API 降级）
     await Promise.all(
@@ -290,20 +303,22 @@ export class TradeJournalService {
     );
 
     // 4h 走 KlineAggregator（kline_4h_agg 聚合表）
-    try {
-      const start_4h = now - 90 * 4 * 60 * 60 * 1000; // 约15天
-      const klines_4h = await this.kline_aggregator.get_klines_from_db(symbol, '4h', start_4h, now);
-      klines_data['4h'] = klines_4h.map(k => ({
-        open_time: k.open_time,
-        open: k.open,
-        high: k.high,
-        low: k.low,
-        close: k.close,
-        volume: k.volume,
-      }));
-    } catch {
-      logger.warn(`[TradeJournal] Failed to fetch 4h klines for ${symbol}`);
-      klines_data['4h'] = [];
+    if (active_intervals.includes('4h')) {
+      try {
+        const start_4h = now - 90 * 4 * 60 * 60 * 1000; // 约15天
+        const klines_4h = await this.kline_aggregator.get_klines_from_db(symbol, '4h', start_4h, now);
+        klines_data['4h'] = klines_4h.map(k => ({
+          open_time: k.open_time,
+          open: k.open,
+          high: k.high,
+          low: k.low,
+          close: k.close,
+          volume: k.volume,
+        }));
+      } catch {
+        logger.warn(`[TradeJournal] Failed to fetch 4h klines for ${symbol}`);
+        klines_data['4h'] = [];
+      }
     }
 
     let sr_levels: any[] = [];
