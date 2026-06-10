@@ -55,6 +55,7 @@ export class TradeJournalService {
   private sr_repository: SRLevelRepository;
   private claude: Anthropic;
   private openai: OpenAI;
+  private deepseek: OpenAI;
 
   private constructor() {
     this.repository = new TradeJournalRepository();
@@ -65,6 +66,11 @@ export class TradeJournalService {
     });
     this.openai = new OpenAI({
       apiKey: process.env.OPENAI_API_KEY,
+    });
+    // DeepSeek 兼容 OpenAI SDK，只需换 baseURL 和 key
+    this.deepseek = new OpenAI({
+      apiKey: process.env.DEEPSEEK_API_KEY,
+      baseURL: 'https://api.deepseek.com',
     });
   }
 
@@ -508,8 +514,8 @@ ${analysis_section}
   }
 
   /**
-   * 底层 AI 调用，通过 AI_PROVIDER 环境变量选择 claude 或 openai
-   * 默认使用 claude
+   * 底层 AI 调用，通过 AI_PROVIDER 环境变量切换
+   * 支持：claude（默认）、openai、deepseek
    */
   private async call_ai(prompt: string): Promise<string> {
     const provider = process.env.AI_PROVIDER || 'claude';
@@ -517,6 +523,15 @@ ${analysis_section}
     if (provider === 'openai') {
       const response = await this.openai.chat.completions.create({
         model: process.env.OPENAI_MODEL || 'gpt-4o',
+        max_tokens: 1500,
+        messages: [{ role: 'user', content: prompt }],
+      });
+      return response.choices[0].message.content ?? '';
+    }
+
+    if (provider === 'deepseek') {
+      const response = await this.deepseek.chat.completions.create({
+        model: process.env.DEEPSEEK_MODEL || 'deepseek-chat',
         max_tokens: 1500,
         messages: [{ role: 'user', content: prompt }],
       });
