@@ -7,6 +7,7 @@
 import Anthropic from '@anthropic-ai/sdk';
 import OpenAI from 'openai';
 import { HistoricalDataManager } from '@/core/data/historical_data_manager';
+import { KlineAggregator } from '@/core/data/kline_aggregator';
 import { SRLevelRepository } from '@/database/sr_level_repository';
 import { TradeJournalRepository, TradeJournal, TradeDirection } from '@/database/trade_journal_repository';
 import { logger } from '@/utils/logger';
@@ -52,6 +53,7 @@ export class TradeJournalService {
 
   private repository: TradeJournalRepository;
   private historical_data_manager: HistoricalDataManager;
+  private kline_aggregator: KlineAggregator;
   private sr_repository: SRLevelRepository;
   private claude: Anthropic;
   private openai: OpenAI;
@@ -60,6 +62,7 @@ export class TradeJournalService {
   private constructor() {
     this.repository = new TradeJournalRepository();
     this.historical_data_manager = HistoricalDataManager.getInstance();
+    this.kline_aggregator = new KlineAggregator();
     this.sr_repository = new SRLevelRepository();
     this.claude = new Anthropic({
       apiKey: process.env.CLAUDE_API_KEY,
@@ -255,16 +258,23 @@ export class TradeJournalService {
    */
   private async build_market_snapshot(symbol: string, end_time?: number): Promise<object> {
     const now = end_time ?? Date.now();
-    const intervals = ['15m', '1h'];
     const klines_data: Record<string, any[]> = {};
 
+    // 各周期数量配置
+    const db_intervals: { interval: string; limit: number }[] = [
+      { interval: '5m',  limit: 100 },  // 约8小时
+      { interval: '15m', limit: 96  },  // 约1天
+      { interval: '1h',  limit: 168 },  // 约1周
+    ];
+
+    // 5m/15m/1h 走 HistoricalDataManager（Redis→MySQL→API 降级）
     await Promise.all(
-      intervals.map(async (interval) => {
+      db_intervals.map(async ({ interval, limit }) => {
         try {
           const klines = await this.historical_data_manager.get_historical_klines(
-            symbol, interval, undefined, now, 50
+            symbol, interval, undefined, now, limit
           );
-          klines_data[interval] = klines.slice(-20).map(k => ({
+          klines_data[interval] = klines.map(k => ({
             open_time: k.open_time,
             open: k.open,
             high: k.high,
@@ -278,6 +288,23 @@ export class TradeJournalService {
         }
       })
     );
+
+    // 4h 走 KlineAggregator（kline_4h_agg 聚合表）
+    try {
+      const start_4h = now - 90 * 4 * 60 * 60 * 1000; // 约15天
+      const klines_4h = await this.kline_aggregator.get_klines_from_db(symbol, '4h', start_4h, now);
+      klines_data['4h'] = klines_4h.map(k => ({
+        open_time: k.open_time,
+        open: k.open,
+        high: k.high,
+        low: k.low,
+        close: k.close,
+        volume: k.volume,
+      }));
+    } catch {
+      logger.warn(`[TradeJournal] Failed to fetch 4h klines for ${symbol}`);
+      klines_data['4h'] = [];
+    }
 
     let sr_levels: any[] = [];
     try {
@@ -325,7 +352,7 @@ export class TradeJournalService {
       ? snapshot.sr_levels.map((l: any) => `  - ${l.type} @ ${l.price}（强度 ${l.strength}，触碰 ${l.touch_count} 次）`).join('\n')
       : '  暂无数据';
 
-    const kline_summary = ['15m', '1h'].map(interval => {
+    const kline_summary = ['5m', '15m', '1h', '4h'].map(interval => {
       const ks = (snapshot.klines?.[interval] ?? []).slice(-5);
       if (ks.length === 0) return `  ${interval}: 暂无数据`;
       const last = ks[ks.length - 1];
@@ -384,7 +411,7 @@ ${sr_text}
       ? snapshot.sr_levels.map((l: any) => `  - ${l.type} @ ${l.price}（强度 ${l.strength}）`).join('\n')
       : '  暂无数据';
 
-    const kline_summary = ['15m', '1h'].map(interval => {
+    const kline_summary = ['5m', '15m', '1h', '4h'].map(interval => {
       const ks = (snapshot.klines?.[interval] ?? []).slice(-5);
       if (ks.length === 0) return `  ${interval}: 暂无数据`;
       const last = ks[ks.length - 1];
