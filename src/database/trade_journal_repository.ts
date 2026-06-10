@@ -202,6 +202,31 @@ export class TradeJournalRepository extends BaseRepository {
   }
 
   /**
+   * 查询列表并附带每条记录的最新入场评估摘要（overall_assessment、confidence_score）
+   */
+  async find_list_with_analysis(status?: TradeStatus, limit: number = 20, offset: number = 0): Promise<any[]> {
+    const where = status ? `WHERE j.status = ?` : '';
+    const params: any[] = status ? [status] : [];
+    const sql = `
+      SELECT
+        j.*,
+        a.overall_assessment,
+        a.confidence_score,
+        a.analysis_type
+      FROM trade_journal j
+      LEFT JOIN trade_analysis a ON a.id = (
+        SELECT id FROM trade_analysis
+        WHERE journal_id = j.id AND analysis_type = 'entry'
+        ORDER BY created_at DESC LIMIT 1
+      )
+      ${where}
+      ORDER BY j.created_at DESC
+      LIMIT ${Number(limit)} OFFSET ${Number(offset)}
+    `;
+    return this.execute_query(sql, params);
+  }
+
+  /**
    * 统计已平仓交易的盈亏摘要
    */
   async get_stats(): Promise<{ total: number; win: number; loss: number; win_rate: number }> {
