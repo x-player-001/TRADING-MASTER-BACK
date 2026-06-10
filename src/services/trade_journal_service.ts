@@ -659,7 +659,8 @@ ${analysis_section}
       this.repository.find_analyses_by_journal(id),
       this.repository.find_review_by_journal(id),
     ]);
-    return { journal, analyses, review };
+    const analyses_without_snapshot = analyses.map(({ market_snapshot, ...rest }) => rest);
+    return { journal, analyses: analyses_without_snapshot, review };
   }
 
   async get_journal_list(status?: string, limit = 20, offset = 0) {
