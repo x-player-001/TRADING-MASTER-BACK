@@ -1,9 +1,11 @@
 /**
  * 交易日志服务
- * 负责聚合市场数据、调用 Claude API 进行入场评估、持仓再评估和平仓复盘
+ * 负责聚合市场数据、调用 AI API 进行入场评估、持仓再评估和平仓复盘
+ * 支持 Claude（@anthropic-ai/sdk）和 OpenAI，通过 AI_PROVIDER 环境变量切换
  */
 
 import Anthropic from '@anthropic-ai/sdk';
+import OpenAI from 'openai';
 import { HistoricalDataManager } from '@/core/data/historical_data_manager';
 import { SRLevelRepository } from '@/database/sr_level_repository';
 import { TradeJournalRepository, TradeJournal, TradeDirection } from '@/database/trade_journal_repository';
@@ -52,6 +54,7 @@ export class TradeJournalService {
   private historical_data_manager: HistoricalDataManager;
   private sr_repository: SRLevelRepository;
   private claude: Anthropic;
+  private openai: OpenAI;
 
   private constructor() {
     this.repository = new TradeJournalRepository();
@@ -59,6 +62,9 @@ export class TradeJournalService {
     this.sr_repository = new SRLevelRepository();
     this.claude = new Anthropic({
       apiKey: process.env.CLAUDE_API_KEY,
+    });
+    this.openai = new OpenAI({
+      apiKey: process.env.OPENAI_API_KEY,
     });
   }
 
@@ -467,12 +473,7 @@ ${analysis_section}
 `.trim();
 
     try {
-      const response = await this.claude.messages.create({
-        model: process.env.CLAUDE_MODEL || 'claude-sonnet-4-6',
-        max_tokens: 1500,
-        messages: [{ role: 'user', content: prompt }],
-      });
-      const raw = (response.content[0] as any).text as string;
+      const raw = await this.call_ai(prompt);
       const parsed = JSON.parse(this.extract_json(raw));
       return {
         review: parsed.review ?? '',
@@ -481,22 +482,17 @@ ${analysis_section}
         lessons: parsed.lessons ?? [],
       };
     } catch (error) {
-      logger.error('[TradeJournal] Claude review failed:', error);
-      throw new Error('Claude review failed: ' + (error instanceof Error ? error.message : 'unknown'));
+      logger.error('[TradeJournal] AI review failed:', error);
+      throw new Error('AI review failed: ' + (error instanceof Error ? error.message : 'unknown'));
     }
   }
 
   /**
-   * 通用 Claude 调用（用于入场评估和再评估）
+   * 通用 AI 分析调用（入场评估和再评估）
    */
   private async call_claude(prompt: string): Promise<ClaudeAnalysisResult> {
     try {
-      const response = await this.claude.messages.create({
-        model: process.env.CLAUDE_MODEL || 'claude-sonnet-4-6',
-        max_tokens: 1500,
-        messages: [{ role: 'user', content: prompt }],
-      });
-      const raw = (response.content[0] as any).text as string;
+      const raw = await this.call_ai(prompt);
       const parsed = JSON.parse(this.extract_json(raw));
       return {
         analysis: parsed.analysis ?? '',
@@ -506,9 +502,33 @@ ${analysis_section}
         confidence_score: Number(parsed.confidence_score ?? 50),
       };
     } catch (error) {
-      logger.error('[TradeJournal] Claude call failed:', error);
-      throw new Error('Claude call failed: ' + (error instanceof Error ? error.message : 'unknown'));
+      logger.error('[TradeJournal] AI call failed:', error);
+      throw new Error('AI call failed: ' + (error instanceof Error ? error.message : 'unknown'));
     }
+  }
+
+  /**
+   * 底层 AI 调用，通过 AI_PROVIDER 环境变量选择 claude 或 openai
+   * 默认使用 claude
+   */
+  private async call_ai(prompt: string): Promise<string> {
+    const provider = process.env.AI_PROVIDER || 'claude';
+
+    if (provider === 'openai') {
+      const response = await this.openai.chat.completions.create({
+        model: process.env.OPENAI_MODEL || 'gpt-4o',
+        max_tokens: 1500,
+        messages: [{ role: 'user', content: prompt }],
+      });
+      return response.choices[0].message.content ?? '';
+    }
+
+    const response = await this.claude.messages.create({
+      model: process.env.CLAUDE_MODEL || 'claude-sonnet-4-6',
+      max_tokens: 1500,
+      messages: [{ role: 'user', content: prompt }],
+    });
+    return (response.content[0] as any).text as string;
   }
 
   /**
