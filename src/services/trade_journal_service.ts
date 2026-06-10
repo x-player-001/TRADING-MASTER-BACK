@@ -8,6 +8,7 @@ import Anthropic from '@anthropic-ai/sdk';
 import OpenAI from 'openai';
 import { HistoricalDataManager } from '@/core/data/historical_data_manager';
 import { KlineAggregator } from '@/core/data/kline_aggregator';
+import { BinanceAPI } from '@/api';
 import { SRLevelRepository } from '@/database/sr_level_repository';
 import { TradeJournalRepository, TradeJournal, TradeDirection } from '@/database/trade_journal_repository';
 import { logger } from '@/utils/logger';
@@ -55,6 +56,7 @@ export class TradeJournalService {
   private repository: TradeJournalRepository;
   private historical_data_manager: HistoricalDataManager;
   private kline_aggregator: KlineAggregator;
+  private binance_api: BinanceAPI;
   private sr_repository: SRLevelRepository;
   private claude: Anthropic;
   private openai: OpenAI;
@@ -64,6 +66,7 @@ export class TradeJournalService {
     this.repository = new TradeJournalRepository();
     this.historical_data_manager = HistoricalDataManager.getInstance();
     this.kline_aggregator = new KlineAggregator();
+    this.binance_api = BinanceAPI.getInstance();
     this.sr_repository = new SRLevelRepository();
     this.claude = new Anthropic({
       apiKey: process.env.CLAUDE_API_KEY,
@@ -334,8 +337,22 @@ export class TradeJournalService {
       logger.warn(`[TradeJournal] Failed to fetch SR levels for ${symbol}`);
     }
 
-    const last_kline = klines_data['1h']?.slice(-1)[0];
-    const current_price = last_kline?.close ?? null;
+    // 实时价格优先从币安 ticker 获取，避免与最新已收盘K线差距过大
+    // 测试历史数据时（传了 end_time）则用最后一根 K 线的收盘价
+    let current_price: number | null = null;
+    if (end_time) {
+      const last_kline = klines_data['1h']?.slice(-1)[0] ?? klines_data['15m']?.slice(-1)[0];
+      current_price = last_kline?.close ?? null;
+    } else {
+      try {
+        const ticker = await this.binance_api.get_ticker_price(symbol);
+        current_price = ticker?.price ? Number(ticker.price) : null;
+      } catch {
+        logger.warn(`[TradeJournal] Failed to fetch ticker price for ${symbol}, fallback to last kline close`);
+        const last_kline = klines_data['1h']?.slice(-1)[0] ?? klines_data['15m']?.slice(-1)[0];
+        current_price = last_kline?.close ?? null;
+      }
+    }
 
     return {
       symbol,
