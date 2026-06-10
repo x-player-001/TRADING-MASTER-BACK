@@ -255,7 +255,7 @@ export class TradeJournalService {
    */
   private async build_market_snapshot(symbol: string, end_time?: number): Promise<object> {
     const now = end_time ?? Date.now();
-    const intervals = ['15m', '1h', '4h', '1d'];
+    const intervals = ['15m', '1h'];
     const klines_data: Record<string, any[]> = {};
 
     await Promise.all(
@@ -325,7 +325,7 @@ export class TradeJournalService {
       ? snapshot.sr_levels.map((l: any) => `  - ${l.type} @ ${l.price}（强度 ${l.strength}，触碰 ${l.touch_count} 次）`).join('\n')
       : '  暂无数据';
 
-    const kline_summary = ['15m', '1h', '4h', '1d'].map(interval => {
+    const kline_summary = ['15m', '1h'].map(interval => {
       const ks = (snapshot.klines?.[interval] ?? []).slice(-5);
       if (ks.length === 0) return `  ${interval}: 暂无数据`;
       const last = ks[ks.length - 1];
@@ -384,7 +384,7 @@ ${sr_text}
       ? snapshot.sr_levels.map((l: any) => `  - ${l.type} @ ${l.price}（强度 ${l.strength}）`).join('\n')
       : '  暂无数据';
 
-    const kline_summary = ['15m', '1h', '4h', '1d'].map(interval => {
+    const kline_summary = ['15m', '1h'].map(interval => {
       const ks = (snapshot.klines?.[interval] ?? []).slice(-5);
       if (ks.length === 0) return `  ${interval}: 暂无数据`;
       const last = ks[ks.length - 1];
