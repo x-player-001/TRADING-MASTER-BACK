@@ -28,7 +28,7 @@ export class TradeJournalRoutes {
   private setup_routes(): void {
     // 注意：静态路径（list/stats）必须在动态路径（:id）之前注册
     this.router.post('/analyze', this.analyze_entry.bind(this));
-    this.router.get('/list', this.get_list.bind(this));
+    this.router.get('/records', this.get_list.bind(this));
     this.router.get('/stats', this.get_stats.bind(this));
     this.router.post('/:id/open', this.confirm_open.bind(this));
     this.router.post('/:id/dismiss', this.dismiss.bind(this));
@@ -46,7 +46,7 @@ export class TradeJournalRoutes {
     try {
       const { symbol, direction, entry_reason, planned_entry_price, planned_stop_loss, planned_take_profit, end_time } = req.body;
 
-      if (!symbol || !direction || !entry_reason) {
+      if (!symbol || !direction || entry_reason === undefined || entry_reason === null) {
         res.status(400).json({ success: false, error: 'Missing required fields: symbol, direction, entry_reason' });
         return;
       }
