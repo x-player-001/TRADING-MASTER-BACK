@@ -364,8 +364,8 @@ export class TradeJournalService {
     const kline_section = this.format_klines_for_prompt(snapshot.klines ?? {});
 
     const prompt = `
-你是一位专注于价格行为（Price Action）的专业加密货币交易员，擅长通过裸K和多周期结构判断市场。
-请对以下交易计划进行独立评估。
+你是一位专注于价格行为（Price Action）的专业加密货币交易员。
+请基于以下多周期K线数据，对该交易计划进行详细的价格行为分析。
 
 ## 交易计划
 - 币种：${symbol}
@@ -376,29 +376,40 @@ export class TradeJournalService {
 - 计划止盈：${planned_take_profit ?? '未指定'}
 - 入场理由：${entry_reason}
 
-## 市场数据（${snapshot.snapshot_time}）
-字段说明：o=开盘 h=最高 l=最低 c=收盘 v=成交量，按时间从旧到新排列
-
+## 多周期K线数据（北京时间，从旧到新）
 ${kline_section}
 
-支撑阻力位：
+## 关键支撑阻力位
 ${sr_text}
 
 ## 分析要求
-请从价格行为角度，结合多周期结构进行分析：
-1. **多周期结构**：从大周期到小周期依次判断趋势方向和当前所处结构位置（上升/下降/震荡）
-2. **关键价格区域**：结合支撑阻力位，判断当前价格是否处于关键区域（压力/支撑/突破/回测）
-3. **K线形态**：关注近期关键K线（吞没、锤子、十字星、内外包等），判断多空博弈
-4. **入场逻辑验证**：结合以上分析，评估用户的入场理由是否与多周期结构一致
-5. **风险评估**：止损位置是否合理，潜在风险收益比
+请严格按照以下结构逐项分析，每项必须引用具体价格和时间：
+
+1. **4h/1h 大周期结构**
+   - 当前趋势方向（上涨/下跌/震荡），依据是哪几根K线形成的高低点
+   - 价格当前处于结构中的什么位置（突破后回测/支撑反弹/阻力压制/趋势中继等）
+
+2. **15m/5m 小周期入场结构**
+   - 小周期与大周期结构是否一致
+   - 入场点附近的K线形态（具体说出是哪根K线、时间、形态名称）
+   - 量价关系：成交量是否配合走势
+
+3. **关键价格位分析**
+   - 当前价格与最近支撑/阻力位的距离和关系
+   - 止损位是否设在结构之外（关键低点/高点下方或上方）
+   - 如有止盈，是否在下一个阻力/支撑位之前
+
+4. **入场逻辑评估**
+   - 用户的入场理由与当前价格结构是否吻合
+   - 这个位置入场的胜算依据是什么
 
 ## 输出要求
 严格按以下 JSON 格式返回，不要有任何其他内容：
 {
-  "analysis": "多周期价格行为分析（300-500字）",
-  "risk_points": ["风险点1", "风险点2"],
-  "opportunities": ["机会点1", "机会点2"],
-  "overall_assessment": "综合评估与建议（50-100字）",
+  "analysis": "按上述四个维度的完整分析，必须引用具体价格和时间（400-600字）",
+  "risk_points": ["具体风险点，包含价格参考", "..."],
+  "opportunities": ["具体机会点，包含价格参考", "..."],
+  "overall_assessment": "综合结论：入场逻辑是否成立，建议（50-100字）",
   "confidence_score": 75
 }
 `.trim();
@@ -564,7 +575,7 @@ ${analysis_section}
     if (provider === 'openai') {
       const response = await this.openai.chat.completions.create({
         model: process.env.OPENAI_MODEL || 'gpt-4o',
-        max_tokens: 1500,
+        max_tokens: 2500,
         messages: [{ role: 'user', content: prompt }],
       });
       return response.choices[0].message.content ?? '';
@@ -573,7 +584,7 @@ ${analysis_section}
     if (provider === 'deepseek') {
       const response = await this.deepseek.chat.completions.create({
         model: process.env.DEEPSEEK_MODEL || 'deepseek-chat',
-        max_tokens: 1500,
+        max_tokens: 2500,
         messages: [{ role: 'user', content: prompt }],
       });
       return response.choices[0].message.content ?? '';
@@ -581,15 +592,16 @@ ${analysis_section}
 
     const response = await this.claude.messages.create({
       model: process.env.CLAUDE_MODEL || 'claude-sonnet-4-6',
-      max_tokens: 1500,
+      max_tokens: 2500,
       messages: [{ role: 'user', content: prompt }],
     });
     return (response.content[0] as any).text as string;
   }
 
   /**
-   * 将 K 线数据格式化为紧凑的文本，并附带 EMA20 和 MACD 指标
-   * 每根格式：o h l c v（空格分隔），每个周期单独一段
+   * 将 K 线数据格式化为带时间标注的文本，并附带 EMA20 和 MACD 指标
+   * 每根格式：时间 o h l c v，只输出最近30根（减少token同时保留足够近期行为）
+   * 更早的数据用于计算指标但不逐根展示
    */
   private format_klines_for_prompt(klines: Record<string, any[]>): string {
     return ['5m', '15m', '1h', '4h'].map(interval => {
@@ -597,7 +609,6 @@ ${analysis_section}
       if (ks.length === 0) return `### ${interval}\n暂无数据`;
 
       const closes = ks.map((k: any) => Number(k.close));
-
       const ema20 = this.calc_ema(closes, 20);
       const macd = this.calc_macd(closes);
 
@@ -606,11 +617,16 @@ ${analysis_section}
         macd != null ? `MACD=${macd.macd.toFixed(4)} 信号线=${macd.signal.toFixed(4)} 柱=${macd.histogram.toFixed(4)}` : null,
       ].filter(Boolean).join('  ');
 
-      const rows = ks.map((k: any) =>
-        `${k.open} ${k.high} ${k.low} ${k.close} ${Number(k.volume).toFixed(2)}`
-      ).join('\n');
+      // 只取最近30根展示，更早的仅用于指标计算
+      const recent = ks.slice(-30);
+      const rows = recent.map((k: any) => {
+        const t = new Date(k.open_time);
+        const time_str = `${String(t.getUTCMonth() + 1).padStart(2,'0')}/${String(t.getUTCDate()).padStart(2,'0')} ${String((t.getUTCHours() + 8) % 24).padStart(2,'0')}:${String(t.getUTCMinutes()).padStart(2,'0')}`;
+        const body_pct = k.open > 0 ? ((k.close - k.open) / k.open * 100).toFixed(2) : '0';
+        return `${time_str} o:${k.open} h:${k.high} l:${k.low} c:${k.close} v:${Number(k.volume).toFixed(0)} (${Number(body_pct) >= 0 ? '+' : ''}${body_pct}%)`;
+      }).join('\n');
 
-      return `### ${interval}（${ks.length}根）  ${indicator_text}\n${rows}`;
+      return `### ${interval}（共${ks.length}根，展示最近${recent.length}根）  ${indicator_text}\n${rows}`;
     }).join('\n\n');
   }
 
