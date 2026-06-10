@@ -618,10 +618,8 @@ ${analysis_section}
       ].filter(Boolean).join('  ');
 
       const rows = ks.map((k: any, i: number) => {
-        const t = new Date(k.open_time);
-        const time_str = `${String(t.getUTCMonth() + 1).padStart(2,'0')}/${String(t.getUTCDate()).padStart(2,'0')} ${String((t.getUTCHours() + 8) % 24).padStart(2,'0')}:${String(t.getUTCMinutes()).padStart(2,'0')}`;
         const body_pct = k.open > 0 ? ((k.close - k.open) / k.open * 100).toFixed(2) : '0';
-        return `[${i + 1}] ${time_str} o:${k.open} h:${k.high} l:${k.low} c:${k.close} v:${Number(k.volume).toFixed(0)} (${Number(body_pct) >= 0 ? '+' : ''}${body_pct}%)`;
+        return `[${i + 1}] o:${k.open} h:${k.high} l:${k.low} c:${k.close} v:${Number(k.volume).toFixed(0)} (${Number(body_pct) >= 0 ? '+' : ''}${body_pct}%)`;
       }).join('\n');
 
       return `### ${interval}（${ks.length}根）  ${indicator_text}\n${rows}`;
