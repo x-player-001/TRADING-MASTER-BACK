@@ -59,9 +59,9 @@ export class TradeJournalRoutes {
         symbol: (symbol as string).toUpperCase(),
         direction,
         entry_reason,
-        planned_entry_price: planned_entry_price != null ? Number(planned_entry_price) : undefined,
-        planned_stop_loss: planned_stop_loss != null ? Number(planned_stop_loss) : undefined,
-        planned_take_profit: planned_take_profit != null ? Number(planned_take_profit) : undefined,
+        planned_entry_price: planned_entry_price ? Number(planned_entry_price) : undefined,
+        planned_stop_loss: planned_stop_loss ? Number(planned_stop_loss) : undefined,
+        planned_take_profit: planned_take_profit ? Number(planned_take_profit) : undefined,
         end_time: end_time != null ? Number(end_time) : undefined,
         timeframe: timeframe as string | undefined,
       });
