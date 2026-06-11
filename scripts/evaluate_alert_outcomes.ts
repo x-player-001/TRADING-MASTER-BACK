@@ -55,6 +55,15 @@ const TIMEFRAME_MS: Record<string, number> = {
   '4h':  4 * 60 * 60 * 1000,
 };
 
+/**
+ * low 口径止损缓冲：把止损放在回调最低点「下方」这个比例处。
+ * 解决两个问题：
+ *   1) 报警常发在回调低点那根，导致 stop≈entry，RR 分母趋零爆成几十万 → 缓冲后 RR 可用
+ *   2) 实战里止损要留在结构低点下方一点，否则插针就被扫
+ * 同时强制 entry 与 stop 的最小间距不低于此比例，杜绝 RR 爆炸。
+ */
+const STOP_LOW_BUFFER_PCT = 0.003;  // 0.3%
+
 interface Args {
   cap: number;          // 封顶评估根数 N（报警自身周期）
   trigger_cap: number;  // 扳机评估封顶根数（5m，默认576=48小时）
@@ -222,11 +231,16 @@ async function evaluate_alert(
   //   ⇒ lowest_close = wave_end - pullback_ratio * amplitude
   // 注意反推值是收盘价口径，比真实影线低点偏高，会让 low 口径胜率略偏悲观。
   const amplitude = target - stop_wave;
-  const stop_low = alert.pullback_lowest_price != null && alert.pullback_lowest_price > 0
+  const raw_stop_low = alert.pullback_lowest_price != null && alert.pullback_lowest_price > 0
     ? alert.pullback_lowest_price
     : (amplitude > 0
       ? target - alert.pullback_ratio * amplitude
       : entry);  // 数据异常时兜底
+  // 在回调低点下方留 BUFFER，并强制止损距入场至少 BUFFER（避免 stop≈entry 导致 RR 爆炸）
+  const stop_low = Math.min(
+    raw_stop_low * (1 - STOP_LOW_BUFFER_PCT),
+    entry * (1 - STOP_LOW_BUFFER_PCT),
+  );
 
   // 评估区间：报警 K 线收盘之后开始（下一根起）
   const start = alert.kline_time + tf_ms;

@@ -579,7 +579,8 @@ export class TrendFollowRepository extends BaseRepository {
           ROUND(SUM(${outcome_col} = 'win') / NULLIF(SUM(${outcome_col} IN ('win','loss')), 0) * 100, 1) AS win_rate,
           ROUND(AVG(${rr_col}), 2)        AS avg_rr,
           ROUND(AVG(mfe_pct), 2)          AS avg_mfe_pct,
-          ROUND(AVG(mae_pct), 2)          AS avg_mae_pct
+          ROUND(AVG(mae_pct), 2)          AS avg_mae_pct,
+          ROUND(AVG(mfe_pct) / NULLIF(-AVG(mae_pct), 0), 2) AS mfe_mae_ratio
         FROM trend_follow_alert_outcomes
         WHERE ${where.join(' AND ')}
         GROUP BY ${group_cols.join(', ')}
@@ -599,9 +600,12 @@ export class TrendFollowRepository extends BaseRepository {
         losses: Number(r.losses),
         opens: Number(r.opens),
         win_rate: r.win_rate != null ? Number(r.win_rate) : null,
+        // avg_rr：均值，对浅回调（stop 贴近 entry）敏感，仅作参考；优先看 mfe_mae_ratio
         avg_rr: r.avg_rr != null ? Number(r.avg_rr) : null,
         avg_mfe_pct: r.avg_mfe_pct != null ? Number(r.avg_mfe_pct) : null,
         avg_mae_pct: r.avg_mae_pct != null ? Number(r.avg_mae_pct) : null,
+        // mfe_mae_ratio：平均最大浮盈 / 平均最大浮亏，衡量信号潜力的稳健指标（不受 RR 爆炸影响）
+        mfe_mae_ratio: r.mfe_mae_ratio != null ? Number(r.mfe_mae_ratio) : null,
       }));
     });
   }
