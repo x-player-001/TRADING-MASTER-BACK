@@ -30,6 +30,7 @@ import {
   TrendAlert,
   AbandonEvent,
   BreakthroughEvent,
+  EntryTriggerEvent,
   UnifiedKline,
   Timeframe,
 } from '@/services/trend_follow_service';
@@ -116,6 +117,18 @@ function print_breakthrough(event: BreakthroughEvent): void {
   console.log(
     `\n🚀 [突破] [${tf_label}] [${time_str}] ${event.symbol}` +
     `  第一波高点: ${event.wave.end_price.toFixed(4)}  突破价: ${event.breakthrough_price.toFixed(4)}`
+  );
+}
+
+function print_entry_trigger(event: EntryTriggerEvent): void {
+  const tf_label = event.parent_timeframe.toUpperCase();
+  const time_str = beijing_time(event.kline_time);
+  console.log(
+    `\n🎯 [入场确认] [${tf_label}→5m] [${time_str}] ${event.symbol}  (大周期Lv${event.parent_alert_level})`
+  );
+  console.log(
+    `   5m确认价: ${event.confirm_price.toFixed(4)}  止损(5m摆动低): ${event.trigger_stop.toFixed(4)}` +
+    `  目标: ${event.target_price.toFixed(4)}  R:R ≈ ${event.rr_ratio.toFixed(2)}`
   );
 }
 
@@ -236,6 +249,22 @@ async function fetch_quote_volume(symbol: string): Promise<number | null> {
 }
 
 let ws_kline: WebSocket | null = null;
+// 看门狗：最后一次收到任何 WS 消息的时间。长连接可能进入"半开"状态（TCP未断但数据停了），
+// 不会触发 close 事件，必须主动检测无数据并强制重连
+let last_ws_message_time = Date.now();
+const WS_SILENCE_TIMEOUT_MS = 60_000;
+
+/** 看门狗定时器（main 中启动一次，跨重连共用） */
+function start_ws_watchdog(): void {
+  setInterval(() => {
+    if (!ws_kline) return;
+    if (Date.now() - last_ws_message_time > WS_SILENCE_TIMEOUT_MS) {
+      console.warn(`⚠️  WebSocket ${WS_SILENCE_TIMEOUT_MS / 1000}s 无消息，强制断开重连...`);
+      last_ws_message_time = Date.now();   // 防止重连期间重复触发
+      ws_kline.terminate();                // 触发 close 事件 → 自动重连
+    }
+  }, 30_000);
+}
 
 async function start_kline_websocket(symbols: string[]): Promise<void> {
   console.log(`\n📡 订阅 ${symbols.length} 个合约的 ${CONFIG.interval} K线...`);
@@ -243,13 +272,16 @@ async function start_kline_websocket(symbols: string[]): Promise<void> {
   const streams = symbols.map(s => `${s.toLowerCase()}@kline_${CONFIG.interval}`).join('/');
   const ws_url = `wss://fstream.binance.com/market/stream?streams=${streams}`;
 
+  last_ws_message_time = Date.now();
   ws_kline = new WebSocket(ws_url);
 
   ws_kline.on('open', () => {
     console.log(`✅ K线 WebSocket 连接成功 (${symbols.length} 个流)`);
+    last_ws_message_time = Date.now();
   });
 
   ws_kline.on('message', async (data: Buffer) => {
+    last_ws_message_time = Date.now();
     try {
       const msg = JSON.parse(data.toString());
       if (msg.data?.e === 'kline' && msg.data.k?.x === true) {
@@ -440,6 +472,7 @@ function print_status(): void {
   console.log(`   订阅币种: ${stats.symbols_count}`);
   console.log(`   K线接收: ${stats.klines_received}`);
   console.log(`   观察中: ${svc_stats.total_watching}  已废弃(本轮): ${svc_stats.total_abandoned}`);
+  console.log(`   待确认扳机(5m): ${trend_service.get_trigger_watchers().length}`);
   console.log(`   报警统计: Lv0=${stats.alerts_lv0}  Lv1=${stats.alerts_lv1}  Lv2=${stats.alerts_lv2}  Lv3=${stats.alerts_lv3}`);
   console.log(`   已废弃事件: ${stats.abandoned}`);
 }
@@ -452,7 +485,7 @@ async function main(): Promise<void> {
   console.log('═'.repeat(65));
   console.log('\n📋 监控逻辑:');
   console.log('   · 订阅所有合约 5m K线，聚合为 15m / 1h / 4h');
-  console.log('   · 强势第一波条件: 连续阳线≥4根 + 实体占比≥30%(75%根数满足)');
+  console.log('   · 强势第一波条件: 连续阳线≥4根 + 实体占比≥30%(60%根数满足)');
   console.log('     + 波内平均实体 ≥ 前25根平均实体 × 1.5');
   console.log('     + 波内涨幅 ≥ 5%');
   console.log('   · 进入观察区后分级报警:');
@@ -525,6 +558,7 @@ async function main(): Promise<void> {
       wave_amplitude_pct: (alert.wave.amplitude / alert.wave.start_price) * 100,
       wave_bar_count:     alert.wave.bar_count,
       pullback_ratio:     alert.pullback_ratio,
+      pullback_lowest_price: alert.pullback.lowest_price,
       fib_zone:           alert.fib_zone,
       volume_shrink:      alert.volume_shrink,
       reversal_signal:    alert.reversal_signal,
@@ -540,6 +574,22 @@ async function main(): Promise<void> {
 
   trend_service.on_breakthrough((event) => {
     print_breakthrough(event);
+  });
+
+  // 多周期扳机：大周期(1h/4h)到位 + 5m 结构确认 → 入场确认通知 + 入库
+  // 入库后由 evaluate_alert_outcomes 评估器打事后标签，与裸报警入场的统计对比
+  trend_service.on_entry_trigger((event) => {
+    print_entry_trigger(event);
+    trend_follow_repository.insert_entry_trigger({
+      symbol:             event.symbol,
+      parent_timeframe:   event.parent_timeframe,
+      parent_alert_level: event.parent_alert_level,
+      kline_time:         event.kline_time,
+      confirm_price:      event.confirm_price,
+      trigger_stop:       event.trigger_stop,
+      target_price:       event.target_price,
+      rr_ratio:           event.rr_ratio,
+    }).catch(err => console.error(`DB write trigger error:`, err.message));
   });
 
   trend_service.on_context_change(async (ctx, current_price) => {
@@ -593,8 +643,9 @@ async function main(): Promise<void> {
   // 恢复 EMA20 推动状态
   await restore_ema20_contexts();
 
-  // 启动 WebSocket
+  // 启动 WebSocket + 无消息看门狗
   await start_kline_websocket(symbols);
+  start_ws_watchdog();
 
   // 定期状态打印
   setInterval(print_status, CONFIG.status_interval_ms);

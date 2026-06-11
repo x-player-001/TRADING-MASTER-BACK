@@ -50,6 +50,7 @@ export interface PullbackState {
   bar_count: number;         // 回调根数
   min_volume: number;        // 回调期间最小成交量（判断缩量）
   avg_volume: number;        // 回调期间平均成交量
+  recent_volumes?: number[]; // 最近若干根成交量（volume_shrink_recent_bars 开启时用，最多保留10根）
 }
 
 /** 观察区状态机（每个币种每个周期独立一个） */
@@ -66,6 +67,7 @@ export interface WatchContext {
   consecutive_shrink_bars?: number;       // 当前连续缩量根数（Lv0用）
   consecutive_deep_pullback_bars?: number; // 连续收盘价回调超过75%的根数
   quote_volume_24h?: number | null;        // 24h成交额，由外部写入
+  db_insert_inflight?: boolean;            // 新建记录的 INSERT 是否在途（防止重复插入）
 }
 
 /** 报警结果 */
@@ -102,9 +104,35 @@ export interface BreakthroughEvent {
   kline_time: number;
 }
 
+/**
+ * 多周期扳机监视器：大周期（1h/4h）进入 ALERTED 后，挂一个该 symbol 的小周期(5m)监视，
+ * 等小周期出现结构确认（突破最近 N 根 5m 高点）再发「入场确认」。
+ */
+export interface TriggerWatcher {
+  symbol: string;
+  parent_timeframe: Timeframe;     // 触发它的大周期（1h / 4h）
+  parent_alert_level: AlertLevel;
+  parent_wave_high: number;        // 大周期第一波高点（最终目标参考）
+  parent_pullback_low: number;     // 大周期回调低点（粗止损参考）
+  created_time: number;            // 挂载时间(ms)
+  expire_time: number;             // 过期时间(ms)，到点未确认则移除
+}
+
+/** 入场确认事件（小周期确认后发出） */
+export interface EntryTriggerEvent {
+  symbol: string;
+  parent_timeframe: Timeframe;     // 大周期级别
+  parent_alert_level: AlertLevel;
+  confirm_price: number;           // 5m 确认收盘价（假想入场）
+  trigger_stop: number;            // 5m 摆动低点（建议止损，比大周期回调低点更近）
+  target_price: number;            // 大周期第一波高点（目标）
+  rr_ratio: number;                // 用 confirm/stop/target 估算的盈亏比
+  kline_time: number;
+}
+
 // ==================== 配置 ====================
 
-const CONFIG = {
+const DEFAULT_CONFIG = {
   // 强势第一波判定
   min_consecutive_bull: 4,          // 最少连续阳线根数
   allow_small_bear_gap: 2,          // 允许中间夹的小阴线根数（实体 < 平均实体 30%）
@@ -154,23 +182,55 @@ const CONFIG = {
 
   // 缓存大小
   max_cache_size: 200,
+
+  // ---- 多周期扳机（大周期到位 → 小周期确认）----
+  trigger_enabled: true,                 // 是否启用扳机
+  trigger_parent_timeframes: ['1h', '4h'] as Timeframe[],  // 哪些大周期会挂扳机
+  trigger_min_parent_level: 2 as AlertLevel,  // 大周期达到该等级(含)以上才挂扳机
+  trigger_child_timeframe: '5m' as Timeframe, // 用哪个小周期确认
+  trigger_breakout_lookback: 6,          // 确认条件：突破最近 N 根 5m 高点
+  trigger_swing_low_lookback: 6,         // 止损 = 最近 N 根 5m 最低价
+  trigger_expire_parent_bars: 4,         // 父周期 N 根内未确认则扳机过期（1h父级=4h，4h父级=16h，黄金区在大级别上持续更久）
+
+  // ---- 候选规则开关（默认关闭=维持线上行为，供离线回放调优验证）----
+  volume_shrink_recent_bars: 0,        // >0 时缩量判断改用最近N根均量，避免被回调前段的放量稀释
+  require_price_in_zone: false,        // 报警时要求当前收盘价仍在回调低点附近，防止"反弹半山腰"才报警
+  max_bounce_pct_of_amplitude: 0.10,   // 在位约束容差：当前收盘回调比例距最低收盘比例 ≤ 波幅的10%
+  lv0_ignore_min_alert_bars: false,    // Lv0 不受等待期限制（高位紧旗形横盘短，等满第一波根数会错过）
+  lv3_require_reversal: false,         // Lv3 深度回调需出现止跌形态才报警
+  reversal_allow_engulfing: false,     // 看涨吞没计入止跌形态
+  reversal_allow_spring: false,        // 扫低收回(spring，影线刺穿前低收盘收回)计入止跌形态
 };
+
+/** 趋势跟随服务配置类型（回放脚本以 Partial 形式注入变体） */
+export type TrendFollowConfig = typeof DEFAULT_CONFIG;
 
 // ==================== 服务类 ====================
 
 export class TrendFollowService {
+  // 生效配置 = 默认配置 + 注入覆盖（不传则与线上行为完全一致；回放脚本传入变体调优）
+  private config: TrendFollowConfig;
+
   // K线缓存: `${symbol}_${timeframe}` -> UnifiedKline[]
   private kline_cache: Map<string, UnifiedKline[]> = new Map();
 
   // 观察区状态机: `${symbol}_${timeframe}` -> WatchContext
   private watch_contexts: Map<string, WatchContext> = new Map();
 
+  // 多周期扳机: symbol -> TriggerWatcher（每个 symbol 只保留最高级别的一个）
+  private trigger_watchers: Map<string, TriggerWatcher> = new Map();
+
   // 回调: 触发报警时调用
   private on_alert_cb?: (alert: TrendAlert) => void;
   private on_abandon_cb?: (event: AbandonEvent) => void;
   private on_breakthrough_cb?: (event: BreakthroughEvent) => void;
+  private on_entry_trigger_cb?: (event: EntryTriggerEvent) => void;
   // db_id 存在时为更新，不存在时为新建（回调需返回 db_id 写回 ctx）
   private on_context_change_cb?: (ctx: WatchContext, current_price: number) => Promise<number | undefined>;
+
+  constructor(config_overrides?: Partial<TrendFollowConfig>) {
+    this.config = { ...DEFAULT_CONFIG, ...config_overrides };
+  }
 
   /** 注册报警回调 */
   on_alert(cb: (alert: TrendAlert) => void): void {
@@ -185,6 +245,16 @@ export class TrendFollowService {
   /** 注册突破回调 */
   on_breakthrough(cb: (event: BreakthroughEvent) => void): void {
     this.on_breakthrough_cb = cb;
+  }
+
+  /** 注册入场确认回调（多周期扳机：大周期到位 + 小周期确认） */
+  on_entry_trigger(cb: (event: EntryTriggerEvent) => void): void {
+    this.on_entry_trigger_cb = cb;
+  }
+
+  /** 获取当前活跃的扳机监视器（状态打印用） */
+  get_trigger_watchers(): TriggerWatcher[] {
+    return Array.from(this.trigger_watchers.values());
   }
 
   /** 注册观察区状态变更回调。db_id 不存在时为新建，回调应返回新建的 id；存在时为更新，返回值忽略 */
@@ -236,7 +306,7 @@ export class TrendFollowService {
    */
   init_cache(symbol: string, timeframe: Timeframe, klines: UnifiedKline[]): void {
     const key = this._cache_key(symbol, timeframe);
-    this.kline_cache.set(key, klines.slice(-CONFIG.max_cache_size));
+    this.kline_cache.set(key, klines.slice(-this.config.max_cache_size));
   }
 
   /**
@@ -348,7 +418,12 @@ export class TrendFollowService {
       cache[cache.length - 1] = kline;
     } else {
       cache.push(kline);
-      if (cache.length > CONFIG.max_cache_size) cache.shift();
+      if (cache.length > this.config.max_cache_size) cache.shift();
+    }
+
+    // 多周期扳机：5m K线用于确认大周期挂起的入场机会（独立于 5m 自身观察区状态）
+    if (kline.timeframe === this.config.trigger_child_timeframe && this.trigger_watchers.has(kline.symbol)) {
+      this._check_trigger(kline.symbol, cache, kline);
     }
 
     const ctx = this._get_or_create_context(kline.symbol, kline.timeframe);
@@ -395,7 +470,7 @@ export class TrendFollowService {
     cache: UnifiedKline[],
     current: UnifiedKline
   ): void {
-    if (cache.length < CONFIG.min_consecutive_bull + CONFIG.amplitude_lookback) return;
+    if (cache.length < this.config.min_consecutive_bull + this.config.amplitude_lookback) return;
 
     // 向前扫描，找连续阳线序列（允许夹小阴线）
     const wave = this._find_bull_wave(cache);
@@ -414,16 +489,13 @@ export class TrendFollowService {
       bar_count: 0,
       min_volume: current.volume,
       avg_volume: current.volume,
+      recent_volumes: [current.volume],
     };
     ctx.last_alert_level = undefined;
     ctx.consecutive_shrink_bars = 0;
     ctx.consecutive_deep_pullback_bars = 0;
-    // 新建记录，回调返回 db_id 写回 ctx
-    if (this.on_context_change_cb) {
-      this.on_context_change_cb({ ...ctx }, current.close).then(id => {
-        if (id !== undefined) ctx.db_id = id;
-      });
-    }
+    // 新建记录（_fire_context_change 内部处理 db_id 回写与防重复插入）
+    this._fire_context_change(ctx, current.close);
   }
 
   /**
@@ -435,9 +507,9 @@ export class TrendFollowService {
     const len = cache.length;
 
     // 基准实体强度（取末尾前足够多的 K 线，用中位数避免极端值拉高门槛）
-    const base_end = Math.max(0, len - CONFIG.min_consecutive_bull);
+    const base_end = Math.max(0, len - this.config.min_consecutive_bull);
     const base_klines = cache.slice(
-      Math.max(0, base_end - CONFIG.amplitude_lookback),
+      Math.max(0, base_end - this.config.amplitude_lookback),
       base_end
     );
     if (base_klines.length < 5) return null;
@@ -449,7 +521,7 @@ export class TrendFollowService {
     let skipped = 0;
     while (
       wave_end_idx >= 0 &&
-      skipped < CONFIG.max_pullback_bars_before_detect &&
+      skipped < this.config.max_pullback_bars_before_detect &&
       cache[wave_end_idx].close <= cache[wave_end_idx].open  // 阴线或十字星
     ) {
       wave_end_idx--;
@@ -471,11 +543,11 @@ export class TrendFollowService {
       const is_small_bear = !is_bull && range > 0 && body / range < 0.3 && body < base_avg_body * 0.3;
 
       // 振幅不足 0.5% 的K线直接终止（不论阳阴）
-      if (k.open > 0 && range / k.open < CONFIG.min_bar_range_pct) break;
+      if (k.open > 0 && range / k.open < this.config.min_bar_range_pct) break;
 
       if (is_bull) {
         seq.unshift(k);
-      } else if (is_small_bear && small_bear_count < CONFIG.allow_small_bear_gap && seq.length > 0) {
+      } else if (is_small_bear && small_bear_count < this.config.allow_small_bear_gap && seq.length > 0) {
         seq.unshift(k);
         small_bear_count++;
       } else {
@@ -483,20 +555,20 @@ export class TrendFollowService {
       }
     }
 
-    if (seq.length < CONFIG.min_consecutive_bull) return null;
+    if (seq.length < this.config.min_consecutive_bull) return null;
 
     // 过滤：只保留首尾都是阳线
     while (seq.length > 0 && seq[0].close <= seq[0].open) seq.shift();
     while (seq.length > 0 && seq[seq.length - 1].close <= seq[seq.length - 1].open) seq.pop();
-    if (seq.length < CONFIG.min_consecutive_bull) return null;
+    if (seq.length < this.config.min_consecutive_bull) return null;
 
     // 检查实体占比：满足条件的根数 >= 总根数 75%
     const bull_bars = seq.filter(k => k.close > k.open);
     const good_body_count = bull_bars.filter(k => {
       const range = k.high - k.low;
-      return range > 0 && Math.abs(k.close - k.open) / range >= CONFIG.min_body_ratio;
+      return range > 0 && Math.abs(k.close - k.open) / range >= this.config.min_body_ratio;
     }).length;
-    if (good_body_count / bull_bars.length < CONFIG.min_body_ratio_bars) return null;
+    if (good_body_count / bull_bars.length < this.config.min_body_ratio_bars) return null;
 
     const start_price = seq[0].open;
     // 高点取最后一根阳线的收盘价（实体顶），不用影线最高价，避免把突破K线的高影纳入第一波
@@ -506,7 +578,7 @@ export class TrendFollowService {
     if (amplitude <= 0) return null;
 
     // 涨幅必须 >= 5%
-    if (amplitude / start_price < CONFIG.min_wave_amplitude_pct) return null;
+    if (amplitude / start_price < this.config.min_wave_amplitude_pct) return null;
 
     // 检查实体强度：波内平均实体涨幅% >= 基准中位数实体涨幅% × 1.1
     const wave_avg_body_pct = bull_bars.reduce((s, k) => s + Math.abs(k.close - k.open) / k.open, 0) / bull_bars.length;
@@ -515,11 +587,11 @@ export class TrendFollowService {
     const base_median_body_pct = base_body_pcts.length % 2 === 0
       ? (base_body_pcts[mid - 1] + base_body_pcts[mid]) / 2
       : base_body_pcts[mid];
-    if (wave_avg_body_pct < base_median_body_pct * CONFIG.amplitude_multiplier) return null;
+    if (wave_avg_body_pct < base_median_body_pct * this.config.amplitude_multiplier) return null;
 
     // 第一波影线高点必须是近150根内最高点（过滤震荡行情）
     const wave_high = Math.max(...seq.map(k => k.high));
-    const lookback_start = Math.max(0, len - CONFIG.wave_high_lookback);
+    const lookback_start = Math.max(0, len - this.config.wave_high_lookback);
     const lookback_high = Math.max(...cache.slice(lookback_start, len).map(k => k.high));
     if (wave_high < lookback_high) return null;
 
@@ -553,7 +625,7 @@ export class TrendFollowService {
 
     // 收盘价超过第一波高点
     if (current.close > wave.end_price) {
-      if (pb.bar_count < CONFIG.breakthrough_min_pullback_bars) {
+      if (pb.bar_count < this.config.breakthrough_min_pullback_bars) {
         // 回调根数不足 → 第一波尚未结束，继续累加
         wave.bar_count++;
         wave.end_price = current.close;
@@ -565,11 +637,12 @@ export class TrendFollowService {
         pb.lowest_close = current.close;
         pb.min_volume = current.volume;
         pb.avg_volume = current.volume;
+        pb.recent_volumes = [current.volume];
         this._fire_context_change(ctx, current.close);
         return;
       }
       // 已有足够回调 + 成交量确认 → 突破
-      if (current.volume >= wave.avg_volume * CONFIG.breakthrough_volume_ratio) {
+      if (current.volume >= wave.avg_volume * this.config.breakthrough_volume_ratio) {
         ctx.state = 'BREAKTHROUGH';
         this.on_breakthrough_cb?.({
           symbol: ctx.symbol,
@@ -584,12 +657,16 @@ export class TrendFollowService {
       // 有回调但量不足，不算突破，继续观察（fall through 到回调统计）
     }
 
+    // 记录本根之前的回调最低影线价（spring 判定需要"刺穿前低后收回"的前值）
+    const prev_lowest_price = pb.lowest_price;
+
     // 更新回调统计
     pb.bar_count++;
     pb.lowest_price = Math.min(pb.lowest_price, current.low);
     pb.lowest_close = Math.min(pb.lowest_close, current.close);
     pb.avg_volume = (pb.avg_volume * (pb.bar_count - 1) + current.volume) / pb.bar_count;
     pb.min_volume = Math.min(pb.min_volume, current.volume);
+    pb.recent_volumes = [...(pb.recent_volumes ?? []), current.volume].slice(-10);
 
     // ---- 废弃条件1：影线跌破起涨价，直接废弃 ----
     if (pb.lowest_price < wave.start_price) {
@@ -598,25 +675,25 @@ export class TrendFollowService {
 
     // ---- 废弃条件2：收盘价回调超过75%，且连续2根 ----
     const close_pullback_ratio = (wave.end_price - current.close) / wave.amplitude;
-    if (close_pullback_ratio > CONFIG.fib_abandon) {
+    if (close_pullback_ratio > this.config.fib_abandon) {
       ctx.consecutive_deep_pullback_bars = (ctx.consecutive_deep_pullback_bars ?? 0) + 1;
     } else {
       ctx.consecutive_deep_pullback_bars = 0;
     }
-    if ((ctx.consecutive_deep_pullback_bars ?? 0) >= CONFIG.fib_abandon_confirm_bars) {
+    if ((ctx.consecutive_deep_pullback_bars ?? 0) >= this.config.fib_abandon_confirm_bars) {
       return this._abandon(ctx, wave, `收盘价回调 ${(close_pullback_ratio * 100).toFixed(1)}% 连续 ${ctx.consecutive_deep_pullback_bars} 根超过 75%`);
     }
 
     // ---- 废弃条件2：回调根数超限 ----
-    if (pb.bar_count > CONFIG.max_pullback_bars) {
-      return this._abandon(ctx, wave, `回调根数 ${pb.bar_count} 超过 ${CONFIG.max_pullback_bars} 根`);
+    if (pb.bar_count > this.config.max_pullback_bars) {
+      return this._abandon(ctx, wave, `回调根数 ${pb.bar_count} 超过 ${this.config.max_pullback_bars} 根`);
     }
 
     // ---- 废弃条件3：进入N根K线后成交额仍低于5M ----
-    if (pb.bar_count >= CONFIG.quote_volume_check_delay_bars &&
+    if (pb.bar_count >= this.config.quote_volume_check_delay_bars &&
         ctx.quote_volume_24h !== undefined &&
         ctx.quote_volume_24h !== null &&
-        ctx.quote_volume_24h < CONFIG.min_quote_volume) {
+        ctx.quote_volume_24h < this.config.min_quote_volume) {
       return this._abandon(ctx, wave, `24h成交额 ${(ctx.quote_volume_24h / 1e6).toFixed(2)}M 低于 5M`);
     }
 
@@ -627,11 +704,11 @@ export class TrendFollowService {
     // 波动收窄：当前K线振幅 < 第一波平均振幅 × 60%
     const wave_avg_range = wave.amplitude / wave.bar_count;
     const cur_range = current.high - current.low;
-    const is_range_shrink = cur_range < wave_avg_range * CONFIG.lv0_range_shrink_ratio;
+    const is_range_shrink = cur_range < wave_avg_range * this.config.lv0_range_shrink_ratio;
     // 成交量缩减：< 第一波均量 × 50%
-    const is_vol_shrink = current.volume < wave.avg_volume * CONFIG.volume_shrink_ratio;
+    const is_vol_shrink = current.volume < wave.avg_volume * this.config.volume_shrink_ratio;
     const bear_body = current.close < current.open ? (current.open - current.close) : 0;
-    const no_big_bear = bear_body < wave.amplitude * CONFIG.lv0_max_bear_body_ratio;
+    const no_big_bear = bear_body < wave.amplitude * this.config.lv0_max_bear_body_ratio;
 
     // 两种缩量条件之一满足 + 无大阴线
     if ((is_vol_shrink || is_range_shrink) && no_big_bear) {
@@ -641,21 +718,36 @@ export class TrendFollowService {
     }
 
     // ---- 报警判断 ----
-    const min_alert_bars = wave.bar_count * CONFIG.min_alert_bars_multiplier;
-    if (pb.bar_count < min_alert_bars) {
-      this._fire_context_change(ctx, current.close);
-      return;
-    }
-
-    const volume_shrink = pb.avg_volume < wave.avg_volume * CONFIG.volume_shrink_ratio;
-    const reversal = this._check_reversal_signal(current);
+    const volume_shrink = this._check_volume_shrink(pb, wave);
+    const prev_bar = cache.length >= 2 ? cache[cache.length - 2] : undefined;
+    const reversal = this._check_reversal_signal(current, prev_bar, prev_lowest_price);
 
     const new_level = this._calc_alert_level(
       pullback_ratio, volume_shrink, reversal, ctx.consecutive_shrink_bars ?? 0
     );
+
+    // 等待期：未满 min_alert_bars 不报警；lv0_ignore_min_alert_bars 开启时 Lv0 例外
+    // （高位紧旗形往往横盘很短，等满第一波根数会错过，Lv0 自身已有连续缩量根数门槛）
+    const min_alert_bars = wave.bar_count * this.config.min_alert_bars_multiplier;
+    if (pb.bar_count < min_alert_bars &&
+        !(new_level === 0 && this.config.lv0_ignore_min_alert_bars)) {
+      this._fire_context_change(ctx, current.close);
+      return;
+    }
+
     if (new_level === null) {
       this._fire_context_change(ctx, current.close);
       return;
+    }
+
+    // 在位约束：报警时当前收盘价必须仍在回调低点附近，
+    // 防止价格早已反弹半山腰、报警语义却还是"在黄金区"（按报警价入场盈亏比已劣化）
+    if (this.config.require_price_in_zone) {
+      const current_close_ratio = (wave.end_price - current.close) / wave.amplitude;
+      if (pullback_ratio - current_close_ratio > this.config.max_bounce_pct_of_amplitude) {
+        this._fire_context_change(ctx, current.close);
+        return;
+      }
     }
 
     // 只升级不降级（已报警过更高等级则忽略）
@@ -670,9 +762,9 @@ export class TrendFollowService {
     const fib_zone = this._fib_zone_label(pullback_ratio);
 
     // EMA20 支撑判断：回调最低价（影线）在 EMA20 ±5% 范围内
-    const ema20 = this._calc_ema(cache, CONFIG.ema20_period);
+    const ema20 = this._calc_ema(cache, this.config.ema20_period);
     const ema20_support = ema20 !== null &&
-      Math.abs(pb.lowest_price - ema20) / ema20 <= CONFIG.ema20_support_range;
+      Math.abs(pb.lowest_price - ema20) / ema20 <= this.config.ema20_support_range;
 
     const alert: TrendAlert = {
       symbol: ctx.symbol,
@@ -691,7 +783,94 @@ export class TrendFollowService {
     };
 
     this.on_alert_cb?.(alert);
+    this._maybe_register_trigger(alert);
     this._fire_context_change(ctx, current.close);
+  }
+
+  /**
+   * 大周期报警达到阈值时，挂一个该 symbol 的小周期(5m)扳机监视器。
+   * 同一 symbol 已有扳机时，仅当新报警级别更高才覆盖。
+   */
+  private _maybe_register_trigger(alert: TrendAlert): void {
+    if (!this.config.trigger_enabled) return;
+    if (!this.config.trigger_parent_timeframes.includes(alert.timeframe)) return;
+    if (alert.alert_level < this.config.trigger_min_parent_level) return;
+
+    const existing = this.trigger_watchers.get(alert.symbol);
+    if (existing && existing.parent_alert_level >= alert.alert_level) return;
+
+    // 过期窗口按父周期缩放：4h 父级的回调在大级别上持续更久，固定小窗口会让扳机必然过期
+    const parent_ms = this._timeframe_ms(alert.timeframe);
+    const now = alert.kline_time;
+    this.trigger_watchers.set(alert.symbol, {
+      symbol: alert.symbol,
+      parent_timeframe: alert.timeframe,
+      parent_alert_level: alert.alert_level,
+      parent_wave_high: alert.wave.end_price,
+      parent_pullback_low: alert.pullback.lowest_price,
+      created_time: now,
+      expire_time: now + this.config.trigger_expire_parent_bars * parent_ms,
+    });
+  }
+
+  /** 周期 → 毫秒 */
+  private _timeframe_ms(tf: Timeframe): number {
+    switch (tf) {
+      case '5m':  return 5 * 60 * 1000;
+      case '15m': return 15 * 60 * 1000;
+      case '1h':  return 60 * 60 * 1000;
+      case '4h':  return 4 * 60 * 60 * 1000;
+    }
+  }
+
+  /**
+   * 5m K线到来时检查该 symbol 的扳机：
+   * 确认条件 = 5m 收盘突破最近 N 根 5m 高点（不接飞刀，等小级别转强）。
+   * 确认后止损取最近 N 根 5m 摆动低点（比大周期回调低点更近，R 更高）。
+   */
+  private _check_trigger(symbol: string, cache_5m: UnifiedKline[], current: UnifiedKline): void {
+    const watcher = this.trigger_watchers.get(symbol);
+    if (!watcher) return;
+
+    // 过期清理
+    if (current.open_time >= watcher.expire_time) {
+      this.trigger_watchers.delete(symbol);
+      return;
+    }
+
+    const lookback = this.config.trigger_breakout_lookback;
+    if (cache_5m.length < lookback + 1) return;
+
+    // 最近 N 根（不含当前根）的最高点
+    const prior = cache_5m.slice(-lookback - 1, -1);
+    const recent_high = Math.max(...prior.map(k => k.high));
+
+    // 确认：当前 5m 收盘突破最近高点
+    if (current.close <= recent_high) return;
+
+    // 止损 = 最近 N 根 5m 摆动低点
+    const swing_window = cache_5m.slice(-this.config.trigger_swing_low_lookback);
+    const trigger_stop = Math.min(...swing_window.map(k => k.low));
+
+    const confirm_price = current.close;
+    const target_price = watcher.parent_wave_high;
+    const risk = confirm_price - trigger_stop;
+    const reward = target_price - confirm_price;
+    const rr_ratio = risk > 0 ? reward / risk : 0;
+
+    // 确认后移除扳机（一次性）
+    this.trigger_watchers.delete(symbol);
+
+    this.on_entry_trigger_cb?.({
+      symbol,
+      parent_timeframe: watcher.parent_timeframe,
+      parent_alert_level: watcher.parent_alert_level,
+      confirm_price,
+      trigger_stop,
+      target_price,
+      rr_ratio,
+      kline_time: current.open_time,
+    });
   }
 
   /**
@@ -704,44 +883,73 @@ export class TrendFollowService {
     reversal: boolean,
     consecutive_shrink_bars: number,
   ): AlertLevel | null {
-    if (pullback_ratio > CONFIG.fib_62) return null;
+    if (pullback_ratio > this.config.fib_62) return null;
 
     // 等级0：高位横盘缩量（回调极浅 + 持续缩量 + 无大阴线）
     if (
-      pullback_ratio < CONFIG.lv0_max_pullback &&
-      consecutive_shrink_bars >= CONFIG.lv0_min_shrink_bars
+      pullback_ratio < this.config.lv0_max_pullback &&
+      consecutive_shrink_bars >= this.config.lv0_min_shrink_bars
     ) return 0;
 
-    if (pullback_ratio <= CONFIG.fib_38) {
+    if (pullback_ratio <= this.config.fib_38) {
       if (volume_shrink) return 1;
       return null;
     }
 
-    if (pullback_ratio <= CONFIG.fib_50) {
+    if (pullback_ratio <= this.config.fib_50) {
       if (volume_shrink && reversal) return 2;
       if (volume_shrink) return 1;
       return null;
     }
 
-    // 50% ~ 61.8%：等级3
+    // 50% ~ 61.8%：等级3（lv3_require_reversal 开启时需出现止跌形态）
+    if (this.config.lv3_require_reversal && !reversal) return null;
     return 3;
   }
 
   /**
-   * 检测止跌形态：倒锤头（下影线长）或十字星（实体小）
+   * 缩量判断：默认用整个回调期的平均量；
+   * volume_shrink_recent_bars > 0 时改用最近N根均量（"现在没人卖了"比"平均卖得不多"更接近卖压枯竭的本质，
+   * 避免回调前段的获利了结放量把均值稀释）
    */
-  private _check_reversal_signal(k: UnifiedKline): boolean {
+  private _check_volume_shrink(pb: PullbackState, wave: FirstWave): boolean {
+    const n = this.config.volume_shrink_recent_bars;
+    if (n > 0 && pb.recent_volumes && pb.recent_volumes.length > 0) {
+      const recent = pb.recent_volumes.slice(-n);
+      const recent_avg = recent.reduce((s, v) => s + v, 0) / recent.length;
+      return recent_avg < wave.avg_volume * this.config.volume_shrink_ratio;
+    }
+    return pb.avg_volume < wave.avg_volume * this.config.volume_shrink_ratio;
+  }
+
+  /**
+   * 检测止跌形态：锤子线（下影线长）或十字星（实体小）；
+   * 可选扩展（配置开关）：看涨吞没、扫低收回(spring)
+   * @param prev      前一根K线（吞没判定用）
+   * @param prior_low 本根之前的回调最低影线价（spring 判定用）
+   */
+  private _check_reversal_signal(k: UnifiedKline, prev?: UnifiedKline, prior_low?: number): boolean {
     const range = k.high - k.low;
     if (range === 0) return false;
     const body = Math.abs(k.close - k.open);
     const lower_shadow = Math.min(k.open, k.close) - k.low;
     const upper_shadow = k.high - Math.max(k.open, k.close);
 
-    const is_doji = body / range <= CONFIG.reversal_doji_body_max;
-    const is_hammer = lower_shadow / range >= CONFIG.reversal_lower_shadow_min
-      && upper_shadow / range <= CONFIG.reversal_upper_shadow_max;
+    const is_doji = body / range <= this.config.reversal_doji_body_max;
+    const is_hammer = lower_shadow / range >= this.config.reversal_lower_shadow_min
+      && upper_shadow / range <= this.config.reversal_upper_shadow_max;
 
-    return is_doji || is_hammer;
+    // 看涨吞没：前阴后阳，当前实体完全覆盖前一根实体
+    const is_engulfing = this.config.reversal_allow_engulfing && prev !== undefined
+      && prev.close < prev.open
+      && k.close > k.open
+      && k.close >= prev.open && k.open <= prev.close;
+
+    // 扫低收回(spring)：影线刺穿此前回调低点，收盘收回其上（插针洗盘，常为第二波起点）
+    const is_spring = this.config.reversal_allow_spring && prior_low !== undefined
+      && k.low < prior_low && k.close > prior_low;
+
+    return is_doji || is_hammer || is_engulfing || is_spring;
   }
 
   /** 计算 EMA，返回最新一根的值，不足 period 根时返回 null */
@@ -756,8 +964,8 @@ export class TrendFollowService {
   }
 
   private _fib_zone_label(ratio: number): string {
-    if (ratio < CONFIG.fib_38) return `< 38.2%（${(ratio * 100).toFixed(1)}%）`;
-    if (ratio < CONFIG.fib_50) return `38.2%~50%（${(ratio * 100).toFixed(1)}%）`;
+    if (ratio < this.config.fib_38) return `< 38.2%（${(ratio * 100).toFixed(1)}%）`;
+    if (ratio < this.config.fib_50) return `38.2%~50%（${(ratio * 100).toFixed(1)}%）`;
     return `50%~61.8%（${(ratio * 100).toFixed(1)}%）`;
   }
 
@@ -773,8 +981,27 @@ export class TrendFollowService {
     this._fire_context_change(ctx, ctx.pullback?.lowest_price ?? wave.end_price);
   }
 
-  /** 触发状态变更回调（更新场景，fire-and-forget） */
+  /**
+   * 触发状态变更回调（fire-and-forget）。
+   * db_id 尚未写回时回调会执行 INSERT 并返回新 id —— 必须把 id 写回 ctx，
+   * 且 INSERT 在途期间跳过后续触发，否则首次 INSERT 失败/未完成时每根K线都会重复插入新行。
+   */
   private _fire_context_change(ctx: WatchContext, current_price: number): void {
-    this.on_context_change_cb?.({ ...ctx }, current_price);
+    if (!this.on_context_change_cb) return;
+
+    if (ctx.db_id === undefined) {
+      if (ctx.db_insert_inflight) return;   // 上一次 INSERT 还在途，跳过本次
+      ctx.db_insert_inflight = true;
+      this.on_context_change_cb({ ...ctx }, current_price)
+        .then(id => {
+          if (id !== undefined) ctx.db_id = id;
+        })
+        .catch(() => { /* 回调内部已记录错误，下一根K线会重试 INSERT */ })
+        .finally(() => {
+          ctx.db_insert_inflight = false;
+        });
+    } else {
+      Promise.resolve(this.on_context_change_cb({ ...ctx }, current_price)).catch(() => {});
+    }
   }
 }

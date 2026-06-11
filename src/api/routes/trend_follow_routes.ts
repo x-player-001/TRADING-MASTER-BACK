@@ -213,6 +213,87 @@ router.delete('/watch-contexts/:id', async (req: Request, res: Response): Promis
 });
 
 /**
+ * GET /api/trend-follow/outcome-stats
+ * 报警事后标签统计：按 等级 × 周期 (× 信号组合) 汇总胜率/盈亏比/MFE/MAE
+ *
+ * Query params:
+ *   stop        - 止损口径：low（回调低点，默认）/ wave（起涨价）
+ *   timeframe   - 周期过滤（可选）
+ *   alert_level - 等级过滤（可选）
+ *   by_signals  - true 时把 缩量/止跌/EMA20支撑 也纳入分组，便于看信号组合差异
+ */
+router.get('/outcome-stats', async (req: Request, res: Response): Promise<void> => {
+  try {
+    const {
+      stop,
+      timeframe,
+      alert_level,
+      by_signals,
+    } = req.query as Record<string, string>;
+
+    const rows = await get_repository().get_outcome_stats({
+      stop: stop === 'wave' ? 'wave' : 'low',
+      timeframe,
+      alert_level: alert_level !== undefined ? Number(alert_level) : undefined,
+      group_by_signals: by_signals === 'true',
+    });
+
+    res.json({
+      success: true,
+      stop: stop === 'wave' ? 'wave' : 'low',
+      data: rows,
+      count: rows.length,
+    });
+  } catch (error: any) {
+    logger.error('[TrendFollow API] outcome_stats failed:', error);
+    res.status(500).json({ success: false, error: error.message });
+  }
+});
+
+/**
+ * GET /api/trend-follow/triggers
+ * 扳机入场确认事件列表（按确认时间倒序），含评估器回填的事后结果
+ *
+ * Query params:
+ *   symbol           - 币种过滤（可选）
+ *   parent_timeframe - 父周期过滤 1h/4h（可选）
+ *   outcome          - 结果过滤 win/loss/open/unevaluated（可选，unevaluated=尚未评估）
+ *   start_time       - 确认K线时间起始(ms)（可选）
+ *   limit            - 返回条数，默认 50
+ */
+router.get('/triggers', async (req: Request, res: Response): Promise<void> => {
+  try {
+    const { symbol, parent_timeframe, outcome, start_time, limit } = req.query as Record<string, string>;
+    const rows = await get_repository().get_triggers({
+      symbol,
+      parent_timeframe,
+      outcome,
+      start_time: start_time !== undefined ? Number(start_time) : undefined,
+      limit: limit !== undefined ? Number(limit) : undefined,
+    });
+    res.json({ success: true, data: rows, count: rows.length });
+  } catch (error: any) {
+    logger.error('[TrendFollow API] get_triggers failed:', error);
+    res.status(500).json({ success: false, error: error.message });
+  }
+});
+
+/**
+ * GET /api/trend-follow/trigger-stats
+ * 扳机入场确认的事后统计：按 父周期 × 父等级 汇总
+ * 与 /outcome-stats（裸报警入场）对比，验证「5m确认入场」是否更优
+ */
+router.get('/trigger-stats', async (_req: Request, res: Response): Promise<void> => {
+  try {
+    const rows = await get_repository().get_trigger_outcome_stats();
+    res.json({ success: true, data: rows, count: rows.length });
+  } catch (error: any) {
+    logger.error('[TrendFollow API] trigger_stats failed:', error);
+    res.status(500).json({ success: false, error: error.message });
+  }
+});
+
+/**
  * DELETE /api/trend-follow/alerts/cleanup
  * 清理旧报警记录
  *

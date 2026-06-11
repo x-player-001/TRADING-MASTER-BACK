@@ -39,6 +39,22 @@ export interface CloseTradeParams {
   planned_entry_price?: number;  // 用于计算盈亏（无入场价时由前端传入）
 }
 
+// 入场风险点的持仓中复核结果
+export interface RiskReviewItem {
+  risk: string;                                      // 入场时列的风险点原文
+  status: 'materialized' | 'cleared' | 'pending';   // 兑现 / 解除 / 待定
+  note: string;                                      // 依据（含价格）
+}
+
+// 入场评估的可执行清单结论（强制 AI 给可证伪的具体价格）
+export interface EntryDecision {
+  action: 'enter' | 'wait' | 'skip';
+  entry_zone: [number, number] | null;   // [下沿, 上沿]
+  invalidation_price: number | null;      // 失效价：跌破/涨破即想法证伪
+  targets: number[];                      // 分批目标
+  rr_ratio: number | null;
+}
+
 // Claude 分析结果通用结构
 interface ClaudeAnalysisResult {
   analysis: string;
@@ -46,6 +62,8 @@ interface ClaudeAnalysisResult {
   opportunities: string[];
   overall_assessment: string;
   confidence_score: number;
+  risk_review?: RiskReviewItem[];   // 仅再评估时返回：对入场风险点逐条复核
+  decision?: EntryDecision;         // 仅入场评估时返回：可执行清单
 }
 
 // ==================== Service ====================
@@ -61,6 +79,9 @@ export class TradeJournalService {
   private claude: Anthropic;
   private openai: OpenAI;
   private deepseek: OpenAI;
+
+  // 历史错误清单缓存（平仓生成新复盘时失效）
+  private lessons_digest_cache: string | null = null;
 
   private constructor() {
     this.repository = new TradeJournalRepository();
@@ -114,9 +135,12 @@ export class TradeJournalService {
       status: 'analyzing',
     });
 
-    // 异步执行，不阻塞响应
-    this.run_entry_analysis(journal_id, params).catch(err => {
+    // 异步执行，不阻塞响应；失败时标记 failed，避免前端永远轮询不到结果
+    this.run_entry_analysis(journal_id, params).catch(async err => {
       logger.error(`[TradeJournal] Background analysis failed for journal #${journal_id}:`, err);
+      await this.repository.mark_failed(journal_id).catch(mark_err => {
+        logger.error(`[TradeJournal] mark_failed error for journal #${journal_id}:`, mark_err);
+      });
     });
 
     return { journal_id };
@@ -128,14 +152,19 @@ export class TradeJournalService {
   private async run_entry_analysis(journal_id: number, params: AnalyzeEntryParams): Promise<void> {
     const { symbol, direction, entry_reason, planned_entry_price, planned_stop_loss, planned_take_profit, end_time, timeframe } = params;
 
-    const market_snapshot = await this.build_market_snapshot(symbol, end_time, timeframe);
+    const [market_snapshot, lessons_digest] = await Promise.all([
+      this.build_market_snapshot(symbol, end_time, timeframe),
+      this.build_lessons_digest(),
+    ]);
 
     const claude_result = await this.call_claude_for_entry({
       symbol, direction, entry_reason,
       planned_entry_price, planned_stop_loss, planned_take_profit,
       market_snapshot,
+      lessons_digest,
     });
 
+    const decision = claude_result.decision;
     await this.repository.save_analysis({
       journal_id,
       analysis_type: 'entry',
@@ -145,9 +174,16 @@ export class TradeJournalService {
       opportunities: claude_result.opportunities,
       overall_assessment: claude_result.overall_assessment,
       confidence_score: claude_result.confidence_score,
+      action: decision?.action ?? null,
+      entry_zone_low: decision?.entry_zone?.[0] ?? null,
+      entry_zone_high: decision?.entry_zone?.[1] ?? null,
+      invalidation_price: decision?.invalidation_price ?? null,
+      target_1: decision?.targets?.[0] ?? null,
+      target_2: decision?.targets?.[1] ?? null,
+      rr_ratio: decision?.rr_ratio ?? null,
     });
 
-    logger.info(`[TradeJournal] Entry analysis done for journal #${journal_id}`);
+    logger.info(`[TradeJournal] Entry analysis done for journal #${journal_id}${decision ? `, action=${decision.action}` : ''}`);
   }
 
   /**
@@ -192,12 +228,18 @@ export class TradeJournalService {
       floating_pnl_text = `${pnl_pct >= 0 ? '+' : ''}${pnl_pct.toFixed(2)}%`;
     }
 
+    // 取入场评估时 AI 列出的风险点，让本次再评估逐条对照（兑现/解除/待定）
+    const analyses = await this.repository.find_analyses_by_journal(journal_id);
+    const entry_analysis = analyses.find(a => a.analysis_type === 'entry');
+    const entry_risk_points = entry_analysis?.risk_points ?? [];
+
     const claude_result = await this.call_claude_for_reassess({
       journal,
       current_price,
       floating_pnl_text,
       concern,
       market_snapshot,
+      entry_risk_points,
     });
 
     // 保存这次再评估记录
@@ -210,6 +252,7 @@ export class TradeJournalService {
       opportunities: claude_result.opportunities,
       overall_assessment: claude_result.overall_assessment,
       confidence_score: claude_result.confidence_score,
+      risk_review: claude_result.risk_review,
     });
 
     return { market_snapshot, ...claude_result };
@@ -262,8 +305,39 @@ export class TradeJournalService {
       lessons: review_result.lessons,
     });
 
+    // 有新复盘 → 历史错误清单缓存失效，下次入场评估重新聚合
+    this.lessons_digest_cache = null;
+
     logger.info(`[TradeJournal] Review generated for journal #${journal_id}, pnl_pct=${pnl_pct.toFixed(2)}%`);
     return { ...review_result, pnl_pct };
+  }
+
+  /**
+   * 聚合「该用户历史高频错误清单」，注入入场评估 prompt。
+   * 取最近若干条复盘的 lessons + what_went_wrong，去重后缓存；平仓生成新复盘时失效。
+   * 返回空串表示暂无历史数据。
+   */
+  private async build_lessons_digest(): Promise<string> {
+    if (this.lessons_digest_cache !== null) return this.lessons_digest_cache;
+
+    let digest = '';
+    try {
+      const reviews = await this.repository.get_recent_lessons(20);
+      const items = new Set<string>();
+      for (const r of reviews) {
+        for (const l of r.lessons) if (l?.trim()) items.add(l.trim());
+        for (const w of r.what_went_wrong) if (w?.trim()) items.add(w.trim());
+      }
+      // 最多保留 12 条，避免 prompt 过长
+      const list = Array.from(items).slice(0, 12);
+      if (list.length > 0) {
+        digest = list.map((x, i) => `  ${i + 1}. ${x}`).join('\n');
+      }
+    } catch (err) {
+      logger.warn('[TradeJournal] build_lessons_digest failed:', err);
+    }
+    this.lessons_digest_cache = digest;
+    return digest;
   }
 
   // ==================== 数据聚合 ====================
@@ -353,8 +427,9 @@ export class TradeJournalService {
     planned_stop_loss?: number;
     planned_take_profit?: number;
     market_snapshot: object;
+    lessons_digest?: string;
   }): Promise<ClaudeAnalysisResult> {
-    const { symbol, direction, entry_reason, planned_entry_price, planned_stop_loss, planned_take_profit, market_snapshot } = params;
+    const { symbol, direction, entry_reason, planned_entry_price, planned_stop_loss, planned_take_profit, market_snapshot, lessons_digest } = params;
     const snapshot = market_snapshot as any;
 
     const sr_text = snapshot.sr_levels?.length > 0
@@ -362,6 +437,10 @@ export class TradeJournalService {
       : '  暂无数据';
 
     const kline_section = this.format_klines_for_prompt(snapshot.klines ?? {});
+
+    const lessons_section = lessons_digest
+      ? `\n## 该用户历史上常犯的错误（来自过往复盘，请重点检查本次是否重蹈覆辙）\n${lessons_digest}\n\n如果本次计划命中其中任何一条，请在 risk_points 里明确点名指出。\n`
+      : '';
 
     const prompt = `
 你是一位专注于价格行为（Price Action）的专业加密货币交易员。
@@ -376,14 +455,14 @@ export class TradeJournalService {
 - 计划止盈：${planned_take_profit ?? '未指定'}
 - 入场理由：${entry_reason}
 
-## 多周期K线数据（北京时间，从旧到新）
+## 多周期K线数据（按时间从旧到新排列，[n] 为K线序号，序号越大越新，最后一根为最新K线）
 ${kline_section}
 
 ## 关键支撑阻力位
 ${sr_text}
-
+${lessons_section}
 ## 分析要求
-请严格按照以下结构逐项分析，每项必须引用具体价格和时间：
+请严格按照以下结构逐项分析，每项必须引用具体价格和K线序号（如「1h[87]」表示1h周期第87根）；K线数据中没有时间戳，不要编造具体时间：
 
 1. **4h/1h 大周期结构**
    - 当前趋势方向（上涨/下跌/震荡），依据是哪几根K线形成的高低点
@@ -391,7 +470,7 @@ ${sr_text}
 
 2. **15m/5m 小周期入场结构**
    - 小周期与大周期结构是否一致
-   - 入场点附近的K线形态（具体说出是哪根K线、时间、形态名称）
+   - 入场点附近的K线形态（具体说出是哪根K线的序号、形态名称）
    - 量价关系：成交量是否配合走势
 
 3. **关键价格位分析**
@@ -404,12 +483,20 @@ ${sr_text}
    - 这个位置入场的胜算依据是什么
 
 ## 输出要求
+交易决策需要的是可执行的清单式结论，不是模糊的散文。请给出**可证伪的具体价格**。
+其中 invalidation_price（失效价）最重要：它是一个具体价格——价格一旦到达/突破它，就证明这个交易想法是错的，应当离场。必须给出，不能含糊。
+
 严格按以下 JSON 格式返回，不要有任何其他内容：
 {
-  "analysis": "按上述四个维度的完整分析，必须引用具体价格和时间（400-600字）",
+  "action": "enter | wait | skip（明确动作：现在入场 / 等待更好位置 / 放弃）",
+  "entry_zone": [入场区间下沿价, 入场区间上沿价],
+  "invalidation_price": 失效价（具体数字，到此价证明想法错误）,
+  "targets": [目标1价, 目标2价],
+  "rr_ratio": 盈亏比数字（用 entry / invalidation / target1 估算）,
+  "analysis": "价格行为分析，引用具体价格和K线序号（精简到 150-250 字，只讲关键依据）",
   "risk_points": ["具体风险点，包含价格参考", "..."],
   "opportunities": ["具体机会点，包含价格参考", "..."],
-  "overall_assessment": "综合结论：入场逻辑是否成立，建议（50-100字）",
+  "overall_assessment": "综合结论与明确动作建议（50-100字）",
   "confidence_score": 75
 }
 `.trim();
@@ -426,8 +513,9 @@ ${sr_text}
     floating_pnl_text: string;
     concern: string;
     market_snapshot: object;
+    entry_risk_points: string[];
   }): Promise<ClaudeAnalysisResult> {
-    const { journal, current_price, floating_pnl_text, concern, market_snapshot } = params;
+    const { journal, current_price, floating_pnl_text, concern, market_snapshot, entry_risk_points } = params;
     const snapshot = market_snapshot as any;
 
     const sr_text = snapshot.sr_levels?.length > 0
@@ -435,6 +523,32 @@ ${sr_text}
       : '  暂无数据';
 
     const kline_section = this.format_klines_for_prompt(snapshot.klines ?? {});
+
+    // 入场时列出的风险点，逐条带回让 AI 复核
+    const has_entry_risks = entry_risk_points.length > 0;
+    const entry_risks_text = has_entry_risks
+      ? entry_risk_points.map((r, i) => `  ${i + 1}. ${r}`).join('\n')
+      : '  （入场时未记录风险点）';
+
+    const risk_review_requirement = has_entry_risks
+      ? `
+
+## 入场时你列出的风险点（必须逐条复核）
+${entry_risks_text}
+
+请对上面每一条风险点，结合当前价格走势判断它现在的状态：
+- materialized（已兑现）：这个风险实际发生了
+- cleared（已解除）：这个风险已不再成立
+- pending（仍待定）：尚未发生但仍需警惕
+每条都要给出依据（引用具体价格）。`
+      : '';
+
+    const risk_review_json = has_entry_risks
+      ? `,
+  "risk_review": [
+    { "risk": "入场风险点原文", "status": "materialized|cleared|pending", "note": "依据（含价格）" }
+  ]`
+      : '';
 
     const prompt = `
 你是一位专注于价格行为（Price Action）的专业加密货币交易员，擅长通过裸K和多周期结构判断市场。
@@ -452,12 +566,14 @@ ${sr_text}
 - 我的疑虑：${concern}
 
 ## 最新市场数据（${snapshot.snapshot_time}）
-字段说明：o=开盘 h=最高 l=最低 c=收盘 v=成交量，按时间从旧到新排列
+字段说明：[n]=K线序号 o=开盘 h=最高 l=最低 c=收盘 v=成交量，按时间从旧到新排列（序号越大越新）。
+引用K线时用「周期[序号]」格式（如 15m[40]），数据中没有时间戳，不要编造具体时间。
 
 ${kline_section}
 
 支撑阻力位：
 ${sr_text}
+${risk_review_requirement}
 
 ## 分析要求
 请从价格行为角度，结合多周期结构评估持仓状态：
@@ -473,7 +589,7 @@ ${sr_text}
   "risk_points": ["当前风险点1", "当前风险点2"],
   "opportunities": ["支持继续持仓的理由1", "理由2"],
   "overall_assessment": "明确建议：继续持仓 / 部分减仓 / 立即平仓，并说明理由（50-100字）",
-  "confidence_score": 60
+  "confidence_score": 60${risk_review_json}
 }
 `.trim();
 
@@ -531,8 +647,7 @@ ${analysis_section}
 `.trim();
 
     try {
-      const raw = await this.call_ai(prompt);
-      const parsed = JSON.parse(this.extract_json(raw));
+      const parsed = await this.call_ai_json(prompt);
       return {
         review: parsed.review ?? '',
         what_went_well: parsed.what_went_well ?? [],
@@ -550,19 +665,45 @@ ${analysis_section}
    */
   private async call_claude(prompt: string): Promise<ClaudeAnalysisResult> {
     try {
-      const raw = await this.call_ai(prompt);
-      const parsed = JSON.parse(this.extract_json(raw));
+      const parsed = await this.call_ai_json(prompt);
       return {
         analysis: parsed.analysis ?? '',
         risk_points: parsed.risk_points ?? [],
         opportunities: parsed.opportunities ?? [],
         overall_assessment: parsed.overall_assessment ?? '',
         confidence_score: Number(parsed.confidence_score ?? 50),
+        risk_review: Array.isArray(parsed.risk_review) ? parsed.risk_review : undefined,
+        decision: parsed.action ? {
+          action: parsed.action,
+          entry_zone: Array.isArray(parsed.entry_zone) && parsed.entry_zone.length === 2
+            ? [Number(parsed.entry_zone[0]), Number(parsed.entry_zone[1])]
+            : null,
+          invalidation_price: parsed.invalidation_price != null ? Number(parsed.invalidation_price) : null,
+          targets: Array.isArray(parsed.targets) ? parsed.targets.map((t: any) => Number(t)) : [],
+          rr_ratio: parsed.rr_ratio != null ? Number(parsed.rr_ratio) : null,
+        } : undefined,
       };
     } catch (error) {
       logger.error('[TradeJournal] AI call failed:', error);
       throw new Error('AI call failed: ' + (error instanceof Error ? error.message : 'unknown'));
     }
+  }
+
+  /**
+   * 调用 AI 并解析 JSON 结果，失败（截断/格式错误/网络异常）自动重试一次
+   */
+  private async call_ai_json(prompt: string, max_attempts: number = 2): Promise<any> {
+    let last_error: unknown;
+    for (let attempt = 1; attempt <= max_attempts; attempt++) {
+      try {
+        const raw = await this.call_ai(prompt);
+        return JSON.parse(this.extract_json(raw));
+      } catch (error) {
+        last_error = error;
+        logger.warn(`[TradeJournal] AI call/parse attempt ${attempt}/${max_attempts} failed: ${error instanceof Error ? error.message : error}`);
+      }
+    }
+    throw last_error;
   }
 
   /**
@@ -575,7 +716,7 @@ ${analysis_section}
     if (provider === 'openai') {
       const response = await this.openai.chat.completions.create({
         model: process.env.OPENAI_MODEL || 'gpt-4o',
-        max_tokens: 2500,
+        max_tokens: 4000,
         messages: [{ role: 'user', content: prompt }],
       });
       return response.choices[0].message.content ?? '';
@@ -584,7 +725,7 @@ ${analysis_section}
     if (provider === 'deepseek') {
       const response = await this.deepseek.chat.completions.create({
         model: process.env.DEEPSEEK_MODEL || 'deepseek-chat',
-        max_tokens: 2500,
+        max_tokens: 4000,
         messages: [{ role: 'user', content: prompt }],
       });
       return response.choices[0].message.content ?? '';
@@ -592,16 +733,15 @@ ${analysis_section}
 
     const response = await this.claude.messages.create({
       model: process.env.CLAUDE_MODEL || 'claude-sonnet-4-6',
-      max_tokens: 2500,
+      max_tokens: 4000,
       messages: [{ role: 'user', content: prompt }],
     });
     return (response.content[0] as any).text as string;
   }
 
   /**
-   * 将 K 线数据格式化为带时间标注的文本，并附带 EMA20 和 MACD 指标
-   * 每根格式：时间 o h l c v，只输出最近30根（减少token同时保留足够近期行为）
-   * 更早的数据用于计算指标但不逐根展示
+   * 将 K 线数据格式化为带序号的文本，并附带 EMA20 和 MACD 指标
+   * 每根格式：[序号] o h l c v (实体涨跌%)，全量输出（不带时间戳以节省token，序号供AI引用定位）
    */
   private format_klines_for_prompt(klines: Record<string, any[]>): string {
     return ['5m', '15m', '1h', '4h'].map(interval => {
@@ -707,5 +847,10 @@ ${analysis_section}
 
   async get_stats() {
     return this.repository.get_stats();
+  }
+
+  /** 置信度校准：分桶看高置信度是否真的更赚（满 30 笔后才有参考意义） */
+  async get_calibration() {
+    return this.repository.get_confidence_calibration();
   }
 }

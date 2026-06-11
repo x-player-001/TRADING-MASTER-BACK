@@ -30,6 +30,7 @@ export class TradeJournalRoutes {
     this.router.post('/analyze', this.analyze_entry.bind(this));
     this.router.get('/records', this.get_list.bind(this));
     this.router.get('/stats', this.get_stats.bind(this));
+    this.router.get('/calibration', this.get_calibration.bind(this));
     this.router.post('/:id/open', this.confirm_open.bind(this));
     this.router.post('/:id/dismiss', this.dismiss.bind(this));
     this.router.post('/:id/reassess', this.reassess.bind(this));
@@ -219,6 +220,24 @@ export class TradeJournalRoutes {
       res.json({ success: true, data: stats, timestamp: Date.now() });
     } catch (error) {
       logger.error('[TradeJournalAPI] get_stats failed:', error);
+      res.status(500).json({
+        success: false,
+        error: 'Internal server error',
+        message: error instanceof Error ? error.message : 'Unknown error',
+      });
+    }
+  }
+
+  /**
+   * 置信度校准统计
+   * GET /api/journal/calibration
+   */
+  private async get_calibration(_req: Request, res: Response): Promise<void> {
+    try {
+      const data = await this.service.get_calibration();
+      res.json({ success: true, data, timestamp: Date.now() });
+    } catch (error) {
+      logger.error('[TradeJournalAPI] get_calibration failed:', error);
       res.status(500).json({
         success: false,
         error: 'Internal server error',

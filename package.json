@@ -18,7 +18,10 @@
     "setup": "npm install && npm run build",
     "redetect-oi": "ts-node -r tsconfig-paths/register scripts/redetect_oi_anomalies.ts",
     "backtest": "ts-node -r tsconfig-paths/register scripts/run_backtest.ts",
-    "trade": "ts-node -r tsconfig-paths/register scripts/run_live_trading.ts"
+    "trade": "ts-node -r tsconfig-paths/register scripts/run_live_trading.ts",
+    "trend-monitor": "ts-node -r tsconfig-paths/register scripts/run_trend_follow_monitor.ts",
+    "evaluate-alerts": "ts-node -r tsconfig-paths/register scripts/evaluate_alert_outcomes.ts",
+    "replay": "ts-node -r tsconfig-paths/register scripts/replay_trend_follow.ts"
   },
   "keywords": [
     "crypto",

@@ -5,6 +5,7 @@
  * 状态流转：
  *   analyzing → open       （确认开仓）
  *   analyzing → dismissed  （放弃开仓）
+ *   analyzing → failed     （AI 分析失败，前端可停止轮询并重试）
  *   open      → closed     （手动平仓）
  */
 
@@ -14,7 +15,7 @@ import { logger } from '@/utils/logger';
 // ==================== 类型定义 ====================
 
 export type TradeDirection = 'LONG' | 'SHORT';
-export type TradeStatus = 'analyzing' | 'open' | 'dismissed' | 'closed';
+export type TradeStatus = 'analyzing' | 'open' | 'dismissed' | 'closed' | 'failed';
 
 export interface TradeJournal {
   id?: number;
@@ -33,6 +34,13 @@ export interface TradeJournal {
   updated_at?: Date;
 }
 
+/** 再评估时对入场风险点的逐条复核 */
+export interface RiskReviewItem {
+  risk: string;
+  status: 'materialized' | 'cleared' | 'pending';
+  note: string;
+}
+
 export interface TradeAnalysis {
   id?: number;
   journal_id: number;
@@ -43,6 +51,16 @@ export interface TradeAnalysis {
   opportunities: string[];
   overall_assessment: string;
   confidence_score?: number;
+  // ---- 入场评估的可执行清单字段（entry 类型才有，旧记录为 null）----
+  action?: 'enter' | 'wait' | 'skip' | null;   // 明确动作
+  entry_zone_low?: number | null;              // 入场区间下沿
+  entry_zone_high?: number | null;             // 入场区间上沿
+  invalidation_price?: number | null;          // 失效价（证伪价）
+  target_1?: number | null;                    // 目标1
+  target_2?: number | null;                    // 目标2
+  rr_ratio?: number | null;                    // 盈亏比
+  // ---- 再评估的入场风险点复核（reassess 类型才有）----
+  risk_review?: RiskReviewItem[] | null;
   created_at?: Date;
 }
 
@@ -76,7 +94,7 @@ export class TradeJournalRepository extends BaseRepository {
         planned_take_profit DECIMAL(20,8) NULL,
         actual_exit_price DECIMAL(20,8) NULL,
         pnl_pct DECIMAL(10,4) NULL,
-        status ENUM('analyzing','open','dismissed','closed') NOT NULL DEFAULT 'analyzing',
+        status ENUM('analyzing','open','dismissed','closed','failed') NOT NULL DEFAULT 'analyzing',
         opened_at TIMESTAMP NULL,
         closed_at TIMESTAMP NULL,
         created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
@@ -98,11 +116,22 @@ export class TradeJournalRepository extends BaseRepository {
         opportunities JSON NOT NULL,
         overall_assessment TEXT NOT NULL,
         confidence_score INT NULL,
+        action VARCHAR(10) NULL,
+        entry_zone_low DECIMAL(20,8) NULL,
+        entry_zone_high DECIMAL(20,8) NULL,
+        invalidation_price DECIMAL(20,8) NULL,
+        target_1 DECIMAL(20,8) NULL,
+        target_2 DECIMAL(20,8) NULL,
+        rr_ratio DECIMAL(10,4) NULL,
+        risk_review JSON NULL,
         created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
         INDEX idx_journal_id (journal_id),
         FOREIGN KEY (journal_id) REFERENCES trade_journal(id) ON DELETE CASCADE
       ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4
     `, 'trade_analysis');
+
+    // 兼容旧表：补齐入场清单字段与风险复核字段（已存在则忽略）
+    await this.ensure_analysis_columns();
 
     await this.ensure_table_exists(`
       CREATE TABLE IF NOT EXISTS trade_review (
@@ -118,6 +147,43 @@ export class TradeJournalRepository extends BaseRepository {
         FOREIGN KEY (journal_id) REFERENCES trade_journal(id) ON DELETE CASCADE
       ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4
     `, 'trade_review');
+  }
+
+  /**
+   * 给已存在的表补齐新增列/枚举值（幂等）。
+   * 注意：MySQL 8.0 不支持 ADD COLUMN IF NOT EXISTS（仅 MariaDB 支持），
+   * 用普通 ADD COLUMN + 捕获 Duplicate column 错误实现幂等，两边都兼容。
+   */
+  private async ensure_analysis_columns(): Promise<void> {
+    const alters = [
+      `ALTER TABLE trade_analysis ADD COLUMN action VARCHAR(10) NULL`,
+      `ALTER TABLE trade_analysis ADD COLUMN entry_zone_low DECIMAL(20,8) NULL`,
+      `ALTER TABLE trade_analysis ADD COLUMN entry_zone_high DECIMAL(20,8) NULL`,
+      `ALTER TABLE trade_analysis ADD COLUMN invalidation_price DECIMAL(20,8) NULL`,
+      `ALTER TABLE trade_analysis ADD COLUMN target_1 DECIMAL(20,8) NULL`,
+      `ALTER TABLE trade_analysis ADD COLUMN target_2 DECIMAL(20,8) NULL`,
+      `ALTER TABLE trade_analysis ADD COLUMN rr_ratio DECIMAL(10,4) NULL`,
+      `ALTER TABLE trade_analysis ADD COLUMN risk_review JSON NULL`,
+    ];
+    for (const sql of alters) {
+      try {
+        await this.execute_query(sql);
+      } catch (err: any) {
+        // 列已存在，忽略
+        if (!/Duplicate column/i.test(err.message ?? '')) {
+          logger.warn(`[TradeJournal] ensure_analysis_columns: ${err.message}`);
+        }
+      }
+    }
+
+    // 旧表的 status 枚举补上 'failed'（MODIFY COLUMN 幂等，重复执行无副作用）
+    try {
+      await this.execute_query(
+        `ALTER TABLE trade_journal MODIFY COLUMN status ENUM('analyzing','open','dismissed','closed','failed') NOT NULL DEFAULT 'analyzing'`
+      );
+    } catch (err: any) {
+      logger.warn(`[TradeJournal] ensure status enum: ${err.message}`);
+    }
   }
 
   // ==================== trade_journal ====================
@@ -164,6 +230,17 @@ export class TradeJournalRepository extends BaseRepository {
       [id]
     );
     logger.info(`[TradeJournal] Dismissed journal #${id}`);
+  }
+
+  /**
+   * AI 分析失败：analyzing → failed（前端轮询到 failed 即可停止等待并提示重试）
+   */
+  async mark_failed(id: number): Promise<void> {
+    await this.update_and_get_affected_rows(
+      `UPDATE trade_journal SET status = 'failed' WHERE id = ? AND status = 'analyzing'`,
+      [id]
+    );
+    logger.warn(`[TradeJournal] Marked journal #${id} as failed`);
   }
 
   /**
@@ -249,6 +326,43 @@ export class TradeJournalRepository extends BaseRepository {
     };
   }
 
+  /**
+   * 置信度校准：按 confidence 分桶统计已平仓交易的实际胜率/平均盈亏
+   * 用入场评估的 confidence_score 关联其平仓结果，验证「高置信度是否真的更赚」
+   */
+  async get_confidence_calibration(): Promise<Array<{
+    bucket: string; samples: number; win_rate: number | null; avg_pnl_pct: number | null;
+  }>> {
+    const sql = `
+      SELECT
+        CASE
+          WHEN a.confidence_score >= 80 THEN '80+'
+          WHEN a.confidence_score >= 60 THEN '60-79'
+          WHEN a.confidence_score >= 40 THEN '40-59'
+          ELSE '<40'
+        END AS bucket,
+        COUNT(*) AS samples,
+        ROUND(SUM(j.pnl_pct > 0) / COUNT(*) * 100, 1) AS win_rate,
+        ROUND(AVG(j.pnl_pct), 2) AS avg_pnl_pct
+      FROM trade_journal j
+      JOIN trade_analysis a ON a.id = (
+        SELECT id FROM trade_analysis
+        WHERE journal_id = j.id AND analysis_type = 'entry'
+        ORDER BY created_at DESC LIMIT 1
+      )
+      WHERE j.status = 'closed' AND a.confidence_score IS NOT NULL
+      GROUP BY bucket
+      ORDER BY MIN(a.confidence_score) DESC
+    `;
+    const rows = await this.execute_query(sql);
+    return rows.map(r => ({
+      bucket: r.bucket,
+      samples: Number(r.samples),
+      win_rate: r.win_rate != null ? Number(r.win_rate) : null,
+      avg_pnl_pct: r.avg_pnl_pct != null ? Number(r.avg_pnl_pct) : null,
+    }));
+  }
+
   // ==================== trade_analysis ====================
 
   /**
@@ -257,8 +371,9 @@ export class TradeJournalRepository extends BaseRepository {
   async save_analysis(data: Omit<TradeAnalysis, 'id' | 'created_at'>): Promise<number> {
     const sql = `
       INSERT INTO trade_analysis
-        (journal_id, analysis_type, market_snapshot, claude_analysis, risk_points, opportunities, overall_assessment, confidence_score)
-      VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+        (journal_id, analysis_type, market_snapshot, claude_analysis, risk_points, opportunities, overall_assessment, confidence_score,
+         action, entry_zone_low, entry_zone_high, invalidation_price, target_1, target_2, rr_ratio, risk_review)
+      VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
     `;
     return this.insert_and_get_id(sql, [
       data.journal_id,
@@ -269,6 +384,14 @@ export class TradeJournalRepository extends BaseRepository {
       JSON.stringify(data.opportunities),
       data.overall_assessment,
       data.confidence_score ?? null,
+      data.action ?? null,
+      data.entry_zone_low ?? null,
+      data.entry_zone_high ?? null,
+      data.invalidation_price ?? null,
+      data.target_1 ?? null,
+      data.target_2 ?? null,
+      data.rr_ratio ?? null,
+      data.risk_review ? JSON.stringify(data.risk_review) : null,
     ]);
   }
 
@@ -285,6 +408,7 @@ export class TradeJournalRepository extends BaseRepository {
       market_snapshot: typeof r.market_snapshot === 'string' ? JSON.parse(r.market_snapshot) : r.market_snapshot,
       risk_points: typeof r.risk_points === 'string' ? JSON.parse(r.risk_points) : r.risk_points,
       opportunities: typeof r.opportunities === 'string' ? JSON.parse(r.opportunities) : r.opportunities,
+      risk_review: r.risk_review == null ? null : (typeof r.risk_review === 'string' ? JSON.parse(r.risk_review) : r.risk_review),
     }));
   }
 
@@ -309,6 +433,20 @@ export class TradeJournalRepository extends BaseRepository {
     ]);
     logger.info(`[TradeJournal] Saved review for journal #${data.journal_id}`);
     return id;
+  }
+
+  /**
+   * 取最近 N 条复盘的 lessons 和 what_went_wrong，用于聚合「历史错误清单」
+   */
+  async get_recent_lessons(limit: number = 20): Promise<Array<{ lessons: string[]; what_went_wrong: string[] }>> {
+    const rows = await this.execute_query(
+      `SELECT lessons, what_went_wrong FROM trade_review ORDER BY created_at DESC LIMIT ${Number(limit)}`,
+      []
+    );
+    return rows.map(r => ({
+      lessons: typeof r.lessons === 'string' ? JSON.parse(r.lessons) : (r.lessons ?? []),
+      what_went_wrong: typeof r.what_went_wrong === 'string' ? JSON.parse(r.what_went_wrong) : (r.what_went_wrong ?? []),
+    }));
   }
 
   /**
