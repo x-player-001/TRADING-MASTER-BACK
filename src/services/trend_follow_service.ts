@@ -178,7 +178,11 @@ const DEFAULT_CONFIG = {
 
   // EMA20 支撑判断
   ema20_period: 20,
-  ema20_support_range: 0.05,    // 回调低点在 EMA20 ±5% 范围内视为 EMA20 支撑
+  ema20_support_range: 0.015,   // 回调低点在 EMA20 ±1.5% 范围内视为 EMA20 支撑（原 ±5% 太宽，回放证明反而拖累胜率）
+
+  // Lv3 通知开关：false=静音通知/不入库，但仍参与扳机挂载（回放显示 Lv3 报警本身质量差，
+  // 但挂在 Lv3 上的 5m 扳机期望R +0.32 最佳，故只静音通知、保留扳机）
+  lv3_notify: false,
 
   // 缓存大小
   max_cache_size: 200,
@@ -782,7 +786,10 @@ export class TrendFollowService {
       kline_time: current.open_time,
     };
 
-    this.on_alert_cb?.(alert);
+    // Lv3 默认静音通知（不发 alert 回调，故不打印/不入库），但仍挂扳机
+    if (alert.alert_level !== 3 || this.config.lv3_notify) {
+      this.on_alert_cb?.(alert);
+    }
     this._maybe_register_trigger(alert);
     this._fire_context_change(ctx, current.close);
   }

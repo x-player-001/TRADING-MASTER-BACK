@@ -46,6 +46,7 @@ const CONFIG = {
   status_interval_ms: 60_000,      // 状态打印间隔
   preload_bars: 150,               // 预加载历史5m K线根数
   preload_agg_bars: 100,           // 预加载历史聚合K线根数（15m/1h/4h）
+  enable_ema20_push: false,        // EMA20 推动监控开关（暂停：不喂数据/不预热/不恢复/不写库）
 };
 
 // ==================== 全局变量 ====================
@@ -217,8 +218,10 @@ async function process_kline(symbol: string, kline_raw: any): Promise<void> {
   const aggregated = kline_aggregator.process_5m_kline(kline_data);
   for (const agg of aggregated) {
     trend_service.process_aggregated_kline(agg);
-    // EMA20 推动监控
-    ema20_push_service.process_kline(agg);
+    // EMA20 推动监控（已暂停）
+    if (CONFIG.enable_ema20_push) {
+      ema20_push_service.process_kline(agg);
+    }
   }
 }
 
@@ -373,8 +376,10 @@ async function preload_history(symbols: string[]): Promise<void> {
             volume: k.volume,
           }));
           trend_service.init_cache(symbol, tf as Timeframe, unified);
-          // 预热 EMA20 缓存
-          ema20_push_service.init_cache(symbol, tf as any, agg_klines);
+          // 预热 EMA20 缓存（已暂停）
+          if (CONFIG.enable_ema20_push) {
+            ema20_push_service.init_cache(symbol, tf as any, agg_klines);
+          }
         }
       }
 
@@ -510,7 +515,8 @@ async function main(): Promise<void> {
   ema20_push_repository = new EMA20PushRepository();
   await ema20_push_repository.init_tables();
 
-  // EMA20 推动回调
+  // EMA20 推动回调（已暂停：enable_ema20_push=false 时不注册，避免任何推动通知/写库）
+  if (CONFIG.enable_ema20_push) {
   ema20_push_service.on_push((alert) => {
     print_ema20_push(alert);
     const amplitude_pct = alert.amplitude_pct;
@@ -537,6 +543,7 @@ async function main(): Promise<void> {
       distance_pct: alert.push_record.distance_pct,
     }).catch(err => console.error('EMA20 insert_push_record error:', err.message));
   });
+  }
 
   // 注册回调
   trend_service.on_alert((alert) => {
@@ -640,8 +647,10 @@ async function main(): Promise<void> {
   // 恢复观察区状态
   await restore_watch_contexts();
 
-  // 恢复 EMA20 推动状态
-  await restore_ema20_contexts();
+  // 恢复 EMA20 推动状态（已暂停）
+  if (CONFIG.enable_ema20_push) {
+    await restore_ema20_contexts();
+  }
 
   // 启动 WebSocket + 无消息看门狗
   await start_kline_websocket(symbols);
