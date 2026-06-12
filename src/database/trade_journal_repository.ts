@@ -151,38 +151,52 @@ export class TradeJournalRepository extends BaseRepository {
 
   /**
    * 给已存在的表补齐新增列/枚举值（幂等）。
-   * 注意：MySQL 8.0 不支持 ADD COLUMN IF NOT EXISTS（仅 MariaDB 支持），
-   * 用普通 ADD COLUMN + 捕获 Duplicate column 错误实现幂等，两边都兼容。
+   * 先查 information_schema 确认列是否已存在，缺了才 ADD —— 避免「试错+吞异常」
+   * 每次重启都刷一条 ER_DUP_FIELDNAME 错误日志，也兼容 MySQL 8.0（不支持 ADD COLUMN IF NOT EXISTS）。
    */
   private async ensure_analysis_columns(): Promise<void> {
-    const alters = [
-      `ALTER TABLE trade_analysis ADD COLUMN action VARCHAR(10) NULL`,
-      `ALTER TABLE trade_analysis ADD COLUMN entry_zone_low DECIMAL(20,8) NULL`,
-      `ALTER TABLE trade_analysis ADD COLUMN entry_zone_high DECIMAL(20,8) NULL`,
-      `ALTER TABLE trade_analysis ADD COLUMN invalidation_price DECIMAL(20,8) NULL`,
-      `ALTER TABLE trade_analysis ADD COLUMN target_1 DECIMAL(20,8) NULL`,
-      `ALTER TABLE trade_analysis ADD COLUMN target_2 DECIMAL(20,8) NULL`,
-      `ALTER TABLE trade_analysis ADD COLUMN rr_ratio DECIMAL(10,4) NULL`,
-      `ALTER TABLE trade_analysis ADD COLUMN risk_review JSON NULL`,
-    ];
-    for (const sql of alters) {
+    // 已存在的列集合
+    const existing = new Set(
+      (await this.execute_query(
+        `SELECT COLUMN_NAME FROM information_schema.COLUMNS
+         WHERE TABLE_SCHEMA = DATABASE() AND TABLE_NAME = 'trade_analysis'`
+      )).map((r: any) => r.COLUMN_NAME)
+    );
+
+    const columns: Record<string, string> = {
+      action:             'VARCHAR(10) NULL',
+      entry_zone_low:     'DECIMAL(20,8) NULL',
+      entry_zone_high:    'DECIMAL(20,8) NULL',
+      invalidation_price: 'DECIMAL(20,8) NULL',
+      target_1:           'DECIMAL(20,8) NULL',
+      target_2:           'DECIMAL(20,8) NULL',
+      rr_ratio:           'DECIMAL(10,4) NULL',
+      risk_review:        'JSON NULL',
+    };
+
+    for (const [name, def] of Object.entries(columns)) {
+      if (existing.has(name)) continue;
       try {
-        await this.execute_query(sql);
+        await this.execute_query(`ALTER TABLE trade_analysis ADD COLUMN ${name} ${def}`);
       } catch (err: any) {
-        // 列已存在，忽略
-        if (!/Duplicate column/i.test(err.message ?? '')) {
-          logger.warn(`[TradeJournal] ensure_analysis_columns: ${err.message}`);
-        }
+        logger.warn(`[TradeJournal] ensure_analysis_columns ${name}: ${err.message}`);
       }
     }
 
-    // 旧表的 status 枚举补上 'failed'（MODIFY COLUMN 幂等，重复执行无副作用）
-    try {
-      await this.execute_query(
-        `ALTER TABLE trade_journal MODIFY COLUMN status ENUM('analyzing','open','dismissed','closed','failed') NOT NULL DEFAULT 'analyzing'`
-      );
-    } catch (err: any) {
-      logger.warn(`[TradeJournal] ensure status enum: ${err.message}`);
+    // status 枚举补上 'failed'：只在尚未包含时 MODIFY，避免重复 DDL
+    const status_col = await this.execute_query(
+      `SELECT COLUMN_TYPE FROM information_schema.COLUMNS
+       WHERE TABLE_SCHEMA = DATABASE() AND TABLE_NAME = 'trade_journal' AND COLUMN_NAME = 'status'`
+    );
+    const status_type: string = status_col[0]?.COLUMN_TYPE ?? '';
+    if (!status_type.includes("'failed'")) {
+      try {
+        await this.execute_query(
+          `ALTER TABLE trade_journal MODIFY COLUMN status ENUM('analyzing','open','dismissed','closed','failed') NOT NULL DEFAULT 'analyzing'`
+        );
+      } catch (err: any) {
+        logger.warn(`[TradeJournal] ensure status enum: ${err.message}`);
+      }
     }
   }
 
