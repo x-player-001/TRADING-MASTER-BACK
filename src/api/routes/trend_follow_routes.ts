@@ -111,6 +111,41 @@ router.get('/alerts/recent', async (req: Request, res: Response): Promise<void> 
 });
 
 /**
+ * GET /api/trend-follow/alerts/with-outcome
+ * 报警列表 + 各自的事后评估结果（成绩单）一屏对照。
+ * 未评估的报警 outcome 字段为 null。
+ *
+ * Query params:
+ *   symbol / timeframe / alert_level / date / start_time / end_time - 同 /alerts
+ *   only_evaluated - true 时只返回已出评估结果的报警
+ *   limit          - 返回条数，默认 100
+ */
+router.get('/alerts/with-outcome', async (req: Request, res: Response): Promise<void> => {
+  try {
+    const {
+      symbol, timeframe, alert_level, date, start_time, end_time,
+      only_evaluated, limit = '100',
+    } = req.query as Record<string, string>;
+
+    const rows = await get_repository().get_alerts_with_outcome({
+      symbol:        symbol?.toUpperCase(),
+      timeframe,
+      alert_level:   alert_level !== undefined ? Number(alert_level) : undefined,
+      date,
+      start_time:    start_time !== undefined ? Number(start_time) : undefined,
+      end_time:      end_time   !== undefined ? Number(end_time)   : undefined,
+      only_evaluated: only_evaluated === 'true',
+      limit:         Number(limit),
+    });
+
+    res.json({ success: true, data: rows, count: rows.length });
+  } catch (error: any) {
+    logger.error('[TrendFollow API] get_alerts_with_outcome failed:', error);
+    res.status(500).json({ success: false, error: error.message });
+  }
+});
+
+/**
  * GET /api/trend-follow/watch-contexts
  * 查询当前观察区快照
  *

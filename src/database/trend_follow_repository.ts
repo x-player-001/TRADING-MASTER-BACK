@@ -489,6 +489,79 @@ export class TrendFollowRepository extends BaseRepository {
     });
   }
 
+  /**
+   * 查询报警列表并附带事后评估结果（LEFT JOIN，未评估的 outcome 字段为 null）
+   * 用于前端「最近报警 + 各自成绩单」一屏对照。
+   */
+  async get_alerts_with_outcome(options: {
+    symbol?: string;
+    timeframe?: string;
+    alert_level?: number;
+    date?: string;
+    start_time?: number;
+    end_time?: number;
+    only_evaluated?: boolean;   // true=只返回已出评估结果的报警
+    limit?: number;
+  } = {}): Promise<any[]> {
+    return this.execute_with_connection(async (conn) => {
+      const join = options.only_evaluated ? 'INNER JOIN' : 'LEFT JOIN';
+      let sql = `
+        SELECT
+          a.*,
+          o.entry_price, o.target_price, o.stop_low_price, o.stop_wave_price,
+          o.eval_bars, o.mfe_pct, o.mae_pct,
+          o.outcome_low, o.rr_low, o.bars_to_exit_low,
+          o.outcome_wave, o.rr_wave, o.bars_to_exit_wave,
+          o.evaluated_at
+        FROM trend_follow_alerts a
+        ${join} trend_follow_alert_outcomes o ON o.alert_id = a.id
+        WHERE 1=1`;
+      const params: any[] = [];
+
+      if (options.symbol) { sql += ' AND a.symbol = ?'; params.push(options.symbol.toUpperCase()); }
+      if (options.timeframe) { sql += ' AND a.timeframe = ?'; params.push(options.timeframe); }
+      if (options.alert_level !== undefined) { sql += ' AND a.alert_level = ?'; params.push(Number(options.alert_level)); }
+
+      if (options.date) {
+        const day_start = new Date(options.date + 'T00:00:00+08:00').getTime();
+        const day_end   = day_start + 24 * 60 * 60 * 1000 - 1;
+        sql += ' AND a.kline_time >= ? AND a.kline_time <= ?';
+        params.push(day_start, day_end);
+      } else {
+        if (options.start_time !== undefined) { sql += ' AND a.kline_time >= ?'; params.push(Number(options.start_time)); }
+        if (options.end_time !== undefined)   { sql += ' AND a.kline_time <= ?'; params.push(Number(options.end_time)); }
+      }
+
+      sql += ' ORDER BY a.kline_time DESC, a.alert_level DESC';
+      if (options.limit) sql += ` LIMIT ${Number(options.limit)}`;
+
+      const [rows] = await conn.execute<RowDataPacket[]>(sql, params);
+      return rows.map(r => {
+        const alert = this._map(r);
+        const has_outcome = r.outcome_low != null;
+        return {
+          ...alert,
+          outcome: has_outcome ? {
+            entry_price:      r.entry_price != null ? parseFloat(r.entry_price) : null,
+            target_price:     r.target_price != null ? parseFloat(r.target_price) : null,
+            stop_low_price:   r.stop_low_price != null ? parseFloat(r.stop_low_price) : null,
+            stop_wave_price:  r.stop_wave_price != null ? parseFloat(r.stop_wave_price) : null,
+            eval_bars:        r.eval_bars ?? null,
+            mfe_pct:          r.mfe_pct != null ? parseFloat(r.mfe_pct) : null,
+            mae_pct:          r.mae_pct != null ? parseFloat(r.mae_pct) : null,
+            outcome_low:      r.outcome_low ?? null,
+            rr_low:           r.rr_low != null ? parseFloat(r.rr_low) : null,
+            bars_to_exit_low: r.bars_to_exit_low ?? null,
+            outcome_wave:     r.outcome_wave ?? null,
+            rr_wave:          r.rr_wave != null ? parseFloat(r.rr_wave) : null,
+            bars_to_exit_wave: r.bars_to_exit_wave ?? null,
+            evaluated_at:     r.evaluated_at ?? null,
+          } : null,
+        };
+      });
+    });
+  }
+
   // ==================== 事后评估结果 ====================
 
   /**
