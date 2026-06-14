@@ -190,7 +190,7 @@ const DEFAULT_CONFIG = {
   // ---- 多周期扳机（大周期到位 → 小周期确认）----
   trigger_enabled: true,                 // 是否启用扳机
   trigger_parent_timeframes: ['1h', '4h'] as Timeframe[],  // 哪些大周期会挂扳机
-  trigger_min_parent_level: 2 as AlertLevel,  // 大周期达到该等级(含)以上才挂扳机
+  trigger_min_parent_level: 1 as AlertLevel,  // 大周期达到该等级(含)以上才挂扳机（Lv1 起，因 Lv1·1h 实测胜率/期望最佳，最值得用扳机压缩止损；Lv0 高位横盘不算回调入场点，故不挂）
   trigger_child_timeframe: '5m' as Timeframe, // 用哪个小周期确认
   trigger_breakout_lookback: 6,          // 确认条件：突破最近 N 根 5m 高点
   trigger_swing_low_lookback: 6,         // 止损 = 最近 N 根 5m 最低价
