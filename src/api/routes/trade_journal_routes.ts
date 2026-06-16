@@ -121,9 +121,10 @@ export class TradeJournalRoutes {
   }
 
   /**
-   * 持仓中再评估
+   * 持仓中再评估（异步）
    * POST /api/journal/:id/reassess
    * Body: { current_price, concern }
+   * 立即返回 journal_id，AI 分析后台执行，前端轮询 GET /api/journal/:id 获取 reassess 结果
    */
   private async reassess(req: Request, res: Response): Promise<void> {
     try {

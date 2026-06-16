@@ -207,14 +207,29 @@ export class TradeJournalService {
   }
 
   /**
-   * 持仓中再评估：基于当前市场数据 + 你的疑虑，Claude 给出是否平仓的意见
+   * 持仓中再评估：校验后立即返回，AI 分析异步执行
+   * 前端轮询 GET /api/journal/:id，analyses 中新增 reassess 记录即完成
    */
-  async reassess(params: ReassessParams): Promise<ClaudeAnalysisResult & { market_snapshot: object }> {
-    const { journal_id, current_price, concern } = params;
+  async reassess(params: ReassessParams): Promise<{ journal_id: number }> {
+    const { journal_id } = params;
 
     const journal = await this.repository.find_by_id(journal_id);
     if (!journal) throw new Error(`Journal #${journal_id} not found`);
     if (journal.status !== 'open') throw new Error(`Journal #${journal_id} is not open`);
+
+    // 异步执行，不阻塞响应
+    this.run_reassess(journal, params).catch(err => {
+      logger.error(`[TradeJournal] Background reassess failed for journal #${journal_id}:`, err);
+    });
+
+    return { journal_id };
+  }
+
+  /**
+   * 后台执行持仓再评估（拉K线 + 调AI + 存库）
+   */
+  private async run_reassess(journal: TradeJournal, params: ReassessParams): Promise<void> {
+    const { journal_id, current_price, concern } = params;
 
     const market_snapshot = await this.build_market_snapshot(journal.symbol);
 
@@ -242,7 +257,6 @@ export class TradeJournalService {
       entry_risk_points,
     });
 
-    // 保存这次再评估记录
     await this.repository.save_analysis({
       journal_id,
       analysis_type: 'reassess',
@@ -255,7 +269,7 @@ export class TradeJournalService {
       risk_review: claude_result.risk_review,
     });
 
-    return { market_snapshot, ...claude_result };
+    logger.info(`[TradeJournal] Reassess done for journal #${journal_id}`);
   }
 
   /**
