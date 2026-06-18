@@ -27,7 +27,9 @@ const CONFIG = {
   interval: '5m',
   interval_ms: 5 * 60 * 1000,
   batch_size: 1000,
-  request_delay_ms: 300,          // 单任务请求间隔（并发5时约1500权重/分钟）
+  // batch=1000 时单次请求权重为 5（币安 klines: limit 501-1000 → 权重5）。
+  // 并发5 × (1000/700≈1.43 req/s) × 5 ≈ 2040 权重/分钟，稳在 2400 上限内。
+  request_delay_ms: 700,          // 单任务请求间隔
   retry_delay_ms: 30000,
   max_retries: 3,
   concurrency: 5,
