@@ -1,4 +1,4 @@
-/**
+﻿/**
  * 交易日志服务
  * 负责聚合市场数据、调用 AI API 进行入场评估、持仓再评估和平仓复盘
  * 支持 Claude（@anthropic-ai/sdk）和 OpenAI，通过 AI_PROVIDER 环境变量切换
@@ -11,6 +11,7 @@ import { KlineAggregator } from '@/core/data/kline_aggregator';
 import { BinanceAPI } from '@/api';
 import { SRLevelRepository } from '@/database/sr_level_repository';
 import { TradeJournalRepository, TradeJournal, TradeDirection } from '@/database/trade_journal_repository';
+import { BinanceFuturesTradingAPI, PositionInfo } from '@/api/binance_futures_trading_api';
 import { logger } from '@/utils/logger';
 
 // ==================== 入参类型 ====================
@@ -76,6 +77,7 @@ export class TradeJournalService {
   private kline_aggregator: KlineAggregator;
   private binance_api: BinanceAPI;
   private sr_repository: SRLevelRepository;
+  private trading_api: BinanceFuturesTradingAPI;
   private claude: Anthropic;
   private openai: OpenAI;
   private deepseek: OpenAI;
@@ -89,6 +91,12 @@ export class TradeJournalService {
     this.kline_aggregator = new KlineAggregator();
     this.binance_api = BinanceAPI.getInstance();
     this.sr_repository = new SRLevelRepository();
+    // 交易专用密钥优先，回退通用密钥（与 OrderExecutor 一致）
+    this.trading_api = new BinanceFuturesTradingAPI(
+      process.env.BINANCE_TRADE_API_KEY || process.env.BINANCE_API_KEY,
+      process.env.BINANCE_TRADE_SECRET || process.env.BINANCE_API_SECRET,
+      false
+    );
     this.claude = new Anthropic({
       apiKey: process.env.CLAUDE_API_KEY,
     });
@@ -299,12 +307,33 @@ export class TradeJournalService {
 
     await this.repository.mark_closed(journal_id, actual_exit_price, pnl_pct);
 
+    const review_result = await this.generate_and_save_review(
+      { ...journal, actual_exit_price, pnl_pct },
+      exit_reason,
+      pnl_pct
+    );
+
+    logger.info(`[TradeJournal] Review generated for journal #${journal_id}, pnl_pct=${pnl_pct.toFixed(2)}%`);
+    return { ...review_result, pnl_pct };
+  }
+
+  /**
+   * 生成并保存平仓复盘（手动平仓和同步平仓共用）。
+   * 调 AI 复盘 → 存库 → 失效历史错误清单缓存。
+   */
+  private async generate_and_save_review(
+    journal: TradeJournal & { actual_exit_price: number; pnl_pct: number },
+    exit_reason: string,
+    pnl_pct: number
+  ): Promise<{ review: string; what_went_well: string[]; what_went_wrong: string[]; lessons: string[] }> {
+    const journal_id = journal.id!;
+
     // 取最近一次入场评估用于复盘对比
     const analyses = await this.repository.find_analyses_by_journal(journal_id);
     const entry_analysis = analyses.find(a => a.analysis_type === 'entry');
 
     const review_result = await this.call_claude_for_review({
-      journal: { ...journal, actual_exit_price, pnl_pct },
+      journal,
       exit_reason,
       pnl_pct,
       original_analysis: entry_analysis?.claude_analysis,
@@ -321,9 +350,201 @@ export class TradeJournalService {
 
     // 有新复盘 → 历史错误清单缓存失效，下次入场评估重新聚合
     this.lessons_digest_cache = null;
+    return review_result;
+  }
 
-    logger.info(`[TradeJournal] Review generated for journal #${journal_id}, pnl_pct=${pnl_pct.toFixed(2)}%`);
-    return { ...review_result, pnl_pct };
+  // ==================== 交易所持仓同步 ====================
+
+  /**
+   * 全局同步：拉取交易所所有真实持仓，与系统内 journal 对齐。
+   * - 交易所有持仓、系统有对应 open/analyzing journal → 回填真实成交数据
+   * - 交易所有持仓、系统无对应 journal → 新建一条 open 记录（未评估的持仓，供复盘）
+   * - 系统有 open journal、交易所已无对应持仓 → 标记平仓 + 拉真实盈亏 + 触发 AI 复盘
+   *
+   * 前端「公共同步持仓」按钮调用。
+   */
+  async sync_all_positions(): Promise<{
+    filled: number;    // 回填到已有 journal 的数量
+    created: number;   // 新建的未评估持仓数量
+    closed: number;    // 检测到并平仓的数量
+  }> {
+    const positions = await this.fetch_live_positions();
+
+    // 用 symbol+direction 建索引，便于平仓检测时反查交易所是否还持有
+    const live_keys = new Set(positions.map(p => `${p.symbol}_${p.direction}`));
+
+    let filled = 0;
+    let created = 0;
+
+    // 1) 交易所每个真实持仓 → 回填或新建
+    for (const pos of positions) {
+      const journal = await this.repository.find_open_or_analyzing_by_symbol_direction(pos.symbol, pos.direction);
+      if (journal) {
+        await this.repository.apply_real_position(journal.id!, {
+          actual_entry_price: pos.entry_price,
+          actual_qty: pos.qty,
+          leverage: pos.leverage,
+        });
+        filled++;
+      } else {
+        await this.repository.create_synced_journal({
+          symbol: pos.symbol,
+          direction: pos.direction,
+          entry_reason: '未评估，系统从交易所同步的持仓',
+          actual_entry_price: pos.entry_price,
+          actual_qty: pos.qty,
+          leverage: pos.leverage,
+        });
+        created++;
+      }
+    }
+
+    // 2) 系统内 open journal，交易所已无对应持仓 → 已平仓
+    const active = await this.repository.find_all_active();
+    let closed = 0;
+    for (const journal of active) {
+      if (journal.status !== 'open') continue;  // analyzing 还没开仓，不算平仓
+      const key = `${journal.symbol}_${journal.direction}`;
+      if (live_keys.has(key)) continue;          // 交易所还持有，跳过
+      const ok = await this.close_journal_from_exchange(journal);
+      if (ok) closed++;
+    }
+
+    logger.info(`[TradeJournal] sync_all_positions done: filled=${filled}, created=${created}, closed=${closed}`);
+    return { filled, created, closed };
+  }
+
+  /**
+   * 单条同步：只同步指定 journal 对应币种的真实持仓。
+   * - 交易所仍持有同向持仓 → 回填真实成交数据
+   * - 交易所已无持仓 → 当作已平仓，拉真实盈亏 + 触发复盘
+   *
+   * 前端每条评估里的「同步」按钮调用（journal_id 与币种均确定）。
+   */
+  async sync_one(journal_id: number): Promise<{ action: 'filled' | 'closed' | 'noop'; journal_id: number }> {
+    const journal = await this.repository.find_by_id(journal_id);
+    if (!journal) throw new Error(`Journal #${journal_id} not found`);
+    if (journal.status === 'closed' || journal.status === 'dismissed') {
+      return { action: 'noop', journal_id };
+    }
+
+    const positions = await this.fetch_live_positions(journal.symbol);
+    const match = positions.find(p => p.symbol === journal.symbol && p.direction === journal.direction);
+
+    if (match) {
+      await this.repository.apply_real_position(journal_id, {
+        actual_entry_price: match.entry_price,
+        actual_qty: match.qty,
+        leverage: match.leverage,
+      });
+      return { action: 'filled', journal_id };
+    }
+
+    // 交易所已无持仓：open 的当作已平仓；analyzing 的还没真正开过仓，不动
+    if (journal.status === 'open') {
+      const ok = await this.close_journal_from_exchange(journal);
+      return { action: ok ? 'closed' : 'noop', journal_id };
+    }
+    return { action: 'noop', journal_id };
+  }
+
+  /**
+   * 拉取交易所真实持仓并归一化（过滤空仓，按 positionAmt 正负定方向）。
+   * 单向持仓模式下 positionSide=BOTH，方向由数量正负判定。
+   */
+  private async fetch_live_positions(symbol?: string): Promise<Array<{
+    symbol: string;
+    direction: TradeDirection;
+    entry_price: number;
+    qty: number;
+    leverage?: number;
+  }>> {
+    const raw: PositionInfo[] = await this.trading_api.get_position_info(symbol);
+    return raw
+      .filter(p => Math.abs(Number(p.positionAmt)) > 0)
+      .map(p => {
+        const amt = Number(p.positionAmt);
+        // 双向持仓用 positionSide 判定，单向持仓(BOTH)用数量正负判定
+        const direction: TradeDirection =
+          p.positionSide === 'LONG' ? 'LONG'
+          : p.positionSide === 'SHORT' ? 'SHORT'
+          : amt >= 0 ? 'LONG' : 'SHORT';
+        return {
+          symbol: p.symbol,
+          direction,
+          entry_price: Number(p.entryPrice),
+          qty: Math.abs(amt),
+          leverage: p.leverage ? Number(p.leverage) : undefined,
+        };
+      });
+  }
+
+  /**
+   * 从交易所真实成交记录推断平仓价与已实现盈亏，落库并触发 AI 复盘。
+   * 返回是否成功平仓（false 表示拉不到平仓成交，状态保持不变，待下次同步）。
+   */
+  private async close_journal_from_exchange(journal: TradeJournal): Promise<boolean> {
+    const journal_id = journal.id!;
+    try {
+      // 取开仓后的成交记录，方向相反的即平仓成交（单向持仓：LONG 仓由 SELL 平）
+      const start_time = journal.opened_at ? new Date(journal.opened_at).getTime() : undefined;
+      const trades = await this.trading_api.get_user_trades(journal.symbol, {
+        startTime: start_time,
+        limit: 1000,
+      });
+
+      const close_side = journal.direction === 'LONG' ? 'SELL' : 'BUY';
+      const close_trades = trades.filter(t => t.side === close_side);
+      if (close_trades.length === 0) {
+        logger.warn(`[TradeJournal] No closing trades found for journal #${journal_id} (${journal.symbol}), skip close`);
+        return false;
+      }
+
+      // 加权平均平仓价 + 累计已实现盈亏（已扣手续费由 realizedPnl 体现，手续费另计）
+      let qty_sum = 0;
+      let quote_sum = 0;
+      let realized_pnl = 0;
+      let commission = 0;
+      for (const t of close_trades) {
+        const qty = Number(t.qty);
+        qty_sum += qty;
+        quote_sum += Number(t.price) * qty;
+        realized_pnl += Number(t.realizedPnl);
+        commission += Number(t.commission);
+      }
+      const avg_exit_price = qty_sum > 0 ? quote_sum / qty_sum : 0;
+      // realizedPnl 不含手续费，扣掉得到净盈亏
+      const net_pnl = realized_pnl - commission;
+
+      // 价格变动%（不含杠杆），入场价优先用真实成交价
+      const entry_price = journal.actual_entry_price ?? journal.planned_entry_price;
+      let pnl_pct = 0;
+      if (entry_price) {
+        pnl_pct = journal.direction === 'LONG'
+          ? (avg_exit_price - entry_price) / entry_price * 100
+          : (entry_price - avg_exit_price) / entry_price * 100;
+      }
+
+      await this.repository.apply_real_close(journal_id, {
+        actual_exit_price: avg_exit_price,
+        realized_pnl: net_pnl,
+        pnl_pct,
+      });
+
+      // 触发 AI 复盘（同手动平仓）
+      const exit_reason = '系统从交易所同步检测到已平仓';
+      await this.generate_and_save_review(
+        { ...journal, status: 'closed', actual_exit_price: avg_exit_price, realized_pnl: net_pnl, pnl_pct },
+        exit_reason,
+        pnl_pct
+      );
+
+      logger.info(`[TradeJournal] Closed journal #${journal_id} from exchange: exit=${avg_exit_price.toFixed(4)}, net_pnl=${net_pnl.toFixed(4)}`);
+      return true;
+    } catch (err) {
+      logger.error(`[TradeJournal] close_journal_from_exchange failed for #${journal_id}:`, err);
+      return false;
+    }
   }
 
   /**

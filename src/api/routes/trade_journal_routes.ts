@@ -2,6 +2,8 @@
  * 交易日志 API 路由
  *
  * POST /api/journal/analyze        入场评估（聚合数据 + Claude 分析，返回 journal_id）
+ * POST /api/journal/sync           全局同步：拉取交易所所有真实持仓，回填/新建/平仓
+ * POST /api/journal/:id/sync       单条同步：只同步该 journal 对应币种的真实持仓
  * POST /api/journal/:id/open       确认开仓（analyzing → open）
  * POST /api/journal/:id/dismiss    放弃开仓（analyzing → dismissed）
  * POST /api/journal/:id/reassess   持仓中再评估（传入当前价和疑虑）
@@ -28,9 +30,11 @@ export class TradeJournalRoutes {
   private setup_routes(): void {
     // 注意：静态路径（list/stats）必须在动态路径（:id）之前注册
     this.router.post('/analyze', this.analyze_entry.bind(this));
+    this.router.post('/sync', this.sync_all.bind(this));
     this.router.get('/records', this.get_list.bind(this));
     this.router.get('/stats', this.get_stats.bind(this));
     this.router.get('/calibration', this.get_calibration.bind(this));
+    this.router.post('/:id/sync', this.sync_one.bind(this));
     this.router.post('/:id/open', this.confirm_open.bind(this));
     this.router.post('/:id/dismiss', this.dismiss.bind(this));
     this.router.post('/:id/reassess', this.reassess.bind(this));
@@ -75,6 +79,46 @@ export class TradeJournalRoutes {
       res.status(500).json({
         success: false,
         error: 'Internal server error',
+        message: error instanceof Error ? error.message : 'Unknown error',
+      });
+    }
+  }
+
+  /**
+   * 全局同步交易所持仓
+   * POST /api/journal/sync
+   * 返回 { filled, created, closed }
+   */
+  private async sync_all(_req: Request, res: Response): Promise<void> {
+    try {
+      const result = await this.service.sync_all_positions();
+      res.json({ success: true, data: result, timestamp: Date.now() });
+    } catch (error) {
+      logger.error('[TradeJournalAPI] sync_all failed:', error);
+      res.status(500).json({
+        success: false,
+        error: 'Internal server error',
+        message: error instanceof Error ? error.message : 'Unknown error',
+      });
+    }
+  }
+
+  /**
+   * 单条同步：只同步该 journal 对应币种的真实持仓
+   * POST /api/journal/:id/sync
+   * 返回 { action: 'filled' | 'closed' | 'noop', journal_id }
+   */
+  private async sync_one(req: Request, res: Response): Promise<void> {
+    try {
+      const id = Number(req.params.id);
+      const result = await this.service.sync_one(id);
+      res.json({ success: true, data: result, timestamp: Date.now() });
+    } catch (error) {
+      logger.error('[TradeJournalAPI] sync_one failed:', error);
+      const is_not_found = error instanceof Error && error.message.includes('not found');
+      res.status(is_not_found ? 404 : 500).json({
+        success: false,
+        error: is_not_found ? 'Not found' : 'Internal server error',
         message: error instanceof Error ? error.message : 'Unknown error',
       });
     }

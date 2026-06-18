@@ -28,6 +28,12 @@ export interface TradeJournal {
   actual_exit_price?: number;
   pnl_pct?: number;
   status: TradeStatus;
+  // ---- 从交易所同步的真实成交数据（与 planned_* 并存，复盘时可对比计划 vs 真实）----
+  actual_entry_price?: number;   // 真实入场均价（来自交易所持仓/成交）
+  actual_qty?: number;           // 真实持仓数量
+  leverage?: number;             // 杠杆倍数
+  realized_pnl?: number;         // 真实已实现盈亏（USDT，平仓后由交易所提供，已扣手续费）
+  synced_at?: Date;              // 最近一次从交易所同步的时间
   opened_at?: Date;
   closed_at?: Date;
   created_at?: Date;
@@ -95,6 +101,11 @@ export class TradeJournalRepository extends BaseRepository {
         actual_exit_price DECIMAL(20,8) NULL,
         pnl_pct DECIMAL(10,4) NULL,
         status ENUM('analyzing','open','dismissed','closed','failed') NOT NULL DEFAULT 'analyzing',
+        actual_entry_price DECIMAL(20,8) NULL,
+        actual_qty DECIMAL(30,8) NULL,
+        leverage INT NULL,
+        realized_pnl DECIMAL(20,8) NULL,
+        synced_at TIMESTAMP NULL,
         opened_at TIMESTAMP NULL,
         closed_at TIMESTAMP NULL,
         created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
@@ -132,6 +143,9 @@ export class TradeJournalRepository extends BaseRepository {
 
     // 兼容旧表：补齐入场清单字段与风险复核字段（已存在则忽略）
     await this.ensure_analysis_columns();
+
+    // 兼容旧表：补齐 trade_journal 的真实成交字段
+    await this.ensure_journal_columns();
 
     await this.ensure_table_exists(`
       CREATE TABLE IF NOT EXISTS trade_review (
@@ -196,6 +210,36 @@ export class TradeJournalRepository extends BaseRepository {
         );
       } catch (err: any) {
         logger.warn(`[TradeJournal] ensure status enum: ${err.message}`);
+      }
+    }
+  }
+
+  /**
+   * 给已存在的 trade_journal 表补齐真实成交字段（幂等）。
+   * 同 ensure_analysis_columns：先查 information_schema，缺了才 ADD。
+   */
+  private async ensure_journal_columns(): Promise<void> {
+    const existing = new Set(
+      (await this.execute_query(
+        `SELECT COLUMN_NAME FROM information_schema.COLUMNS
+         WHERE TABLE_SCHEMA = DATABASE() AND TABLE_NAME = 'trade_journal'`
+      )).map((r: any) => r.COLUMN_NAME)
+    );
+
+    const columns: Record<string, string> = {
+      actual_entry_price: 'DECIMAL(20,8) NULL',
+      actual_qty:         'DECIMAL(30,8) NULL',
+      leverage:           'INT NULL',
+      realized_pnl:       'DECIMAL(20,8) NULL',
+      synced_at:          'TIMESTAMP NULL',
+    };
+
+    for (const [name, def] of Object.entries(columns)) {
+      if (existing.has(name)) continue;
+      try {
+        await this.execute_query(`ALTER TABLE trade_journal ADD COLUMN ${name} ${def}`);
+      } catch (err: any) {
+        logger.warn(`[TradeJournal] ensure_journal_columns ${name}: ${err.message}`);
       }
     }
   }
@@ -266,6 +310,103 @@ export class TradeJournalRepository extends BaseRepository {
       [actual_exit_price, pnl_pct, id]
     );
     logger.info(`[TradeJournal] Closed journal #${id}, pnl_pct=${pnl_pct.toFixed(2)}%`);
+  }
+
+  /**
+   * 全局同步用：按币种+方向找一条仍待回填真实成交的 journal（analyzing 或 open）。
+   * 优先 open，其次 analyzing；同币种同方向同一时间只一笔，所以取最新一条即可。
+   */
+  async find_open_or_analyzing_by_symbol_direction(
+    symbol: string,
+    direction: TradeDirection
+  ): Promise<TradeJournal | null> {
+    const rows = await this.execute_query(
+      `SELECT * FROM trade_journal
+       WHERE symbol = ? AND direction = ? AND status IN ('analyzing','open')
+       ORDER BY FIELD(status,'open','analyzing'), created_at DESC
+       LIMIT 1`,
+      [symbol, direction]
+    );
+    return rows[0] ?? null;
+  }
+
+  /**
+   * 全局同步用：取所有未结束（analyzing/open）的 journal，用于检测交易所侧已平仓的记录。
+   */
+  async find_all_active(): Promise<TradeJournal[]> {
+    return this.execute_query(
+      `SELECT * FROM trade_journal WHERE status IN ('analyzing','open') ORDER BY created_at ASC`
+    );
+  }
+
+  /**
+   * 同步用：未在系统内评估过的真实持仓，直接建一条 open 记录。
+   */
+  async create_synced_journal(data: {
+    symbol: string;
+    direction: TradeDirection;
+    entry_reason: string;
+    actual_entry_price: number;
+    actual_qty: number;
+    leverage?: number;
+  }): Promise<number> {
+    const sql = `
+      INSERT INTO trade_journal
+        (symbol, direction, entry_reason, planned_entry_price,
+         actual_entry_price, actual_qty, leverage, status, opened_at, synced_at)
+      VALUES (?, ?, ?, ?, ?, ?, ?, 'open', NOW(), NOW())
+    `;
+    const id = await this.insert_and_get_id(sql, [
+      data.symbol,
+      data.direction,
+      data.entry_reason,
+      data.actual_entry_price,   // 无计划价时用真实入场价兜底，保证盈亏可算
+      data.actual_entry_price,
+      data.actual_qty,
+      data.leverage ?? null,
+    ]);
+    logger.info(`[TradeJournal] Created synced journal #${id} for ${data.symbol} ${data.direction} (no prior analysis)`);
+    return id;
+  }
+
+  /**
+   * 同步用：把交易所真实持仓回填到现有 journal，并推进 analyzing → open。
+   * 已是 open 的记录也会刷新真实数据（不重置 opened_at）。
+   */
+  async apply_real_position(id: number, data: {
+    actual_entry_price: number;
+    actual_qty: number;
+    leverage?: number;
+  }): Promise<void> {
+    await this.update_and_get_affected_rows(
+      `UPDATE trade_journal
+       SET actual_entry_price = ?, actual_qty = ?, leverage = ?,
+           status = 'open',
+           opened_at = COALESCE(opened_at, NOW()),
+           synced_at = NOW()
+       WHERE id = ? AND status IN ('analyzing','open')`,
+      [data.actual_entry_price, data.actual_qty, data.leverage ?? null, id]
+    );
+    logger.info(`[TradeJournal] Applied real position to journal #${id}`);
+  }
+
+  /**
+   * 同步用：把交易所真实平仓数据回填，open → closed。
+   * realized_pnl 来自交易所（已扣手续费）；pnl_pct 仍按真实入出场价记录价格变动%。
+   */
+  async apply_real_close(id: number, data: {
+    actual_exit_price: number;
+    realized_pnl: number;
+    pnl_pct: number;
+  }): Promise<void> {
+    await this.update_and_get_affected_rows(
+      `UPDATE trade_journal
+       SET actual_exit_price = ?, realized_pnl = ?, pnl_pct = ?,
+           status = 'closed', closed_at = NOW(), synced_at = NOW()
+       WHERE id = ? AND status = 'open'`,
+      [data.actual_exit_price, data.realized_pnl, data.pnl_pct, id]
+    );
+    logger.info(`[TradeJournal] Applied real close to journal #${id}, realized_pnl=${data.realized_pnl}`);
   }
 
   /**
