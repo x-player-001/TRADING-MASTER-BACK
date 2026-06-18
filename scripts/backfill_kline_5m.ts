@@ -34,11 +34,12 @@ const CONFIG = {
 };
 
 // ==================== 解析命令行参数 ====================
-function parse_args(): { start_date: Date; end_date: Date; symbols: string[] | null } {
+function parse_args(): { start_date: Date; end_date: Date; symbols: string[] | null; force: boolean } {
   const args = process.argv.slice(2);
   let start_date: Date | null = null;
   let end_date: Date | null = null;
   let symbols: string[] | null = null;
+  let force = false;
 
   for (let i = 0; i < args.length; i++) {
     if (args[i] === '--start' && args[i + 1]) {
@@ -57,6 +58,10 @@ function parse_args(): { start_date: Date; end_date: Date; symbols: string[] | n
     } else if (args[i] === '--symbols' && args[i + 1]) {
       symbols = args[i + 1].split(',').map(s => s.trim().toUpperCase());
       i++;
+    } else if (args[i] === '--force') {
+      // 强制模式：跳过"末尾续传"判断，直接拉取整个区间（INSERT IGNORE 去重，
+      // 可补中间空洞——例如服务中断导致的内部缺口）
+      force = true;
     }
   }
 
@@ -71,7 +76,7 @@ function parse_args(): { start_date: Date; end_date: Date; symbols: string[] | n
     end_date = new Date();
   }
 
-  return { start_date, end_date, symbols };
+  return { start_date, end_date, symbols, force };
 }
 
 // ==================== 获取所有交易对 ====================
@@ -191,11 +196,12 @@ async function main() {
   console.log('═'.repeat(70));
 
   // 解析参数
-  const { start_date, end_date, symbols: specified_symbols } = parse_args();
+  const { start_date, end_date, symbols: specified_symbols, force } = parse_args();
 
   console.log(`\n📅 补全范围: ${format_date(start_date)} ~ ${format_date(end_date)}`);
   console.log(`⏱️  K线周期: ${CONFIG.interval}`);
   console.log(`⏳ 请求间隔: ${CONFIG.request_delay_ms}ms`);
+  if (force) console.log(`🔁 强制模式: 全区间拉取，补中间空洞（INSERT IGNORE 去重）`);
 
   // 初始化
   const config_manager = ConfigManager.getInstance();
@@ -246,13 +252,18 @@ async function main() {
       stats.processed++;
       const progress = `[${stats.processed}/${stats.total_symbols}]`;
       try {
-        const latest_klines = await repo.get_recent_klines(symbol, 1);
-        const latest_ts = latest_klines.length > 0 ? latest_klines[0].open_time : 0;
-        const actual_start = latest_ts > start_ts ? latest_ts + CONFIG.interval_ms : start_ts;
-        if (actual_start >= end_ts) {
-          stats.skipped++;
-          console.log(`${progress} ${symbol.padEnd(12)} ⏭️  已最新，跳过`);
-          continue;
+        // 强制模式：拉取整个区间（补中间空洞）；
+        // 普通模式：从库里最新一根之后续传（仅补末尾缺口）
+        let actual_start = start_ts;
+        if (!force) {
+          const latest_klines = await repo.get_recent_klines(symbol, 1);
+          const latest_ts = latest_klines.length > 0 ? latest_klines[0].open_time : 0;
+          actual_start = latest_ts > start_ts ? latest_ts + CONFIG.interval_ms : start_ts;
+          if (actual_start >= end_ts) {
+            stats.skipped++;
+            console.log(`${progress} ${symbol.padEnd(12)} ⏭️  已最新，跳过`);
+            continue;
+          }
         }
         const klines = await fetch_klines(symbol, actual_start, end_ts);
         if (klines.length === 0) continue;
