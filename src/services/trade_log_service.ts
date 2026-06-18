@@ -390,7 +390,16 @@ export class TradeLogService {
       }
     }
     if (buf.length > 0 && Math.abs(pos) > 1e-9) {
-      rounds.push(this.aggregate_round(symbol, buf, true));
+      const open_round = this.aggregate_round(symbol, buf, true);
+      // 成交流水里没有杠杆，未平仓回合从当前持仓接口补（已平仓回合币安无干净回溯源，留空）
+      try {
+        const positions = await this.fetch_live_positions(symbol);
+        const match = positions.find(p => p.direction === open_round.direction);
+        if (match?.leverage) open_round.leverage = match.leverage;
+      } catch (err) {
+        logger.warn(`[TradeLog] fetch leverage for ${symbol} open round failed:`, err);
+      }
+      rounds.push(open_round);
     }
     return rounds;
   }
