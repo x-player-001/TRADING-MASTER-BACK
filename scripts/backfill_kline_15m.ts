@@ -43,12 +43,13 @@ function get_table_name(ts: number): string {
   return `kline_15m_agg_${y}${m}${day}`;
 }
 
-function parse_args(): { start_time: number; end_time: number; symbols: string[] | null; limit: number } {
+function parse_args(): { start_time: number; end_time: number; symbols: string[] | null; limit: number; force: boolean } {
   const args = process.argv.slice(2);
   let start_time = Date.now() - 3 * 24 * 60 * 60 * 1000;
   let end_time = Date.now();
   let symbols: string[] | null = null;
   let limit = 200;
+  let force = false;
 
   for (let i = 0; i < args.length; i++) {
     if (args[i] === '--start' && args[i + 1]) {
@@ -60,9 +61,12 @@ function parse_args(): { start_time: number; end_time: number; symbols: string[]
       symbols = args[i + 1].split(',').map(s => s.trim().toUpperCase()); i++;
     } else if (args[i] === '--limit' && args[i + 1]) {
       limit = parseInt(args[i + 1]); i++;
+    } else if (args[i] === '--force') {
+      // 强制模式：跳过"末尾续传"判断，直接拉取整个区间（INSERT IGNORE 去重，补中间空洞）
+      force = true;
     }
   }
-  return { start_time, end_time, symbols, limit };
+  return { start_time, end_time, symbols, limit, force };
 }
 
 async function get_all_symbols(): Promise<string[]> {
@@ -109,14 +113,19 @@ async function backfill_symbol(
   symbol: string,
   start_time: number,
   end_time: number,
-  conn: any
-): Promise<number> {
-  // 从数据库最新时间断点续传
-  const latest = await get_latest_15m_time(symbol, conn);
-  const actual_start = latest > start_time ? latest + CONFIG.interval_ms : start_time;
-  if (actual_start >= end_time) return -1; // -1 表示跳过
+  conn: any,
+  force: boolean
+): Promise<{ fetched: number; inserted: number }> {
+  // 强制模式：拉取整个区间（补中间空洞）；普通模式：从库里最新时间续传（仅补末尾）
+  let actual_start = start_time;
+  if (!force) {
+    const latest = await get_latest_15m_time(symbol, conn);
+    actual_start = latest > start_time ? latest + CONFIG.interval_ms : start_time;
+    if (actual_start >= end_time) return { fetched: -1, inserted: 0 }; // fetched=-1 表示跳过
+  }
   let current = actual_start;
-  let total = 0;
+  let fetched = 0;     // 从 API 拉取的总根数
+  let inserted = 0;    // 实际入库的总行数（去重后）
 
   while (current < end_time) {
     for (let retry = 0; retry < CONFIG.max_retries; retry++) {
@@ -142,11 +151,13 @@ async function backfill_symbol(
           for (const k of klines) {
             values.push(symbol, k[0], k[6], parseFloat(k[1]), parseFloat(k[2]), parseFloat(k[3]), parseFloat(k[4]), parseFloat(k[5]));
           }
-          await conn.execute(
+          const [result] = await conn.execute(
             `INSERT IGNORE INTO ${tbl} (symbol,open_time,close_time,open,high,low,close,volume) VALUES ${placeholders}`,
             values
           );
-          total += klines.length;
+          fetched += klines.length;
+          // INSERT IGNORE 的 affectedRows 只统计实际插入的行（被去重忽略的不计）
+          inserted += (result as any).affectedRows || 0;
         }
 
         current = data[data.length - 1][6] + 1;
@@ -164,22 +175,24 @@ async function backfill_symbol(
       }
     }
   }
-  return total;
+  return { fetched, inserted };
 }
 
 async function main() {
-  const { start_time, end_time, symbols: arg_symbols } = parse_args();
+  const { start_time, end_time, symbols: arg_symbols, force } = parse_args();
 
   ConfigManager.getInstance().initialize();
 
   const start_str = new Date(start_time).toISOString().slice(0, 16);
   const end_str   = new Date(end_time).toISOString().slice(0, 16);
   console.log(`\n📦 15m K线补全: ${start_str} ~ ${end_str}  并发=${CONFIG.concurrency}`);
+  if (force) console.log(`🔁 强制模式: 全区间拉取，补中间空洞（INSERT IGNORE 去重）`);
 
   const symbols = arg_symbols ?? await get_all_symbols();
   console.log(`📋 共 ${symbols.length} 个合约\n`);
 
-  let done = 0, skipped = 0, failed = 0, total_klines = 0;
+  let done = 0, skipped = 0, failed = 0, total_fetched = 0, total_inserted = 0;
+  let processed = 0;
   const start_ts = Date.now();
 
   const queue = [...symbols];
@@ -190,15 +203,22 @@ async function main() {
       if (!symbol) break;
       const conn = await DatabaseConfig.get_mysql_connection();
       try {
-        const n = await backfill_symbol(symbol, start_time, end_time, conn);
-        if (n === -1) {
+        const { fetched, inserted } = await backfill_symbol(symbol, start_time, end_time, conn, force);
+        processed++;
+        if (fetched === -1) {
           skipped++;
         } else {
           done++;
-          total_klines += n;
-          if (n > 0) console.log(`✅ [${done + skipped}/${symbols.length}] ${symbol} +${n}根`);
+          total_fetched += fetched;
+          total_inserted += inserted;
+          if (fetched > 0) {
+            const dup = fetched - inserted;
+            const dup_note = dup > 0 ? ` (去重${dup})` : '';
+            console.log(`✅ [${processed}/${symbols.length}] ${symbol.padEnd(12)} 拉取${fetched} / 新增${inserted}${dup_note}`);
+          }
         }
       } catch (err: any) {
+        processed++;
         failed++;
         console.error(`❌ ${symbol}: ${err.message}`);
       } finally {
@@ -212,7 +232,7 @@ async function main() {
   await Promise.all(workers);
 
   const elapsed = Math.round((Date.now() - start_ts) / 1000);
-  console.log(`\n完成: 新增 ${done} 个，跳过 ${skipped} 个，失败 ${failed} 个，共 ${total_klines} 根K线，耗时 ${elapsed}s`);
+  console.log(`\n完成: 处理 ${done} 个，跳过 ${skipped} 个，失败 ${failed} 个 | API拉取 ${total_fetched} 根，实际入库 ${total_inserted} 根 (去重 ${total_fetched - total_inserted})，耗时 ${elapsed}s`);
 }
 
 main().catch(err => { console.error('Fatal:', err); process.exit(1); });

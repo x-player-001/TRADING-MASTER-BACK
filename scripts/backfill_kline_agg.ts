@@ -50,11 +50,12 @@ interface AggKline {
 }
 
 // ==================== 解析命令行参数 ====================
-function parse_args(): { intervals: string[]; limit: number; symbols: string[] | null } {
+function parse_args(): { intervals: string[]; limit: number; symbols: string[] | null; force: boolean } {
   const args = process.argv.slice(2);
   let intervals: string[] = ['1h', '4h'];  // 默认两个都补
   let limit = 300;
   let symbols: string[] | null = null;
+  let force = false;
 
   for (let i = 0; i < args.length; i++) {
     if (args[i] === '--interval' && args[i + 1]) {
@@ -69,10 +70,13 @@ function parse_args(): { intervals: string[]; limit: number; symbols: string[] |
     } else if (args[i] === '--symbols' && args[i + 1]) {
       symbols = args[i + 1].split(',').map(s => s.trim().toUpperCase());
       i++;
+    } else if (args[i] === '--force') {
+      // 强制模式：跳过"已有足够数据"判断，强制重拉最近 limit 根（INSERT IGNORE 去重，补中间空洞）
+      force = true;
     }
   }
 
-  return { intervals, limit, symbols };
+  return { intervals, limit, symbols, force };
 }
 
 // 请求头配置（绕过418错误）
@@ -267,11 +271,12 @@ async function main() {
   console.log('═'.repeat(70));
 
   // 解析参数
-  const { intervals, limit, symbols: specified_symbols } = parse_args();
+  const { intervals, limit, symbols: specified_symbols, force } = parse_args();
 
   console.log(`\n📊 补全周期: ${intervals.join(', ')}`);
   console.log(`📈 每币种拉取: ${limit} 根K线`);
   console.log(`⏳ 请求间隔: ${CONFIG.request_delay_ms}ms`);
+  if (force) console.log(`🔁 强制模式: 强制重拉，补中间空洞（INSERT IGNORE 去重）`);
 
   // 初始化
   const config_manager = ConfigManager.getInstance();
@@ -325,14 +330,14 @@ async function main() {
         const progress = `[${stats.processed}/${symbols.length}]`;
 
         try {
-          // 检查已有数据
-          const existing = await get_existing_count(connection, table_name, symbol);
-
-          // 如果已有超过80%的数据，跳过
-          if (existing >= limit * 0.9) {
-            stats.skipped++;
-            process.stdout.write(`\r${progress} ${symbol.padEnd(12)} ⏭️  已有 ${existing} 根，跳过\n`);
-            continue;
+          // 非强制模式下：已有超过90%的数据则跳过（强制模式强制重拉以补中间空洞）
+          if (!force) {
+            const existing = await get_existing_count(connection, table_name, symbol);
+            if (existing >= limit * 0.9) {
+              stats.skipped++;
+              process.stdout.write(`\r${progress} ${symbol.padEnd(12)} ⏭️  已有 ${existing} 根，跳过\n`);
+              continue;
+            }
           }
 
           process.stdout.write(`\r${progress} ${symbol.padEnd(12)} 正在拉取...`);
@@ -350,7 +355,9 @@ async function main() {
           stats.total_klines += inserted;
           stats.success++;
 
-          process.stdout.write(`\r${progress} ${symbol.padEnd(12)} ✅ ${klines.length} 根K线 (新增 ${inserted})\n`);
+          const dup = klines.length - inserted;
+          const dup_note = dup > 0 ? ` (去重${dup})` : '';
+          process.stdout.write(`\r${progress} ${symbol.padEnd(12)} ✅ 拉取${klines.length} / 新增${inserted}${dup_note}\n`);
 
           // 延迟避免限流
           await sleep(CONFIG.request_delay_ms);
