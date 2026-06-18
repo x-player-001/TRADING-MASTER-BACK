@@ -7,7 +7,9 @@ module.exports = {
       node_args: "-r tsconfig-paths/register",
       env: { TS_NODE_PROJECT: "tsconfig.runtime.json", NODE_ENV: "production" },
       max_memory_restart: "600M",
-      autorestart: true
+      autorestart: true,
+      out_file: "/root/.pm2/logs/api-out.log",
+      error_file: "/root/.pm2/logs/api-err.log"
     },
     {
       // 趋势跟随监控：入口在 scripts/，用 ts-node transpile-only（跳过类型检查）
