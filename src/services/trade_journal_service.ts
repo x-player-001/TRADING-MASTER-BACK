@@ -91,10 +91,10 @@ export class TradeJournalService {
     this.kline_aggregator = new KlineAggregator();
     this.binance_api = BinanceAPI.getInstance();
     this.sr_repository = new SRLevelRepository();
-    // 交易专用密钥优先，回退通用密钥（与 OrderExecutor 一致）
+    // 同步持仓用分析专用只读密钥（BINANCE_ANALYZE_*），回退到通用密钥
     this.trading_api = new BinanceFuturesTradingAPI(
-      process.env.BINANCE_TRADE_API_KEY || process.env.BINANCE_API_KEY,
-      process.env.BINANCE_TRADE_SECRET || process.env.BINANCE_API_SECRET,
+      process.env.BINANCE_ANALYZE_KEY || process.env.BINANCE_API_KEY,
+      process.env.BINANCE_ANALYZE_SECRET || process.env.BINANCE_API_SECRET,
       false
     );
     this.claude = new Anthropic({
