@@ -29,6 +29,9 @@ export class Kline5mRepository {
   private flush_timer: NodeJS.Timeout | null = null;
   private readonly FLUSH_INTERVAL_MS = 30000;  // 30秒强制刷新
 
+  // 累计实际插入行数（INSERT IGNORE 去重后真正写入的行数，用于统计）
+  private inserted_total = 0;
+
   constructor() {
     // 启动定时刷新
     this.start_flush_timer();
@@ -202,7 +205,9 @@ export class Kline5mRepository {
         VALUES ${placeholders}
       `;
 
-      await connection.execute(sql, values);
+      const [result] = await connection.execute(sql, values);
+      // INSERT IGNORE 的 affectedRows 只统计实际插入的行（被去重忽略的不计）
+      this.inserted_total += (result as any).affectedRows || 0;
     } catch (error) {
       logger.error(`[Kline5m] Batch insert failed:`, error);
       throw error;
@@ -372,6 +377,13 @@ export class Kline5mRepository {
     } finally {
       connection.release();
     }
+  }
+
+  /**
+   * 获取累计实际插入的行数（INSERT IGNORE 去重后真正写入的总行数）
+   */
+  get_inserted_total(): number {
+    return this.inserted_total;
   }
 
   /**

@@ -237,7 +237,8 @@ async function main() {
     success: 0,
     skipped: 0,
     failed: 0,
-    total_klines: 0,
+    total_klines: 0,      // 从 API 拉取的总根数
+    total_inserted: 0,    // 实际入库的总行数（去重后）
     start_time: Date.now()
   };
 
@@ -267,10 +268,17 @@ async function main() {
         }
         const klines = await fetch_klines(symbol, actual_start, end_ts);
         if (klines.length === 0) continue;
+        // 立即 flush，读取累计差值得到该币种真实入库行数（去重后）
+        const before = repo.get_inserted_total();
         await repo.add_klines(klines);
+        await repo.flush();
+        const inserted = repo.get_inserted_total() - before;
         stats.total_klines += klines.length;
+        stats.total_inserted += inserted;
         stats.success++;
-        console.log(`${progress} ${symbol.padEnd(12)} ✅ +${klines.length}根`);
+        const dup = klines.length - inserted;
+        const dup_note = dup > 0 ? ` (去重${dup})` : '';
+        console.log(`${progress} ${symbol.padEnd(12)} ✅ 拉取${klines.length} / 新增${inserted}${dup_note}`);
       } catch (error: any) {
         stats.failed++;
         console.error(`${progress} ${symbol.padEnd(12)} ❌ ${error.message}`);
@@ -291,7 +299,8 @@ async function main() {
   console.log(`   成功拉取: ${stats.success}`);
   console.log(`   已有跳过: ${stats.skipped}`);
   console.log(`   失败: ${stats.failed}`);
-  console.log(`   新增K线: ${stats.total_klines}`);
+  console.log(`   API拉取: ${stats.total_klines} 根`);
+  console.log(`   实际入库: ${stats.total_inserted} 根 (去重 ${stats.total_klines - stats.total_inserted})`);
   console.log(`   耗时: ${elapsed} 秒`);
   console.log('═'.repeat(70));
 
