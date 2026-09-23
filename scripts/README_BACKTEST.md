@@ -5,7 +5,7 @@
 ### 方式1：使用 JavaScript 脚本（推荐）
 
 ```bash
-node scripts/backtest.js
+node scripts/dev/backtest/backtest.js
 ```
 
 **优点**：
@@ -23,7 +23,7 @@ npm run backtest
 
 ## 修改配置
 
-编辑 `scripts/backtest.js` 文件顶部的 `BACKTEST_CONFIG` 对象：
+编辑 `scripts/dev/backtest/backtest.js` 文件顶部的 `BACKTEST_CONFIG` 对象：
 
 ```javascript
 const BACKTEST_CONFIG = {
@@ -177,7 +177,7 @@ cat backtest_results/backtest_*.json | jq '.all_trades'
 ### 验证保证金
 
 ```bash
-node scripts/verify_fixed_margin.js
+node scripts/dev/verify/verify_fixed_margin.js
 ```
 
 ## 常见配置场景
@@ -302,14 +302,14 @@ const BACKTEST_CONFIG = {
 
 ```bash
 # 保守策略
-cp scripts/backtest.js scripts/backtest_conservative.js
+cp scripts/dev/backtest/backtest.js scripts/dev/backtest/backtest_conservative.js
 # 修改配置...
-node scripts/backtest_conservative.js
+node scripts/dev/backtest/backtest_conservative.js
 
 # 激进策略
-cp scripts/backtest.js scripts/backtest_aggressive.js
+cp scripts/dev/backtest/backtest.js scripts/dev/backtest/backtest_aggressive.js
 # 修改配置...
-node scripts/backtest_aggressive.js
+node scripts/dev/backtest/backtest_aggressive.js
 ```
 
 ### 2. 时间段对比

@@ -2,406 +2,227 @@
 
 ## 📋 项目概述
 
-基于Node.js的智能加密货币交易后端系统，专注于实时数据处理、技术分析、交易规则引擎、风险管理和信号生成。
+基于 Node.js + TypeScript 的加密货币量化交易后端。系统当前的**业务重心是趋势跟随信号系统**：
+全市场实时监控 → 识别强势第一波 → 回调分级报警 → 多周期扳机确认 → 事后评估闭环 → AI 复盘。
+
+OI 监控、成交量异动、盘口、形态扫描、支撑阻力等作为**辅助信号源**并行运行，
+回测与实盘执行框架已具备但非当前主线。
 
 ## 🛠️ 技术栈
 
-- **Node.js** + **TypeScript** - 核心开发语言
-- **Express.js** - REST API框架
-- **WebSocket** - 币安U本位合约实时数据流
-- **MySQL** - K线数据多表存储、配置和规则数据
-- **Redis** - 缓存和消息队列
-- **币安API** - U本位合约数据源
+- **Node.js + TypeScript**（`snake_case` 命名，见开发规范）
+- **Express.js** — REST API
+- **WebSocket** — 币安 U 本位合约实时流 `wss://fstream.binance.com`
+- **MySQL** — K线分表、信号、报警、交易日志
+- **Redis** — 缓存
+- **AI SDK** — Claude / OpenAI / DeepSeek（交易复盘，**仅服务器有**）
+- **Telegram Bot** — 报警推送
+- **pm2 + swc** — 生产部署
 
-## 🏗️ 系统架构
+## 🚀 运行形态（生产）
+
+服务跑在**服务器**上，通过 pm2 托管三个进程（见 `ecosystem.config.js`）：
+
+| 进程 | 入口 | 职责 |
+|---|---|---|
+| `api` | `dist/index_api_only.js` | 只读 API 服务（swc build 产物，非 ts-node） |
+| `trend` | `scripts/run_trend_follow_monitor.ts` | **核心**：全市场 5m WS 监控 + 分级报警 |
+| `alerts` | `scripts/evaluate_alert_outcomes.ts --loop` | 报警事后评估器（常驻） |
+
+```bash
+npm run build          # swc 编译到 dist/
+pm2 restart api        # 更新 api 需先 build
+pm2 restart trend alerts
+```
+
+> ⚠️ **本机无法访问币安 API**，涉及行情拉取的脚本必须在服务器执行。
+> 本机可直连服务器 MySQL 做数据分析（脚本读 `.env`）。
+
+## 🎯 核心业务：趋势跟随分级报警
+
+主逻辑在 `src/services/trend_follow_service.ts`，运行器 `scripts/run_trend_follow_monitor.ts`。
+
+### 状态机
 
 ```
-数据输入层 → 数据处理核心 → 技术分析引擎 → 交易规则引擎 → 信号处理中心 → 风险控制系统
+IDLE → DETECTING → WATCHING → ALERTED
+                      ↓          ↓
+                 ABANDONED   BREAKTHROUGH
 ```
 
-## 🎯 核心模块
+5m / 15m / 1h / 4h **四周期并行**，每个 `symbol × timeframe` 一个独立 `WatchContext`；
+进程重启时从 `trend_follow_watch_contexts` 表恢复上下文。
 
-### 1. 数据处理核心 (`src/core/data`)
-- **subscription_pool.ts** - 统一WebSocket连接池管理
-- **multi_symbol_manager.ts** - 多币种同时订阅管理
-- **stream_dispatcher.ts** - 实时数据流分发器
-- **data_validator.ts** - 数据验证和清洗
-- **symbol_config_manager.ts** - 币种配置和订阅管理
-- **historical_data_manager.ts** - 历史数据按需获取
-- **rest_api_manager.ts** - 币安REST API管理器
-- **cache_manager.ts** - Redis缓存策略
+### 回调分级（斐波那契）
 
-### 2. 技术分析引擎 (`src/analysis`)
-- **technical_analysis.ts** - 技术指标计算(MA/RSI/MACD等)
-- **pattern_recognition.ts** - 图表形态识别
-- **support_resistance.ts** - 关键支撑阻力位
+| 等级 | 条件 | 说明 |
+|---|---|---|
+| **Lv1** | 回调 < 38.2%，缩量 | 轻度回调 |
+| **Lv2** | 回调 38.2%~50%，缩量 + 止跌形态 | 黄金回调 |
+| **Lv3** | 回调 50%~61.8% | 深度回调（**通知已静音**） |
+| **废弃** | > 61.8% / 超时 / 连续大阴线 | 转 ABANDONED |
 
-### 3. 交易规则引擎 (`src/rules`) ⭐ **核心特性**
-- **rule_engine.ts** - 规则调度引擎
-- **rule_compiler.ts** - DSL规则编译器
-- **rule_executor.ts** - 实时规则执行
-- **rule_templates.ts** - 预设策略模板
+信号特征附加判定：`volume_shrink`（缩量）、`reversal_signal`（止跌形态）、`ema20_support`（回调低点贴近 EMA20）。
 
-### 4. 规则管理 (`src/rules_management`)
-- **rule_backtester.ts** - 历史回测
-- **rule_version_control.ts** - 版本管理
-- **rule_performance_monitor.ts** - 性能监控
+### 多周期扳机（Entry Trigger）
 
-### 5. 信号处理 (`src/signals`)
-- **signal_generator.ts** - 交易信号生成
-- **signal_filter.ts** - 信号过滤优化
-- **signal_scorer.ts** - 信号强度评分
+大周期（1h/4h）进入 ALERTED 后，挂一个该 symbol 的 **5m 监视器**，
+等小周期结构确认（突破最近 N 根 5m 高点）才发「入场确认」，超时未确认则移除。
+扳机门槛当前为 **Lv1**（曾为 Lv2，见 commit `13c9198`）。
 
-### 6. 风险控制 (`src/risk`)
-- **risk_manager.ts** - 风险评估控制
-- **position_sizer.ts** - 智能仓位管理
-- **stop_loss_manager.ts** - 止损止盈
+### 事后评估闭环
 
-### 7. 系统监控 (`src/core/monitoring`) ⭐ **新增核心模块**
-- **monitoring_manager.ts** - 监控服务总控制器
-- **metrics_collector.ts** - 系统指标收集器
-- **health_checker.ts** - 系统健康状态检查
-- **monitoring_types.ts** - 监控相关类型定义
+`scripts/evaluate_alert_outcomes.ts` 对每条报警打标：
+- `win` → 触及 target（第一波高点）
+- `loss` → 触及 stop（回调低点下方 0.3%）
+- `open` → 评估窗内未触及
+- 记录 MFE / MAE，支持 **low / wave 两种止损口径**
+
+结果写入 `trend_follow_alert_outcomes`，用于信号质量统计。
 
 ## 📁 项目结构
 
 ```
 src/
+├── index.ts                 # 全功能入口
+├── index_api_only.ts        # 只读 API 入口（pm2 api 用）
+├── api/
+│   ├── api_server.ts        # Express 装配，挂载 20 个路由组
+│   ├── routes/              # 各业务路由
+│   ├── binance_api.ts / binance_futures_api.ts
+│   └── binance_futures_trading_api.ts   # 下单/持仓
+├── services/                # 12 个监控服务（业务主体）
+│   ├── trend_follow_service.ts     ⭐ 核心
+│   ├── ema20_push_service.ts
+│   ├── oi_polling_service.ts
+│   ├── volume_monitor_service.ts
+│   ├── orderbook_monitor_service.ts
+│   ├── kline_breakout_service.ts
+│   ├── sr_alert_service.ts
+│   ├── pattern_scan_service.ts
+│   ├── perfect_hammer_trader.ts
+│   ├── trade_log_service.ts        # AI 复盘（三层架构）
+│   ├── market_sentiment_manager.ts
+│   └── telegram_service.ts
+├── analysis/                # 技术分析
+│   ├── chan_theory/         # 缠论：分型/笔/中枢
+│   ├── overlap_range_detector.ts   # 震荡区间识别（~2k 行）
+│   ├── pattern_detector.ts
+│   ├── support_resistance_detector.ts
+│   ├── breakout_predictor.ts
+│   └── technical_indicators.ts
+├── trading/                 # 实盘/回测执行
+│   ├── trading_system.ts    # 总装配（~2.2k 行）
+│   ├── live_trading_engine.ts / backtest_engine.ts
+│   ├── order_executor.ts / position_tracker.ts
+│   ├── trailing_stop_manager.ts / risk_manager.ts
+│   └── trading_cooldown_manager.ts
+├── quantitative/            # 策略框架（策略/回测/风控/类型）
+├── database/                # 30+ Repository
 ├── core/
-│   ├── data/                # 数据处理(WebSocket、历史数据)
-│   ├── cache/               # Redis缓存管理
-│   ├── config/              # 配置管理(统一配置、TOP币种)
-│   ├── oi/                  # OI持仓量监控
-│   └── monitoring/          # 系统监控(健康检查、指标收集)
-├── api/                     # REST接口(49个API)
-│   └── routes/              # K线、WebSocket、TOP币种、历史数据、OI、监控
-├── database/                # 数据库层(多表Repository、OI数据)
-├── utils/                   # 工具函数
-└── types/                   # TypeScript类型定义
+│   ├── data/                # WS 订阅池、K线聚合、历史数据
+│   ├── config/              # ConfigManager、TOP币种
+│   ├── cache/               # Redis
+│   └── monitoring/          # 健康检查、指标
+├── signals/ · risk/ · rules/ · websocket/ · utils/ · types/
+scripts/                     # 运行脚本（见下）
 ```
 
-## 🔧 规则引擎核心设计
+## 📜 脚本目录约定 ⭐
 
-```typescript
-interface TradingRule {
-  id: string;
-  name: string;
-  conditions: RuleCondition[];
-  actions: RuleAction[];
-  timeframe: string;
-  enabled: boolean;
-}
-
-enum RuleType {
-  BREAKOUT = 'breakout',      // 突破策略
-  MA_CROSS = 'ma_cross',      // 均线交叉
-  PATTERN = 'pattern',        // 形态识别
-  CUSTOM = 'custom'           // 自定义
-}
 ```
+scripts/
+├── run_trend_follow_monitor.ts     # pm2 trend
+├── evaluate_alert_outcomes.ts      # pm2 alerts
+├── run_backtest.ts / run_live_trading.ts / replay_trend_follow.ts
+├── run_oi_monitor.ts / run_sr_monitor.ts / run_volume_monitor.ts ...
+├── backfill_*.ts                   # K线回填（例行数据运维）
+├── run_db_migration.ts · migrations/
+└── dev/                            # ⚠️ 一次性脚本，不参与线上运行
+    ├── analysis/      # analyze_* / export_* / list_*  信号质量与EV分析
+    ├── debug/         # debug_* / diagnose_* / check_* / tmp_*
+    ├── backtest/      # backtest_* / compare_*  参数试验
+    ├── verify/        # test_* / verify_*
+    └── maintenance/   # migrate_* / clear_* / truncate_*
+```
+
+**约定**：新增一次性调试/分析脚本请放进 `scripts/dev/<分类>/`，
+根目录只保留 pm2 入口、npm scripts 引用、例行回填。
+
+`dev/` 下脚本位于二级目录，相对导入为 `../../../src/...`（用 `@/` 别名则不受影响）：
+
+```bash
+npx ts-node -r tsconfig-paths/register scripts/dev/analysis/analyze_trend_signal_quality.ts
+```
+
+## 🗄️ 数据库
+
+### K线分表
+`kline_1m` / `kline_5m` / `kline_15m` / `kline_1h` / `kline_4h`
+（`UNIQUE (symbol, open_time)` + `INSERT IGNORE` 去重；5m 为 WS 落库主表，
+15m/1h/4h 由 `kline_aggregator` 聚合，也可回填）
+
+### 业务表（按域）
+
+| 域 | 表 |
+|---|---|
+| **趋势跟随** | `trend_follow_watch_contexts`、`trend_follow_alerts`、`trend_follow_entry_triggers`、`trend_follow_alert_outcomes` |
+| **EMA20 推动** | `ema20_push_contexts`、`ema20_push_records` |
+| **交易日志** | `trade_log`、`trade_log_analysis`、`trade_log_review`、`binance_trades`、`trade_records`、`order_records` |
+| **其他报警** | `volume_alerts`、`orderbook_alerts`、`sr_alerts`、`sr_levels`、`pattern_alerts`、`pattern_scan_results`、`pattern_scan_tasks` |
+| **配置** | `symbol_configs`、`top_symbols_config`、`subscription_status`、`volume_monitor_symbols` |
+| **缓存/信号** | `historical_data_cache`、`trading_signal_logs` |
+
+> Repository 内部用 `CREATE TABLE IF NOT EXISTS` 自建表，启动即幂等初始化。
+
+## 📡 API 路由（`src/api/api_server.ts`）
+
+```
+/api/oi            /api/monitoring     /api/top-symbols    /api/historical
+/api/klines        /api/websocket      /api/signals        /api/structure
+/api/quant         /api/trading        /api/backtest       /api/breakout
+/api/boundary-alerts    /api/sr        /api/volume-monitor /api/pattern-scan
+/api/orderbook     /api/trend-follow   /api/ema20-push     /api/trade-record
+```
+
+## 🤖 AI 交易复盘
+
+`src/services/trade_log_service.ts` — 以**币安真实成交为主体的三层架构**
+（`trade_log` 回合 → `trade_log_analysis` AI 分析 → `trade_log_review` 复盘）。
+
+- 通过 `AI_PROVIDER` 切换 Claude / OpenAI / DeepSeek
+- 模型经 `CLAUDE_MODEL` / `OPENAI_MODEL` / `DEEPSEEK_MODEL` 配置
+- 入场评估与持仓再评估**异步执行**，立即返回 `journal_id` 避免前端超时
+- K线以北京时间紧凑标注（`MMDD/HHMM`）传给 AI
 
 ## 📝 开发规范
 
-### 命名约定 (snake_case)
+### 命名（snake_case）
 ```typescript
-// 文件和变量
 const market_data = await get_market_data();
 function calculate_rsi(prices: number[]): number {}
 
-// 类和接口保持PascalCase
-class DataManager {}
+class DataManager {}          // 类/接口保持 PascalCase
 interface TradingRule {}
 
-// 常量
-const MAX_RETRY_ATTEMPTS = 3;
-const DEFAULT_TIMEFRAME = '1m';
-
-// 功能模块封装
-// 注意功能模块封装，减少代码冗余
-// 接口请求统一封装到 src/api
-// 数据库操作统一封装到 src/database
-
-//注释
-//每个方法或函数都加上简介注释
+const MAX_RETRY_ATTEMPTS = 3; // 常量 UPPER_SNAKE
 ```
 
-## 💡 核心要求
+### 约定
+- 接口请求统一封装到 `src/api`，数据库操作统一封装到 `src/database`
+- 每个方法/函数加简介注释
+- 注意模块封装，减少代码冗余
+- 全面 TypeScript 类型定义；完整异常捕获
 
-1. **类型安全** - 全面TypeScript类型定义
-2. **实时处理** - 毫秒级数据处理延迟
-3. **规则引擎** - 核心竞争力，重点关注
-4. **错误处理** - 完整异常捕获机制
-5. **测试覆盖** - 关键模块单元测试
-6. **代码规范** - ESLint + Prettier统一风格
-7. **命名统一** - 采用snake_case命名规则
+## 💡 关键实现点
 
-## 🔍 关键实现点
-
-- **数据源** - 币安U本位合约WebSocket实时流 (`wss://fstream.binance.com/ws`)
-- **多表存储** - K线数据按周期分表存储 (`kline_1m`/`kline_5m`/`kline_15m`/`kline_1h`/`kline_4h`/`kline_1d`)
-- **数据去重** - UNIQUE约束 + INSERT IGNORE防重复写入
-- **查询降级** - Redis缓存 → MySQL持久化 → 币安API兜底
-- **缓存策略** - 24小时Redis + 永久MySQL存储
-- **TOP币种管理** - 动态配置、订阅流管理、排序控制
-- **OI监控** - TOP10持仓量异动检测
-- **监控体系** - 系统健康检查、性能指标、告警机制
-- **配置管理** - 统一环境变量处理、配置中心
-
-## 🗄️ 数据库设计
-
-### MySQL 表结构设计
-
-#### 1. 币种配置表 (symbol_configs)
-```sql
-CREATE TABLE symbol_configs (
-  id INT PRIMARY KEY AUTO_INCREMENT,
-  symbol VARCHAR(20) NOT NULL UNIQUE,       -- BTCUSDT
-  display_name VARCHAR(50) NOT NULL,        -- Bitcoin/USDT
-  base_asset VARCHAR(10) NOT NULL,          -- BTC
-  quote_asset VARCHAR(10) NOT NULL,         -- USDT
-  enabled TINYINT(1) DEFAULT 1,             -- 是否启用订阅
-  priority INT DEFAULT 50,                  -- 显示优先级 (1-100)
-  category ENUM('major','alt','stable') DEFAULT 'alt',
-  exchange VARCHAR(20) DEFAULT 'binance',
-  min_price DECIMAL(20,8) DEFAULT 0,        -- 最小价格精度
-  min_qty DECIMAL(20,8) DEFAULT 0,          -- 最小数量精度
-  created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
-  updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
-
-  INDEX idx_symbol (symbol),
-  INDEX idx_enabled_priority (enabled, priority),
-  INDEX idx_category (category)
-);
-```
-
-#### 2. 订阅状态表 (subscription_status)
-```sql
-CREATE TABLE subscription_status (
-  id INT PRIMARY KEY AUTO_INCREMENT,
-  symbol VARCHAR(20) NOT NULL,                    -- BTCUSDT
-  stream_type ENUM('ticker','kline','depth','trade') NOT NULL,
-  status ENUM('active','inactive','error') DEFAULT 'inactive',
-  last_update TIMESTAMP NULL,                     -- 最后数据更新时间
-  error_count INT DEFAULT 0,                      -- 错误次数
-  error_message TEXT NULL,                        -- 错误信息
-  reconnect_attempts INT DEFAULT 0,               -- 重连次数
-  created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
-  updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
-
-  UNIQUE KEY uk_symbol_stream (symbol, stream_type),
-  INDEX idx_status (status),
-  INDEX idx_last_update (last_update),
-  FOREIGN KEY (symbol) REFERENCES symbol_configs(symbol) ON DELETE CASCADE
-);
-```
-
-#### 3. K线数据多表 (kline_1m / kline_5m / kline_15m / kline_1h / kline_4h / kline_1d) ⭐ **核心**
-```sql
--- 按时间周期分表存储，以kline_1m为例
-CREATE TABLE kline_1m (
-  id BIGINT PRIMARY KEY AUTO_INCREMENT,
-  symbol VARCHAR(20) NOT NULL,                        -- BTCUSDT
-  open_time BIGINT NOT NULL,                          -- K线开始时间(ms)
-  close_time BIGINT NOT NULL,                         -- K线结束时间(ms)
-  open DECIMAL(20,8) NOT NULL,                        -- 开盘价
-  high DECIMAL(20,8) NOT NULL,                        -- 最高价
-  low DECIMAL(20,8) NOT NULL,                         -- 最低价
-  close DECIMAL(20,8) NOT NULL,                       -- 收盘价
-  volume DECIMAL(30,8) NOT NULL,                      -- 成交量
-  trade_count INT NOT NULL,                           -- 成交笔数
-  created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
-
-  UNIQUE KEY uk_symbol_time (symbol, open_time),
-  INDEX idx_open_time (open_time),
-  INDEX idx_symbol (symbol)
-) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4;
-
--- 其他周期表: kline_5m, kline_15m, kline_1h, kline_4h, kline_1d 结构相同
-```
-
-#### 4. TOP币种配置表 (top_symbols)
-```sql
-CREATE TABLE top_symbols (
-  id INT PRIMARY KEY AUTO_INCREMENT,
-  symbol VARCHAR(20) NOT NULL UNIQUE,                -- BTCUSDT
-  display_name VARCHAR(100) NOT NULL,                -- Bitcoin
-  rank_order INT NOT NULL,                           -- 排序(1-10)
-  enabled TINYINT(1) DEFAULT 1,                      -- 是否启用
-  subscription_intervals JSON,                       -- 订阅周期 ["15m","1h"]
-  created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
-  updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
-
-  INDEX idx_rank (rank_order),
-  INDEX idx_enabled (enabled)
-) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4;
-```
-
-#### 5. OI持仓量数据表 (oi_snapshots / oi_anomalies)
-```sql
--- OI快照表
-CREATE TABLE oi_snapshots (
-  id BIGINT PRIMARY KEY AUTO_INCREMENT,
-  symbol VARCHAR(20) NOT NULL,
-  oi_value DECIMAL(30,8) NOT NULL,
-  timestamp TIMESTAMP NOT NULL,
-  UNIQUE KEY uk_symbol_time (symbol, timestamp)
-);
-
--- OI异动表
-CREATE TABLE oi_anomalies (
-  id BIGINT PRIMARY KEY AUTO_INCREMENT,
-  symbol VARCHAR(20) NOT NULL,
-  period_seconds INT NOT NULL,
-  percent_change DECIMAL(10,4) NOT NULL,
-  severity ENUM('low','medium','high'),
-  anomaly_time TIMESTAMP NOT NULL
-);
-```
-
-
-## 📊 **K线数据存储架构** ⭐ **核心特性**
-
-### **数据流转路径**
-```
-币安API/WebSocket → 数据验证 → [Redis缓存 + MySQL存储] → 应用层
-                    ↓
-              查询降级策略: Redis → MySQL → API兜底
-```
-
-### **存储触发机制**
-1. **历史数据获取时** - API调用后自动存储
-2. **实时数据接收时** - WebSocket完整K线 (`is_final: true`) 自动存储
-3. **异步存储** - 不阻塞主数据流，保证实时性能
-
-### **数据去重保证**
-- **数据库层**: `UNIQUE KEY (symbol, interval_type, open_time)`
-- **应用层**: `INSERT IGNORE` 语句防重复插入
-- **查询优化**: 复合索引加速检索
-
-### Redis 缓存结构设计
-
-```typescript
-// K线历史数据缓存 (24小时过期)
-"historical:BTCUSDT:1m:start_TIME:end_TIME:limit_COUNT" => [{kline_data}, ...]
-
-// 实时行情缓存
-"market:ticker:BTCUSDT" => {price, volume, change, timestamp}
-
-// 订阅配置缓存
-"config:symbols:active" => ["BTCUSDT", "ETHUSDT", ...]
-
-// 连接状态缓存
-"status:websocket:binance" => {connected, last_ping, error_count}
-
-// 监控数据缓存 ⭐ 新增
-"monitoring:metrics:latest" => {timestamp, uptime, memory, cpu, database, api...}
-"monitoring:health:latest" => {overall_status, checks[], uptime, timestamp}
-"monitoring:alert:ALERT_ID" => {id, type, severity, message, timestamp...}
-```
-
-### **核心组件职责**
-| 组件 | 文件位置 | 主要职责 |
-|------|----------|----------|
-| **KlineMultiTableRepository** | `src/database/kline_multi_table_repository.ts` | K线多表存储、批量插入、查询优化 |
-| **HistoricalDataManager** | `src/core/data/historical_data_manager.ts` | 历史数据缓存、API调用、存储协调 |
-| **MultiSymbolManager** | `src/core/data/multi_symbol_manager.ts` | WebSocket管理、实时数据接收存储 |
-| **SubscriptionPool** | `src/core/data/subscription_pool.ts` | WebSocket连接池、订阅管理、重连机制 |
-| **TopSymbolsManager** | `src/core/config/top_symbols_manager.ts` | TOP币种配置管理、订阅流生成 |
-| **OIManager** | `src/core/oi/oi_manager.ts` | OI持仓量监控、异动检测 |
-| **MonitoringManager** | `src/core/monitoring/monitoring_manager.ts` | 系统监控、健康检查、告警 |
-
-## 🎯 **系统监控架构** ⭐ **核心特性**
-
-### **监控数据流程**
-```
-指标收集器 → 数据验证 → [Redis存储] → API接口 → 前端展示
-     ↓              ↓
-健康检查器 → 告警检测 → 告警通知
-```
-
-### **监控功能特性**
-1. **实时指标收集** - 10分钟间隔收集系统、数据库、API性能指标
-2. **健康状态检查** - 60秒间隔检查各服务连接状态和响应时间
-3. **智能告警机制** - 基于阈值的自动告警，支持warning/critical级别
-4. **性能数据持久化** - Redis存储24小时监控数据
-5. **RESTful监控API** - 10个完整的监控数据查询接口
-
-### **监控API端点**
-```typescript
-// 系统健康检查
-GET /api/monitoring/health              // 完整系统健康状态
-GET /api/monitoring/health/:service     // 特定服务健康状态
-
-// 系统指标查询
-GET /api/monitoring/metrics             // 系统性能指标
-GET /api/monitoring/metrics/latest      // 最新指标数据
-
-// 告警管理
-GET /api/monitoring/alerts              // 活跃告警列表
-GET /api/monitoring/alerts/history      // 告警历史记录
-
-// 监控服务管理
-GET /api/monitoring/status              // 监控服务状态
-GET /api/monitoring/stats               // 性能统计摘要
-GET /api/monitoring/stats/summary       // 统计数据摘要
-```
-
-### **配置管理架构**
-```typescript
-// 配置类型定义
-interface AppConfig {
-  database: DatabaseConfig;    // MySQL + Redis配置
-  binance: BinanceConfig;      // 币安API配置
-  server: ServerConfig;        // 服务器配置
-  cache: CacheConfig;          // 缓存配置
-}
-
-// 统一配置管理器
-ConfigManager.getInstance()
-  .get_database_config()     // 获取数据库配置
-  .get_binance_config()      // 获取币安配置
-  .get_server_config()       // 获取服务器配置
-```
-
-### **监控指标类型**
-- **系统指标**: 内存使用率、CPU使用率、系统运行时间
-- **数据库指标**: MySQL连接池状态、Redis连接状态和内存使用
-- **API指标**: 请求数量、错误率、平均响应时间、活跃连接数
-- **WebSocket指标**: 连接状态、订阅流数量、消息数量、重连次数
-- **业务指标**: OI监控活跃币种、轮询间隔、最后更新时间
-
-## 📡 API接口总览
-
-系统提供49个RESTful API接口，详见 [API文档](docs/API_REFERENCE.md)
-
-### 接口分类
-- **K线数据** (8个) - 实时/历史K线查询、数据完整性检查、批量查询
-- **WebSocket管理** (4个) - 连接状态、订阅流监控、手动重连
-- **TOP币种配置** (10个) - 币种CRUD、排序管理、订阅流配置
-- **历史数据** (5个) - 历史K线获取、缓存统计、预加载
-- **OI数据** (10个) - 持仓量统计、异动检测、配置管理
-- **系统监控** (10个) - 健康检查、性能指标、告警管理
-- **基础信息** (2个) - API根路径、健康检查
-
-### 核心接口示例
-```typescript
-// K线数据
-GET  /api/klines/:symbol/:interval           // 获取K线数据
-POST /api/klines/batch/latest                // 批量获取最新K线
-
-// WebSocket管理
-GET  /api/websocket/status                   // WebSocket连接状态
-POST /api/websocket/reconnect                // 手动重连
-
-// TOP币种配置
-GET  /api/top-symbols/enabled                // 获取启用的币种
-PUT  /api/top-symbols/:symbol/toggle         // 启用/禁用币种
-
-// 系统监控
-GET  /api/monitoring/health                  // 系统健康检查
-GET  /api/monitoring/metrics/latest          // 最新性能指标
-```
+- **实时数据** — 全市场 5m WS 流，带 watchdog 自动重连
+- **K线聚合** — `src/core/data/kline_aggregator.ts` 由 5m 合成 15m/1h/4h
+- **查询降级** — Redis → MySQL → 币安 API 兜底
+- **回填限速** — 币安权重限制，回填脚本控制在 **2400 权重/分钟**以内避免 429
+- **`--force` 回填** — 补中间空洞，区分「API 拉取数」与「实际入库数」
+- **状态持久化** — 监控上下文落库，进程重启无缝恢复
 
 ---
 
-**目标**: 构建高性能、可扩展的加密货币数据处理后端系统，提供实时K线数据、OI监控、完善的监控体系，为量化交易提供稳定的数据支撑。
+**目标**：以趋势跟随信号为核心，构建「信号生成 → 事后评估 → 质量分析 → 策略迭代」的可验证闭环。
