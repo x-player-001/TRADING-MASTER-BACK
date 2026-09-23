@@ -23,6 +23,7 @@ import orderbook_monitor_routes, { set_orderbook_service } from './routes/orderb
 import trend_follow_routes, { set_trend_follow_repository } from './routes/trend_follow_routes';
 import ema20_push_routes, { set_ema20_push_repository } from './routes/ema20_push_routes';
 import { TradeRecordRoutes } from './routes/trade_record_routes';
+import { KlineReplayRoutes } from './routes/kline_replay_routes';
 import { TradeLogService } from '@/services/trade_log_service';
 import { VolumeMonitorRepository } from '@/database/volume_monitor_repository';
 import { TrendFollowRepository } from '@/database/trend_follow_repository';
@@ -60,6 +61,7 @@ export class APIServer {
   private trend_follow_repository: TrendFollowRepository;
   private ema20_push_repository: EMA20PushRepository;
   private trade_record_routes: TradeRecordRoutes;
+  private kline_replay_routes: KlineReplayRoutes;
   private ws_depth: WebSocket | null = null;
 
   constructor(oi_data_manager: OIDataManager, port: number = 3000) {
@@ -85,6 +87,7 @@ export class APIServer {
     this.trend_follow_repository = new TrendFollowRepository();
     this.ema20_push_repository = new EMA20PushRepository();
     this.trade_record_routes = new TradeRecordRoutes();
+    this.kline_replay_routes = new KlineReplayRoutes();
     this.setup_middleware();
     this.setup_routes();
     this.init_volume_monitor_services();
@@ -92,6 +95,7 @@ export class APIServer {
     this.init_trade_record_service();
     this.init_trend_follow_services();
     this.init_ema20_push_services();
+    this.init_kline_replay_services();
   }
 
   /**
@@ -150,6 +154,18 @@ export class APIServer {
       logger.info('[APIServer] Trade record service initialized');
     } catch (error) {
       logger.error('[APIServer] Failed to init trade record service:', error);
+    }
+  }
+
+  /**
+   * 初始化K线回放模拟交易（建表）
+   */
+  private async init_kline_replay_services(): Promise<void> {
+    try {
+      await this.kline_replay_routes.init();
+      logger.info('[APIServer] Kline replay services initialized');
+    } catch (error) {
+      logger.error('[APIServer] Failed to init kline replay services:', error);
     }
   }
 
@@ -309,6 +325,7 @@ export class APIServer {
           'volume-monitor': '/api/volume-monitor/*',
           'pattern-scan': '/api/pattern-scan/*',
           orderbook: '/api/orderbook/*',
+          replay: '/api/replay/*',
           status: '/api/status'
         },
         timestamp: new Date().toISOString()
@@ -374,6 +391,9 @@ export class APIServer {
 
     // 交易日志路由
     this.app.use('/api/trade-record', this.trade_record_routes.get_router());
+
+    // K线回放 + 模拟交易
+    this.app.use('/api/replay', this.kline_replay_routes.get_router());
 
     // 系统状态
     this.app.get('/api/status', async (req: Request, res: Response) => {
@@ -462,7 +482,7 @@ export class APIServer {
       this.orderbook_monitor_service.stop();
     }
 
-    return new Promise((resolve) => {
+    await new Promise<void>((resolve) => {
       if (this.server) {
         this.server.close(() => {
           logger.info('🛑 API Server stopped');
@@ -472,6 +492,13 @@ export class APIServer {
         resolve();
       }
     });
+
+    // 不再接收请求后，落库K线回放的内存进度（须在关闭数据库连接池之前）
+    try {
+      await this.kline_replay_routes.shutdown();
+    } catch (error) {
+      logger.error('[APIServer] Failed to flush kline replay state:', error);
+    }
   }
 
   /**

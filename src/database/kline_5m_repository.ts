@@ -341,6 +341,46 @@ export class Kline5mRepository {
   }
 
   /**
+   * 列出已存在的 5m 日表日期（YYYYMMDD，升序）
+   */
+  async list_table_dates(): Promise<string[]> {
+    const connection = await DatabaseConfig.get_mysql_connection();
+    try {
+      const [rows] = await connection.execute(`
+        SELECT TABLE_NAME FROM information_schema.TABLES
+        WHERE TABLE_SCHEMA = DATABASE() AND TABLE_NAME REGEXP '^kline_5m_[0-9]{8}$'
+        ORDER BY TABLE_NAME
+      `);
+      return (rows as any[]).map(r => String(r.TABLE_NAME).replace('kline_5m_', ''));
+    } finally {
+      connection.release();
+    }
+  }
+
+  /**
+   * 查找某时间之后该币种的第一根K线 open_time（跨越缺失日表/数据空洞）
+   * @returns 找不到返回 null
+   */
+  async find_next_open_time(symbol: string, after_time: number): Promise<number | null> {
+    const from_date = this.get_table_name_from_timestamp(after_time).replace('kline_5m_', '');
+    const dates = (await this.list_table_dates()).filter(d => d >= from_date);
+    const connection = await DatabaseConfig.get_mysql_connection();
+    try {
+      for (const date of dates) {
+        const [rows] = await connection.execute(
+          `SELECT MIN(open_time) AS t FROM kline_5m_${date} WHERE symbol = ? AND open_time > ?`,
+          [symbol, after_time],
+        );
+        const t = (rows as any[])[0]?.t;
+        if (t !== null && t !== undefined) return Number(t);
+      }
+      return null;
+    } finally {
+      connection.release();
+    }
+  }
+
+  /**
    * 删除指定日期之前的旧表
    */
   async cleanup_old_tables(days_to_keep: number = 7): Promise<number> {

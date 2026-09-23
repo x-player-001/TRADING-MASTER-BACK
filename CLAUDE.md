@@ -167,6 +167,7 @@ npx ts-node -r tsconfig-paths/register scripts/dev/analysis/analyze_trend_signal
 | 域 | 表 |
 |---|---|
 | **趋势跟随** | `trend_follow_watch_contexts`、`trend_follow_alerts`、`trend_follow_entry_triggers`、`trend_follow_alert_outcomes` |
+| **K线回放模拟交易** | `replay_sessions`、`replay_orders`、`replay_positions`、`replay_fills` |
 | **EMA20 推动** | `ema20_push_contexts`、`ema20_push_records` |
 | **交易日志** | `trade_log`、`trade_log_analysis`、`trade_log_review`、`binance_trades`、`trade_records`、`order_records` |
 | **其他报警** | `volume_alerts`、`orderbook_alerts`、`sr_alerts`、`sr_levels`、`pattern_alerts`、`pattern_scan_results`、`pattern_scan_tasks` |
@@ -183,7 +184,18 @@ npx ts-node -r tsconfig-paths/register scripts/dev/analysis/analyze_trend_signal
 /api/quant         /api/trading        /api/backtest       /api/breakout
 /api/boundary-alerts    /api/sr        /api/volume-monitor /api/pattern-scan
 /api/orderbook     /api/trend-follow   /api/ema20-push     /api/trade-record
+/api/replay
 ```
+
+## 🎬 K线回放 + 模拟交易
+
+`src/services/kline_replay/`，接口文档 `docs/KLINE_REPLAY_API.md`（前端自行实现）。
+
+- 以 5m 为最小步进，服务端持有游标（不下发未来K线）；15m/1h/4h 已收盘读 `_agg` 表，未收盘由 5m 聚合
+- `replay_matching_engine.ts` 纯内存撮合（单测 `tests/kline_replay/`）：单向持仓、多空、市价/限价/条件单、SL/TP；
+  K线内路径按不利方向优先（先打止损），跳空不利按开盘价、有利按挂单价
+- 活跃会话常驻内存：纯推进每 3s 批量落库，有交易变更/读接口/`APIServer.stop()` 时立即落库
+- 端到端验证 `scripts/dev/verify/verify_kline_replay.ts`（需在服务器跑）
 
 ## 🤖 AI 交易复盘
 
