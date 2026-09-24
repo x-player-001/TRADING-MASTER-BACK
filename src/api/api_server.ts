@@ -482,7 +482,7 @@ export class APIServer {
       this.orderbook_monitor_service.stop();
     }
 
-    await new Promise<void>((resolve) => {
+    return new Promise((resolve) => {
       if (this.server) {
         this.server.close(() => {
           logger.info('🛑 API Server stopped');
@@ -492,13 +492,6 @@ export class APIServer {
         resolve();
       }
     });
-
-    // 不再接收请求后，落库K线回放的内存进度（须在关闭数据库连接池之前）
-    try {
-      await this.kline_replay_routes.shutdown();
-    } catch (error) {
-      logger.error('[APIServer] Failed to flush kline replay state:', error);
-    }
   }
 
   /**

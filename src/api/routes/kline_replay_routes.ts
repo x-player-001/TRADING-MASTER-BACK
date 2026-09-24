@@ -1,35 +1,21 @@
 /**
- * K线回放 + 模拟交易 API 路由
+ * K线回放 + 模拟交易 API 路由（撮合在前端，后端只存储）
  *
- * 会话
  *   GET    /api/replay/data-coverage                 5m 数据覆盖区间（选起点用）
  *   POST   /api/replay/sessions                      创建会话
  *   GET    /api/replay/sessions                      会话列表
- *   GET    /api/replay/sessions/:id                  会话快照（账户/持仓/挂单/当前K线）
+ *   GET    /api/replay/sessions/:id                  会话完整状态（恢复用：会话 + 游标K线 + 仓位/委托/成交）
  *   PATCH  /api/replay/sessions/:id                  修改名称/备注
  *   DELETE /api/replay/sessions/:id                  删除会话（含全部交易记录）
- *   POST   /api/replay/sessions/:id/finish           结束会话（平仓撤单）
- *
- * 回放
- *   GET    /api/replay/sessions/:id/klines           游标视角K线（interval=5m/15m/1h/4h）
- *   POST   /api/replay/sessions/:id/step             推进（下一步 / 快进）
- *
- * 交易
- *   POST   /api/replay/sessions/:id/orders           下单
+ *   GET    /api/replay/sessions/:id/bars             游标之后的 5m 批量块（前端逐根揭示）
+ *   GET    /api/replay/sessions/:id/klines           截止某时刻的某周期历史K线
+ *   POST   /api/replay/sessions/:id/sync             同步进度 + 整份交易记录（支持 sendBeacon）
  *   GET    /api/replay/sessions/:id/orders           委托列表
- *   DELETE /api/replay/sessions/:id/orders/:order_id 撤单
- *   PATCH  /api/replay/sessions/:id/position         改持仓止损/止盈
- *   POST   /api/replay/sessions/:id/position/close   市价平仓
- *   GET    /api/replay/sessions/:id/positions        仓位回合列表
- *   PATCH  /api/replay/sessions/:id/positions/:position_id  复盘标签/笔记
- *   GET    /api/replay/sessions/:id/fills            成交明细
- *
- * 统计
  *   GET    /api/replay/sessions/:id/stats            单会话统计
  *   GET    /api/replay/stats                         跨会话累计统计
  */
 
-import { Router, Request, Response } from 'express';
+import express, { Router, Request, Response } from 'express';
 import { KlineReplayService, ReplayError } from '@/services/kline_replay/kline_replay_service';
 import { ReplayOrderStatus, ReplaySessionStatus } from '@/services/kline_replay/replay_types';
 import { logger } from '@/utils/logger';
@@ -48,6 +34,18 @@ function param_id(req: Request, name: string): number {
   return Number(req.params[name]);
 }
 
+/** 请求体：JSON 或 text/plain（sendBeacon）里的 JSON 字符串 */
+function parse_body(req: Request): any {
+  if (typeof req.body === 'string') {
+    try {
+      return JSON.parse(req.body);
+    } catch {
+      throw new ReplayError('请求体不是合法 JSON');
+    }
+  }
+  return req.body ?? {};
+}
+
 export class KlineReplayRoutes {
   private router: Router;
   private service: KlineReplayService;
@@ -63,11 +61,6 @@ export class KlineReplayRoutes {
     await this.service.init();
   }
 
-  /** 进程退出前落库内存中的回放进度 */
-  async shutdown(): Promise<void> {
-    await this.service.shutdown();
-  }
-
   get_router(): Router {
     return this.router;
   }
@@ -80,7 +73,7 @@ export class KlineReplayRoutes {
         res.json({ success: true, data });
       } catch (error: any) {
         if (error instanceof ReplayError) {
-          res.status(error.status_code).json({ success: false, error: error.message });
+          res.status(error.status_code).json({ success: false, error: error.message, ...error.extra });
           return;
         }
         logger.error(`[KlineReplay API] ${req.method} ${req.originalUrl} failed:`, error);
@@ -108,7 +101,7 @@ export class KlineReplayRoutes {
       offset: query_number(req.query.offset),
     })));
 
-    r.get('/sessions/:id', this.wrap(req => s.get_snapshot(param_id(req, 'id'))));
+    r.get('/sessions/:id', this.wrap(req => s.get_state(param_id(req, 'id'))));
 
     r.patch('/sessions/:id', this.wrap(req => s.update_session_meta(param_id(req, 'id'), {
       name: req.body?.name,
@@ -120,54 +113,31 @@ export class KlineReplayRoutes {
       return { deleted: true };
     }));
 
-    r.post('/sessions/:id/finish', this.wrap(req => s.finish_session(param_id(req, 'id'))));
+    // ---------- K线 ----------
+    r.get('/sessions/:id/bars', this.wrap(req => s.get_bars(
+      param_id(req, 'id'),
+      query_number(req.query.after),
+      query_number(req.query.limit) ?? 600,
+    )));
 
-    // ---------- 回放 ----------
     r.get('/sessions/:id/klines', this.wrap(req => s.get_klines(
       param_id(req, 'id'),
       String(req.query.interval || '5m'),
+      query_number(req.query.end_time),
       query_number(req.query.limit) ?? 300,
     )));
 
-    r.post('/sessions/:id/step', this.wrap(req => s.step(param_id(req, 'id'), {
-      bars: query_number(req.body?.bars),
-      until_time: query_number(req.body?.until_time),
-      stop_on: req.body?.stop_on,
-      intervals: Array.isArray(req.body?.intervals) ? req.body.intervals : undefined,
-    })));
-
-    // ---------- 交易 ----------
-    r.post('/sessions/:id/orders', this.wrap(req => s.place_order(param_id(req, 'id'), req.body ?? {})));
+    // ---------- 同步 ----------
+    r.post(
+      '/sessions/:id/sync',
+      express.text({ type: 'text/plain', limit: '10mb' }),
+      this.wrap(req => s.sync(param_id(req, 'id'), parse_body(req))),
+    );
 
     r.get('/sessions/:id/orders', this.wrap(req => s.list_orders(
       param_id(req, 'id'),
       req.query.status as ReplayOrderStatus | undefined,
     )));
-
-    r.delete('/sessions/:id/orders/:order_id', this.wrap(req => s.cancel_order(
-      param_id(req, 'id'),
-      param_id(req, 'order_id'),
-    )));
-
-    r.patch('/sessions/:id/position', this.wrap(req => s.update_protection(param_id(req, 'id'), {
-      stop_loss: req.body?.stop_loss,
-      take_profit: req.body?.take_profit,
-    })));
-
-    r.post('/sessions/:id/position/close', this.wrap(req => s.close_position(param_id(req, 'id'), req.body?.qty)));
-
-    r.get('/sessions/:id/positions', this.wrap(req => s.list_positions(
-      param_id(req, 'id'),
-      req.query.status as 'open' | 'closed' | undefined,
-    )));
-
-    r.patch('/sessions/:id/positions/:position_id', this.wrap(req => s.update_position_journal(
-      param_id(req, 'id'),
-      param_id(req, 'position_id'),
-      { tags: req.body?.tags, note: req.body?.note },
-    )));
-
-    r.get('/sessions/:id/fills', this.wrap(req => s.list_fills(param_id(req, 'id'))));
 
     // ---------- 统计 ----------
     r.get('/sessions/:id/stats', this.wrap(req => s.get_session_stats(param_id(req, 'id'))));

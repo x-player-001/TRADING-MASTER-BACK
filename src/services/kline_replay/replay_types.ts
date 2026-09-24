@@ -1,7 +1,8 @@
 /**
  * K线回放 + 模拟交易 类型定义
  *
- * 本文件不依赖任何项目模块（纯类型），撮合引擎与统计模块也保持纯函数，便于单测。
+ * 本文件不依赖任何项目模块（纯类型）。前端可与 replay_matching_engine.ts / replay_account.ts 一起直接复制使用。
+ * 仓位/委托/成交之间用前端生成的 client_id 关联，后端入库时换算成数据库 id。
  */
 
 /** 回放最小步进周期（固定 5m） */
@@ -66,9 +67,11 @@ export interface ReplayEngineConfig {
 
 /** 订单 */
 export interface ReplayOrder {
-  id?: number;
+  id?: number;                        // 数据库 id（后端返回）
+  client_id: string;                  // 前端生成的唯一 id
   session_id: number;
-  position_id?: number | null;
+  position_id?: number | null;        // 数据库 id（后端返回）
+  position_client_id: string | null;  // 成交后作用的仓位（反手单 = 新开的仓位）
   side: ReplaySide;
   order_type: ReplayOrderType;
   qty: number;
@@ -88,7 +91,8 @@ export interface ReplayOrder {
 
 /** 仓位（一个开平回合） */
 export interface ReplayPosition {
-  id?: number;
+  id?: number;                        // 数据库 id（后端返回）
+  client_id: string;                  // 前端生成的唯一 id
   session_id: number;
   symbol: string;
   direction: ReplayDirection;
@@ -120,10 +124,13 @@ export interface ReplayPosition {
 
 /** 成交明细（用于图表打点） */
 export interface ReplayFill {
-  id?: number;
+  id?: number;                        // 数据库 id（后端返回）
+  client_id: string;
   session_id: number;
-  position_id?: number;
-  order_id: number | null;
+  position_id?: number;               // 数据库 id（后端返回）
+  order_id?: number | null;           // 数据库 id（后端返回）
+  position_client_id: string;
+  order_client_id: string | null;
   side: ReplaySide;
   qty: number;
   price: number;
@@ -151,6 +158,7 @@ export interface ReplaySession {
   slippage_rate: number;
   status: ReplaySessionStatus;
   bars_stepped: number;               // 已推进的 5m 根数
+  sync_revision: number;              // 最近一次同步的版本号（前端每次同步递增）
   note: string | null;
   created_at?: Date;
   updated_at?: Date;

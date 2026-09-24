@@ -191,11 +191,11 @@ npx ts-node -r tsconfig-paths/register scripts/dev/analysis/analyze_trend_signal
 
 `src/services/kline_replay/`，接口文档 `docs/KLINE_REPLAY_API.md`（前端自行实现）。
 
-- 以 5m 为最小步进，服务端持有游标（不下发未来K线）；15m/1h/4h 已收盘读 `_agg` 表，未收盘由 5m 聚合
-- `replay_matching_engine.ts` 纯内存撮合（单测 `tests/kline_replay/`）：单向持仓、多空、市价/限价/条件单、SL/TP；
-  K线内路径按不利方向优先（先打止损），跳空不利按开盘价、有利按挂单价
-- 活跃会话常驻内存：纯推进每 3s 批量落库，有交易变更/读接口/`APIServer.stop()` 时立即落库
-- 端到端验证 `scripts/dev/verify/verify_kline_replay.ts`（需在服务器跑）
+- **撮合在前端**：前端复制 `replay_types.ts` / `replay_matching_engine.ts` / `replay_account.ts`（纯 TS 无依赖），批量拉 5m 本地逐根揭示
+- **后端只存储**：下发 5m 批量块（跨数据空洞）与历史K线（大周期未收盘由 5m 聚合），
+  接收前端同步（进度 + 整份交易记录，`client_id` 关联，`revision` 防乱序），基于已存回合出统计
+- 引擎规则：单向持仓、多空、市价/限价/条件单、SL/TP；K线内路径按不利方向优先（先打止损），跳空不利按开盘价、有利按挂单价
+- 单测 `tests/kline_replay/`；端到端验证 `scripts/dev/verify/verify_kline_replay.ts`（需在服务器跑）
 
 ## 🤖 AI 交易复盘
 

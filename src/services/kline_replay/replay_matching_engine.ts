@@ -1,6 +1,9 @@
 /**
  * K线回放模拟撮合引擎（纯内存、无 IO）
  *
+ * 由前端运行（复制本文件与 replay_types.ts 即可，无其他依赖），后端只负责存储结果。
+ * 需要累积历史、导出同步数据时用 replay_account.ts 的 ReplayAccount 封装。
+ *
  * 账户模型：单向持仓（同一时刻最多一个方向的仓位），反向下单先平后开（反手）。
  *
  * 撮合规则：
@@ -79,6 +82,13 @@ interface FillParams {
 const QTY_EPSILON = 1e-9;
 const MAX_TRIGGERS_PER_SEGMENT = 100;
 
+/** 生成前端唯一 id（浏览器 / Node 19+ 用 crypto.randomUUID，否则退化为随机串） */
+export function new_client_id(): string {
+  const c = (globalThis as any).crypto;
+  if (c && typeof c.randomUUID === 'function') return c.randomUUID();
+  return `${Date.now().toString(36)}-${Math.random().toString(36).slice(2, 10)}-${Math.random().toString(36).slice(2, 10)}`;
+}
+
 /** 买卖方向对应的仓位方向 */
 export function side_to_direction(side: ReplaySide): ReplayDirection {
   return side === 'buy' ? 'long' : 'short';
@@ -132,6 +142,7 @@ export class ReplayMatchingEngine {
    * @param bar   当前游标K线
    */
   submit_order(order: ReplayOrder, bar: ReplayBar): void {
+    if (!order.client_id) order.client_id = new_client_id();
     this.touched_orders.add(order);
     order.created_bar_time = bar.open_time;
 
@@ -566,6 +577,7 @@ export class ReplayMatchingEngine {
   /** 新建仓位 */
   private open_position(p: FillParams, qty: number, fee: number): ReplayPosition {
     const position: ReplayPosition = {
+      client_id: new_client_id(),
       session_id: this.state.session_id,
       symbol: this.state.symbol,
       direction: side_to_direction(p.side),
@@ -629,8 +641,10 @@ export class ReplayMatchingEngine {
     position: ReplayPosition,
   ): void {
     const fill: ReplayFill = {
+      client_id: new_client_id(),
       session_id: this.state.session_id,
-      order_id: p.order?.id ?? null,
+      position_client_id: position.client_id,
+      order_client_id: p.order?.client_id ?? null,
       side: p.side,
       qty,
       price: p.price,
@@ -641,6 +655,8 @@ export class ReplayMatchingEngine {
       realized_pnl,
       bar_time: p.bar_time,
     };
+    // 委托关联到最后作用的仓位（反手单 = 新开的仓位）
+    if (p.order) p.order.position_client_id = position.client_id;
     this.fills.push({ fill, position, order: p.order });
     this.events.push({ type: 'fill', fill });
   }

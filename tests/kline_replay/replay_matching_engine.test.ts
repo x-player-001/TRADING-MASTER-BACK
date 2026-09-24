@@ -1,10 +1,11 @@
 /**
- * K线回放撮合引擎 & 统计 单元测试（纯内存，不连数据库）
+ * K线回放撮合引擎 / 模拟账户 / 统计 单元测试（纯内存，不连数据库）
  */
 
 import { ReplayMatchingEngine, ReplayEngineState } from '../../src/services/kline_replay/replay_matching_engine';
 import { build_stats_report } from '../../src/services/kline_replay/replay_stats';
-import { ReplayBar, ReplayOrder, ReplayPosition, ReplayEngineConfig } from '../../src/services/kline_replay/replay_types';
+import { ReplayBar, ReplayOrder, ReplayPosition, ReplayEngineConfig, ReplaySession } from '../../src/services/kline_replay/replay_types';
+import { ReplayAccount } from '../../src/services/kline_replay/replay_account';
 
 const STEP = 5 * 60 * 1000;
 const T0 = Date.UTC(2026, 5, 1);
@@ -19,6 +20,7 @@ function bar(i: number, open: number, high: number, low: number, close: number):
 /** 构造订单 */
 function order(partial: Partial<ReplayOrder> & Pick<ReplayOrder, 'side' | 'order_type' | 'qty'>): ReplayOrder {
   return {
+    client_id: '', position_client_id: null,
     session_id: 1, price: null, reduce_only: false, stop_loss: null, take_profit: null,
     status: 'pending', created_bar_time: 0, filled_bar_time: null, filled_price: null,
     fee: 0, reject_reason: null, tags: [], note: null, ...partial,
@@ -235,7 +237,7 @@ describe('replay_stats', () => {
   /** 构造已平仓回合 */
   function closed(id: number, net_pnl: number, r: number | null, tags: string[] = []): ReplayPosition {
     return {
-      id, session_id: 1, symbol: 'X', direction: id % 2 ? 'long' : 'short', status: 'closed', qty: 0, max_qty: 1,
+      id, client_id: `p${id}`, session_id: 1, symbol: 'X', direction: id % 2 ? 'long' : 'short', status: 'closed', qty: 0, max_qty: 1,
       avg_entry_price: 100, exit_qty: 1, avg_exit_price: 100, stop_loss: null, take_profit: null,
       initial_stop_loss: null, risk_amount: null, realized_pnl: net_pnl, fee_total: 0, net_pnl, r_multiple: r,
       max_favorable_price: 100, max_adverse_price: 100, mfe_pct: 1, mae_pct: -1, open_bar_time: 0,
@@ -261,5 +263,51 @@ describe('replay_stats', () => {
     expect(report.by_tag['lv1'].trade_count).toBe(3);
     expect(report.by_tag['(无标签)'].trade_count).toBe(1);
     expect(report.equity_curve[3].cum_net_pnl).toBeCloseTo(30);
+  });
+});
+
+describe('ReplayAccount', () => {
+  const SESSION: ReplaySession = {
+    id: 7, name: 't', symbol: 'TESTUSDT', start_time: T0, cursor_time: T0, last_price: 100,
+    initial_balance: 10000, balance: 10000, leverage: 10, taker_fee_rate: 0.0005, maker_fee_rate: 0.0002,
+    slippage_rate: 0, status: 'active', bars_stepped: 0, sync_revision: 0, note: null,
+  };
+
+  test('累积全部历史，同步数据的关联完整（含反手）', () => {
+    const account = new ReplayAccount(SESSION);
+    account.submit_order({ side: 'buy', order_type: 'market', qty: 1, tags: ['lv1'] }, bar(0, 100, 100, 100, 100));
+    const { order: reverse } = account.submit_order({ side: 'sell', order_type: 'market', qty: 2, stop_loss: 105 }, bar(1, 102, 102, 102, 102));
+    account.process_bar(bar(2, 102, 106, 101, 105));   // 空单被 105 止损
+
+    const payload = account.to_sync_payload({ cursor_time: T0 + 2 * STEP, last_price: 105, bars_stepped: 2, status: 'active' }, 1);
+    expect(payload.positions).toHaveLength(2);
+    expect(payload.positions.every(p => p.status === 'closed')).toBe(true);
+    expect(payload.positions[0].tags).toEqual(['lv1']);
+    expect(payload.fills).toHaveLength(4);   // 开多 / 平多 / 开空 / 空单止损
+
+    const position_ids = new Set(payload.positions.map(p => p.client_id));
+    expect(payload.fills.every(f => position_ids.has(f.position_client_id))).toBe(true);
+    const short_pos = payload.positions.find(p => p.direction === 'short')!;
+    expect(reverse.position_client_id).toBe(short_pos.client_id);   // 反手单关联新开的空仓
+    expect(payload.progress.balance).toBeCloseTo(account.state.balance);
+    expect(new Set([...payload.orders, ...payload.fills].map(x => x.client_id)).size).toBe(payload.orders.length + payload.fills.length);
+  });
+
+  test('从存储数据恢复后继续撮合', () => {
+    const first = new ReplayAccount(SESSION);
+    first.submit_order({ side: 'buy', order_type: 'market', qty: 1, stop_loss: 95 }, bar(0, 100, 100, 100, 100));
+    first.submit_order({ side: 'sell', order_type: 'limit', qty: 1, price: 110, reduce_only: true }, bar(0, 100, 100, 100, 100));
+    const saved = JSON.parse(JSON.stringify(first.to_sync_payload({ cursor_time: T0, last_price: 100, bars_stepped: 0, status: 'active' }, 1)));
+
+    const restored = new ReplayAccount({ ...SESSION, balance: saved.progress.balance }, saved);
+    expect(restored.state.position?.direction).toBe('long');
+    expect(restored.state.orders).toHaveLength(1);
+
+    restored.process_bar(bar(1, 100, 111, 99, 110));   // 触及 110 止盈挂单
+    expect(restored.state.position).toBeNull();
+    const payload = restored.to_sync_payload({ cursor_time: T0 + STEP, last_price: 110, bars_stepped: 1, status: 'active' }, 2);
+    expect(payload.positions).toHaveLength(1);
+    expect(payload.positions[0].exit_reason).toBe('order');
+    expect(payload.orders.every(o => o.status === 'filled')).toBe(true);
   });
 });

@@ -1,10 +1,9 @@
 /**
  * K线回放 + 模拟交易 端到端验证（连真实数据库，需在服务器执行）
  *
- * 覆盖：建会话 → 游标视角K线（防偷看、大周期未收盘K线）→ 按风险下单 → 步进 → 快进到平仓
- *      → 延迟落库（纯推进只改内存、交易/读接口/shutdown 时落库）
- *      → 挂空单等成交 → 结束会话 → 统计；另测跨 5m 数据空洞的步进。
- * 默认跑完删除测试会话，加 --keep 保留。
+ * 模拟前端流程：建会话 → 拉历史K线 → 拉 5m 批量块 → ReplayAccount 本地逐根撮合
+ *   → 同步（整份替换 / 过期 revision / 只同步进度）→ 从后端状态恢复账户继续交易 → 结束 → 统计；
+ *   另测跨 5m 数据空洞的批量块。默认跑完删除测试会话，加 --keep 保留。
  *
  * npx ts-node -r tsconfig-paths/register scripts/dev/verify/verify_kline_replay.ts [--symbol BTCUSDT] [--keep]
  */
@@ -15,9 +14,9 @@ dotenv.config();
 import { ConfigManager } from '@/core/config/config_manager';
 ConfigManager.getInstance().initialize();
 
-import { KlineReplayService } from '@/services/kline_replay/kline_replay_service';
-import { REPLAY_INTERVALS } from '@/services/kline_replay/replay_types';
-import { KlineReplayRepository } from '@/database/kline_replay_repository';
+import { KlineReplayService, ReplayError } from '@/services/kline_replay/kline_replay_service';
+import { ReplayAccount } from '@/services/kline_replay/replay_account';
+import { ReplayBar, REPLAY_BASE_INTERVAL_MS } from '@/services/kline_replay/replay_types';
 
 const args = process.argv.slice(2);
 const SYMBOL = args.includes('--symbol') ? args[args.indexOf('--symbol') + 1] : 'BTCUSDT';
@@ -45,123 +44,124 @@ async function main(): Promise<void> {
     const coverage = await s.get_data_coverage();
     console.log('5m 数据覆盖:', coverage);
 
-    // ---------- 1. 建会话 ----------
-    const snap0 = await s.create_session({ symbol: SYMBOL, start_time: bj('2026-09-20T10:02:00'), initial_balance: 10000 });
-    const id = snap0.session.id as number;
+    // ---------- 1. 建会话 + 历史K线 ----------
+    const init = await s.create_session({ symbol: SYMBOL, start_time: bj('2026-09-20T10:02:00') });
+    const session = init.session;
+    const id = session.id as number;
     created.push(id);
-    check(snap0.session.cursor_time === bj('2026-09-20T10:00:00'), '起点对齐到所在 5m K线', snap0.current_bar);
+    check(session.start_time === bj('2026-09-20T10:00:00') && init.cursor_bar?.open_time === session.start_time, '起点对齐到所在 5m K线');
 
-    // ---------- 2. 游标视角K线 ----------
     for (const interval of ['5m', '15m', '1h', '4h']) {
-      const bars = await s.get_klines(id, interval, 50);
+      const bars = await s.get_klines(id, interval, undefined, 50);
       const last = bars[bars.length - 1];
-      check(bars.length > 0 && last.open_time <= snap0.session.cursor_time, `${interval} 没有游标之后的K线`, {
-        count: bars.length, last_open: new Date(last?.open_time).toISOString(), is_closed: last?.is_closed,
+      check(bars.length > 0 && last.open_time <= session.start_time, `${interval} 历史不含起点之后的K线`, {
+        count: bars.length, last_closed: last?.is_closed,
       });
-      const sorted = bars.every((b, i) => i === 0 || b.open_time - bars[i - 1].open_time >= REPLAY_INTERVALS[interval]);
-      check(sorted, `${interval} 升序且无重复`);
     }
-    const h1 = await s.get_klines(id, '1h', 2);
-    const m5 = await s.get_klines(id, '5m', 1);
-    check(h1[h1.length - 1].close === m5[0].close && !h1[h1.length - 1].is_closed, '1h 当前K线未收盘且收盘价=游标5m收盘价');
 
-    // ---------- 3. 按 1% 风险市价开多 ----------
-    const price = snap0.current_bar.close;
-    const r1 = await s.place_order(id, {
-      side: 'buy', order_type: 'market', risk_pct: 1,
-      stop_loss: price * 0.99, take_profit: price * 1.02, tags: ['verify'],
+    // ---------- 2. 5m 批量块 ----------
+    const chunk = await s.get_bars(id, undefined, 600);
+    check(chunk.bars.length === 600 && chunk.bars[0].open_time === session.start_time + REPLAY_BASE_INTERVAL_MS, '批量块从起点下一根开始', {
+      count: chunk.bars.length, end_of_data: chunk.end_of_data,
     });
-    check(r1.order.status === 'filled' && r1.snapshot.position?.direction === 'long', '市价开多成交', {
-      qty: r1.order.qty, price: r1.order.filled_price, risk: r1.snapshot.position?.risk_amount,
+    const next_chunk = await s.get_bars(id, chunk.bars[chunk.bars.length - 1].open_time, 10);
+    check(next_chunk.bars[0].open_time > chunk.bars[chunk.bars.length - 1].open_time, '下一块紧接上一块');
+
+    // ---------- 3. 前端本地撮合 ----------
+    const account = new ReplayAccount(session);
+    let cursor: ReplayBar = init.cursor_bar as ReplayBar;
+    let stepped = 0;
+    const bars = [...chunk.bars];
+    const reveal = (): ReplayBar => {
+      const bar = bars.shift() as ReplayBar;
+      account.process_bar(bar);
+      cursor = bar;
+      stepped++;
+      return bar;
+    };
+
+    // 1% 风险开多
+    const stop = cursor.close * 0.99;
+    const qty = account.get_equity(cursor.close) * 0.01 / (cursor.close - stop);
+    const long = account.submit_order({ side: 'buy', order_type: 'market', qty, stop_loss: stop, take_profit: cursor.close * 1.02, tags: ['verify'] }, cursor);
+    check(long.order.status === 'filled', '本地市价开多成交');
+    while (account.state.position && bars.length > 0) reveal();
+    const first = [...account.positions.values()][0];
+    check(first.status === 'closed', '本地逐根推进直到平仓', { exit: first.exit_reason, r: first.r_multiple, bars: stepped });
+
+    // 挂限价空单等成交
+    const short = account.submit_order({
+      side: 'sell', order_type: 'limit', qty: 2000 / cursor.close, price: cursor.close * 1.003,
+      stop_loss: cursor.close * 1.013, take_profit: cursor.close * 0.99,
+    }, cursor);
+    while (short.order.status === 'pending' && bars.length > 0) reveal();
+    check(short.order.status === 'filled', '本地限价空单成交');
+
+    // ---------- 4. 同步 ----------
+    const progress = () => ({ cursor_time: cursor.open_time, last_price: cursor.close, bars_stepped: stepped, status: 'active' as const });
+    await s.sync(id, account.to_sync_payload(progress(), 1));
+    let stale_ok = false;
+    try {
+      await s.sync(id, account.to_sync_payload(progress(), 1));
+    } catch (e) {
+      stale_ok = e instanceof ReplayError && e.status_code === 409;
+    }
+    check(stale_ok, '重复 revision 被拒（409）');
+
+    for (let i = 0; i < 3; i++) reveal();
+    await s.sync(id, { revision: 2, progress: { ...progress(), balance: account.state.balance } });   // 只同步进度
+
+    // ---------- 5. 从后端恢复 ----------
+    const state = await s.get_state(id);
+    check(state.session.cursor_time === cursor.open_time && state.session.sync_revision === 2, '进度已落库', {
+      cursor: state.session.cursor_time, revision: state.session.sync_revision,
     });
-    check(Math.abs((r1.snapshot.position?.risk_amount ?? 0) - 100) < 1, '计划风险≈权益1%(100U)');
-
-    // ---------- 4. 下一步（带大周期） ----------
-    const st1 = await s.step(id, { bars: 1, intervals: ['15m', '1h', '4h'] });
-    check(st1.bars.length === 1 && st1.bars[0].open_time === snap0.session.cursor_time + 300000, '下一步揭示 1 根 5m', st1.bars[0]);
-    check(['15m', '1h', '4h'].every(i => st1.interval_bars[i]?.length >= 1), '返回大周期当前K线', st1.interval_bars);
-
-    // ---------- 5. 快进直到平仓 ----------
-    const st2 = await s.step(id, { bars: 2000, stop_on: 'position_closed' });
-    const closed = st2.events.find(e => e.type === 'position_closed');
-    check(!!closed, '快进在平仓处停下', closed && (closed as any).position && {
-      exit_reason: (closed as any).position.exit_reason, r: (closed as any).position.r_multiple, bars: st2.bars.length,
+    check(state.positions.length === account.positions.size && state.fills.length === account.fills.length
+      && state.orders.length === account.orders.size, '交易记录条数一致', {
+      positions: state.positions.length, orders: state.orders.length, fills: state.fills.length,
     });
-    check(st2.snapshot.position === null, '平仓后无持仓');
+    check(state.fills.every(f => f.position_id! > 0) && state.orders.filter(o => o.status === 'filled').every(o => o.position_id! > 0),
+      'client_id 关联已换算成数据库 id');
 
-    // ---------- 6. 挂空单（限价高于现价 0.3%）等成交 ----------
-    const p2 = st2.snapshot.current_bar.close;
-    const r2 = await s.place_order(id, {
-      side: 'sell', order_type: 'limit', price: p2 * 1.003, notional: 2000,
-      stop_loss: p2 * 1.013, take_profit: p2 * 0.99,
-    });
-    check(r2.order.status === 'pending', '限价空单挂单中', { price: r2.order.price, qty: r2.order.qty });
-    const st3 = await s.step(id, { bars: 2000, stop_on: 'fill' });
-    const fill = st3.events.find(e => e.type === 'fill');
-    check(!!fill, '空单成交', fill && (fill as any).fill);
+    const restored = new ReplayAccount(state.session, state);
+    check(restored.state.position?.client_id === account.state.position?.client_id, '恢复后持仓一致', restored.state.position?.direction);
 
-    // ---------- 7. 结束会话 + 统计 ----------
-    const fin = await s.finish_session(id);
-    check(fin.snapshot.session.status === 'finished' && fin.snapshot.position === null, '结束会话：已平仓撤单');
+    // 恢复后继续推进到平仓，然后结束
+    while (restored.state.position && bars.length > 0) {
+      const bar = bars.shift() as ReplayBar;
+      restored.process_bar(bar);
+      cursor = bar;
+      stepped++;
+    }
+    restored.finish(cursor);
+    await s.sync(id, restored.to_sync_payload({ ...progress(), status: 'finished' }, 3));
+    const final = await s.get_state(id);
+    check(final.session.status === 'finished' && final.session.finished_at !== null, '结束会话已落库');
+    check(final.positions.every(p => p.status === 'closed'), '全部仓位已平');
+
+    // ---------- 6. 统计 ----------
     const stats = await s.get_session_stats(id);
-    console.log('会话统计:', stats.overall);
-    const fills = await s.list_fills(id);
-    check(fills.every(f => f.position_id > 0), '成交都关联到仓位', fills.length);
-    const orders = await s.list_orders(id);
-    check(orders.filter(o => o.status === 'filled').every(o => (o.position_id ?? 0) > 0), '成交委托都关联到仓位');
-
-    // ---------- 8. 延迟落库 ----------
-    const lazy = await s.create_session({ symbol: SYMBOL, start_time: bj('2026-09-21T10:00:00') });
-    const lazy_id = lazy.session.id as number;
-    created.push(lazy_id);
-    const repo = new KlineReplayRepository();
-
-    const t0 = Date.now();
-    for (let i = 0; i < 50; i++) await s.step(lazy_id, { bars: 1, intervals: ['1h'] });
-    console.log(`   纯推进单步平均耗时: ${((Date.now() - t0) / 50).toFixed(1)} ms`);
-    const mem_cursor = (await s.get_snapshot(lazy_id)).session.cursor_time;
-    const db_before = await repo.get_session(lazy_id);
-    check(db_before!.cursor_time < mem_cursor, '纯推进不立即落库（库里游标落后于内存）', {
-      db: db_before!.cursor_time, mem: mem_cursor,
+    console.log('会话统计:', {
+      trades: stats.overall.trade_count, win_rate: stats.overall.win_rate, avg_r: stats.overall.avg_r,
+      net: stats.overall.total_net_pnl, by_tag: Object.keys(stats.by_tag),
     });
+    check(stats.overall.trade_count === final.positions.length, '统计回合数一致');
+    const overall = await s.get_overall_stats({ session_ids: [id], tag: 'verify' });
+    check(overall.overall.trade_count === 1, '跨会话统计按标签过滤', overall.overall.trade_count);
 
-    const r3 = await s.place_order(lazy_id, { side: 'buy', order_type: 'market', qty: 0.01 });
-    const db_after_order = await repo.get_session(lazy_id);
-    check(db_after_order!.cursor_time === mem_cursor && (await repo.get_open_position(lazy_id)) !== null,
-      '下单立即落库（游标 + 仓位）', r3.order.status);
-
-    for (let i = 0; i < 20; i++) await s.step(lazy_id, { bars: 1 });
-    await s.list_positions(lazy_id);   // 读接口前会先落库
-    const mem2 = await s.get_snapshot(lazy_id);
-    const db_pos = await repo.get_open_position(lazy_id);
-    check((await repo.get_session(lazy_id))!.cursor_time === mem2.session.cursor_time
-      && db_pos!.max_favorable_price === mem2.position!.max_favorable_price,
-      '读接口前落库（游标 + MFE 与内存一致）');
-
-    for (let i = 0; i < 10; i++) await s.step(lazy_id, { bars: 1 });
-    const mem3 = await s.get_snapshot(lazy_id);
-    await s.shutdown();
-    const fresh = new (KlineReplayService as any)() as KlineReplayService;   // 模拟进程重启
-    const reloaded = await fresh.get_snapshot(lazy_id);
-    check(reloaded.session.cursor_time === mem3.session.cursor_time
-      && Math.abs(reloaded.equity - mem3.equity) < 1e-6
-      && reloaded.position?.id === mem3.position?.id,
-      'shutdown 落库后重新加载状态一致', { cursor: reloaded.session.cursor_time, equity: reloaded.equity });
-
-    // ---------- 9. 跨数据空洞 ----------
-    const first_gap = coverage.length > 1 ? coverage[0] : null;
-    if (first_gap) {
-      const end = first_gap.end_date;
+    // ---------- 7. 跨数据空洞 ----------
+    if (coverage.length > 1) {
+      const end = coverage[0].end_date;
       const gap_session = await s.create_session({
         symbol: SYMBOL,
         start_time: bj(`${end.slice(0, 4)}-${end.slice(4, 6)}-${end.slice(6, 8)}T23:50:00`),
       });
       created.push(gap_session.session.id as number);
-      const g = await s.step(gap_session.session.id as number, { bars: 5 });
-      const gap = g.events.find(e => e.type === 'gap');
-      check(!!gap, `跨空洞步进（${end} 之后）产生 gap 事件`, gap);
-    } else {
-      console.log('（数据无空洞，跳过空洞测试）');
+      const g = await s.get_bars(gap_session.session.id as number, undefined, 5);
+      // 起点会对齐到空洞前最后一根，空洞可能就在「起点 → 第一根」之间
+      const times = [gap_session.session.start_time, ...g.bars.map(b => b.open_time)];
+      const jump = times.some((t, i) => i > 0 && t - times[i - 1] > REPLAY_BASE_INTERVAL_MS);
+      check(g.bars.length === 5 && jump, `批量块跨过 ${end} 之后的空洞`, times.map(t => new Date(t + 8 * 3600000).toISOString().slice(0, 16)));
     }
   } finally {
     if (!KEEP) {

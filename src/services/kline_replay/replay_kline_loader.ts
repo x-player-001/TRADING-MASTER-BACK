@@ -116,6 +116,22 @@ export class ReplayKlineLoader {
     return this.load_5m(symbol, next_time, next_time + FORWARD_CHUNK_MS);
   }
 
+  /**
+   * after_time 之后最多 limit 根 5m（跨越数据空洞）
+   * @returns end_of_data=true 表示后面已经没有数据
+   */
+  async load_bars_after(symbol: string, after_time: number, limit: number): Promise<{ bars: ReplayBar[]; end_of_data: boolean }> {
+    const bars: ReplayBar[] = [];
+    let after = after_time;
+    while (bars.length < limit) {
+      const chunk = await this.load_forward(symbol, after);
+      if (chunk.length === 0) return { bars, end_of_data: true };
+      bars.push(...chunk);
+      after = chunk[chunk.length - 1].open_time;
+    }
+    return { bars: bars.slice(0, limit), end_of_data: false };
+  }
+
   /** 所有 5m 日表日期（YYYYMMDD） */
   async list_5m_dates(): Promise<string[]> {
     return this.kline_5m_repo.list_table_dates();
