@@ -251,6 +251,22 @@ async function fetch_quote_volume(symbol: string): Promise<number | null> {
   }
 }
 
+/** 拉取全市场 24h 成交额（单次请求，权重 40）写入趋势服务，供观察区成交额准入判断 */
+async function refresh_all_quote_volumes(): Promise<void> {
+  try {
+    const resp = await axios.get('https://fapi.binance.com/fapi/v1/ticker/24hr');
+    const volumes = new Map<string, number>();
+    for (const t of resp.data) {
+      const v = parseFloat(t.quoteVolume);
+      if (v > 0) volumes.set(t.symbol, v);
+    }
+    trend_service.set_quote_volumes(volumes);
+  } catch (err: any) {
+    // 失败时保留上一次快照；首次即失败则准入不拦截
+    console.warn(`⚠️  获取全市场 24h 成交额失败: ${err.message}`);
+  }
+}
+
 let ws_kline: WebSocket | null = null;
 // 看门狗：最后一次收到任何 WS 消息的时间。长连接可能进入"半开"状态（TCP未断但数据停了），
 // 不会触发 close 事件，必须主动检测无数据并强制重连
@@ -651,6 +667,14 @@ async function main(): Promise<void> {
   if (CONFIG.enable_ema20_push) {
     await restore_ema20_contexts();
   }
+
+  // 全市场 24h 成交额快照（观察区准入门槛用），每 5 分钟刷新
+  await refresh_all_quote_volumes();
+  setInterval(refresh_all_quote_volumes, QUOTE_VOLUME_THROTTLE_MS);
+
+  // 恢复的观察区按准入门槛清理（门槛调整后，存量低成交额观察区在重启时一并废弃）
+  const abandoned_count = trend_service.abandon_below_entry_quote_volume();
+  console.log(`🧹 成交额低于准入门槛，废弃 ${abandoned_count} 个恢复的观察区`);
 
   // 启动 WebSocket + 无消息看门狗
   await start_kline_websocket(symbols);

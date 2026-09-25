@@ -160,6 +160,14 @@ const DEFAULT_CONFIG = {
   // 成交额过滤：进入观察区后超过此时间（ms）仍低于门槛则废弃
   min_quote_volume: 5_000_000,      // 5M USDT
   quote_volume_check_delay_bars: 3,             // 进入观察区N根K线后检查成交额
+  // 进入观察区的 24h 成交额门槛（按周期）：识别到第一波时成交额低于门槛则不进入观察区；
+  // 成交额未知（未加载 / 离线回放）时不拦截。依据：<100M 信号扣费后整体负期望，≥100M 约打平且信号量少约八成
+  min_entry_quote_volume: {
+    '5m': 0,
+    '15m': 50_000_000,
+    '1h': 100_000_000,
+    '4h': 100_000_000,
+  } as Record<Timeframe, number>,
 
   // Lv0 高位横盘缩量
   lv0_max_pullback: 0.236,          // 回调幅度 < 23.6%
@@ -223,6 +231,9 @@ export class TrendFollowService {
 
   // 多周期扳机: symbol -> TriggerWatcher（每个 symbol 只保留最高级别的一个）
   private trigger_watchers: Map<string, TriggerWatcher> = new Map();
+
+  // 全市场 24h 成交额(USDT): symbol -> quote volume，由外部定期写入，用于观察区准入
+  private quote_volumes: Map<string, number> = new Map();
 
   // 回调: 触发报警时调用
   private on_alert_cb?: (alert: TrendAlert) => void;
@@ -374,6 +385,29 @@ export class TrendFollowService {
     }
   }
 
+  /** 整体替换全市场 24h 成交额快照（由外部监控脚本定期写入，用于观察区准入门槛） */
+  set_quote_volumes(volumes: Map<string, number>): void {
+    this.quote_volumes = volumes;
+  }
+
+  /**
+   * 按准入门槛废弃成交额不足的活跃观察区（冷启动恢复上下文 + 加载成交额后调用）。
+   * 成交额未知的保留。返回废弃数量
+   */
+  abandon_below_entry_quote_volume(): number {
+    let count = 0;
+    for (const ctx of this.watch_contexts.values()) {
+      if ((ctx.state !== 'WATCHING' && ctx.state !== 'ALERTED') || !ctx.wave) continue;
+      if (this._pass_entry_quote_volume(ctx.symbol, ctx.timeframe)) continue;
+      const volume = this.quote_volumes.get(ctx.symbol)!;
+      const threshold = this.config.min_entry_quote_volume[ctx.timeframe];
+      this._abandon(ctx, ctx.wave,
+        `24h成交额 ${(volume / 1e6).toFixed(1)}M 低于 ${ctx.timeframe} 准入门槛 ${threshold / 1e6}M`);
+      count++;
+    }
+    return count;
+  }
+
   /** 获取所有观察中的上下文（用于状态打印） */
   get_watching_contexts(): WatchContext[] {
     return Array.from(this.watch_contexts.values())
@@ -483,6 +517,12 @@ export class TrendFollowService {
       return;
     }
 
+    // 成交额准入：低于该周期门槛不进入观察区（保持 DETECTING，后续K线继续检测）
+    if (!this._pass_entry_quote_volume(ctx.symbol, ctx.timeframe)) {
+      ctx.state = 'DETECTING';
+      return;
+    }
+
     // 进入观察区
     ctx.state = 'WATCHING';
     ctx.wave = wave;
@@ -500,6 +540,14 @@ export class TrendFollowService {
     ctx.consecutive_deep_pullback_bars = 0;
     // 新建记录（_fire_context_change 内部处理 db_id 回写与防重复插入）
     this._fire_context_change(ctx, current.close);
+  }
+
+  /** 观察区成交额准入判断：门槛为 0 或成交额未知时放行 */
+  private _pass_entry_quote_volume(symbol: string, timeframe: Timeframe): boolean {
+    const threshold = this.config.min_entry_quote_volume[timeframe] ?? 0;
+    if (threshold <= 0) return true;
+    const volume = this.quote_volumes.get(symbol);
+    return volume === undefined || volume >= threshold;
   }
 
   /**
