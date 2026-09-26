@@ -672,10 +672,6 @@ async function main(): Promise<void> {
   await refresh_all_quote_volumes();
   setInterval(refresh_all_quote_volumes, QUOTE_VOLUME_THROTTLE_MS);
 
-  // 恢复的观察区按准入门槛清理（门槛调整后，存量低成交额观察区在重启时一并废弃）
-  const abandoned_count = trend_service.abandon_below_entry_quote_volume();
-  console.log(`🧹 成交额低于准入门槛，废弃 ${abandoned_count} 个恢复的观察区`);
-
   // 启动 WebSocket + 无消息看门狗
   await start_kline_websocket(symbols);
   start_ws_watchdog();

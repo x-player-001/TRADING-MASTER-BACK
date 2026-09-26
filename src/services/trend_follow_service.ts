@@ -161,8 +161,9 @@ const DEFAULT_CONFIG = {
   // 成交额过滤：进入观察区后超过此时间（ms）仍低于门槛则废弃
   min_quote_volume: 5_000_000,      // 5M USDT
   quote_volume_check_delay_bars: 3,             // 进入观察区N根K线后检查成交额
-  // 进入观察区的 24h 成交额门槛（按周期）：识别到第一波时成交额低于门槛则不进入观察区；
-  // 成交额未知（未加载 / 离线回放）时不拦截。依据：<100M 信号扣费后整体负期望，≥100M 约打平且信号量少约八成
+  // 进入观察区的 24h 成交额门槛（按周期）：只在识别到第一波、进入观察区那一刻判断；
+  // 进入后回调缩量导致成交额下降不会因此移出（缩量回调正是要看的）。成交额未知（未加载 / 离线回放）时不拦截。
+  // 依据：<100M 信号扣费后整体负期望，≥100M 约打平且信号量少约八成
   min_entry_quote_volume: {
     '5m': 0,
     '15m': 50_000_000,
@@ -395,24 +396,6 @@ export class TrendFollowService {
   /** 整体替换全市场 24h 成交额快照（由外部监控脚本定期写入，用于观察区准入门槛） */
   set_quote_volumes(volumes: Map<string, number>): void {
     this.quote_volumes = volumes;
-  }
-
-  /**
-   * 按准入门槛废弃成交额不足的活跃观察区（冷启动恢复上下文 + 加载成交额后调用）。
-   * 成交额未知的保留。返回废弃数量
-   */
-  abandon_below_entry_quote_volume(): number {
-    let count = 0;
-    for (const ctx of this.watch_contexts.values()) {
-      if ((ctx.state !== 'WATCHING' && ctx.state !== 'ALERTED') || !ctx.wave) continue;
-      if (this._pass_entry_quote_volume(ctx.symbol, ctx.timeframe)) continue;
-      const volume = this.quote_volumes.get(ctx.symbol)!;
-      const threshold = this.config.min_entry_quote_volume[ctx.timeframe];
-      this._abandon(ctx, ctx.wave,
-        `24h成交额 ${(volume / 1e6).toFixed(1)}M 低于 ${ctx.timeframe} 准入门槛 ${threshold / 1e6}M`);
-      count++;
-    }
-    return count;
   }
 
   /** 获取所有观察中的上下文（用于状态打印） */
