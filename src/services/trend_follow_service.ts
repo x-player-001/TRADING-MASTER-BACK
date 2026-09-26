@@ -150,7 +150,8 @@ const DEFAULT_CONFIG = {
   fib_62: 0.618,
   fib_abandon: 0.750,              // 废弃门槛（收盘价回调 > 75%，连续2根）
   fib_abandon_confirm_bars: 2,     // 连续N根收盘价超过门槛才废弃
-  max_pullback_bars: 60,           // 回调根数超过此值废弃
+  // 回调根数超过该周期上限则废弃：大周期回调走不动的尽快移出观察列表（5m/15m 维持原 60 根）
+  max_pullback_bars_by_tf: { '5m': 60, '15m': 60, '1h': 36, '4h': 18 } as Record<Timeframe, number>,
 
   volume_shrink_ratio: 0.5,         // 回调均量 < 第一波均量 × 0.5 认为缩量
   min_alert_bars_multiplier: 1,     // 最小等待K线数 = 第一波根数 × 1，之后才开始检测报警
@@ -216,6 +217,12 @@ const DEFAULT_CONFIG = {
 
 /** 趋势跟随服务配置类型（回放脚本以 Partial 形式注入变体） */
 export type TrendFollowConfig = typeof DEFAULT_CONFIG;
+
+/** 各周期回调根数上限（观察列表计算「临近超时」用，与废弃判定同源） */
+export const MAX_PULLBACK_BARS_BY_TF: Readonly<Record<Timeframe, number>> = DEFAULT_CONFIG.max_pullback_bars_by_tf;
+
+/** 缩量判定比例（观察列表与报警判定同源） */
+export const VOLUME_SHRINK_RATIO = DEFAULT_CONFIG.volume_shrink_ratio;
 
 // ==================== 服务类 ====================
 
@@ -737,8 +744,9 @@ export class TrendFollowService {
     }
 
     // ---- 废弃条件2：回调根数超限 ----
-    if (pb.bar_count > this.config.max_pullback_bars) {
-      return this._abandon(ctx, wave, `回调根数 ${pb.bar_count} 超过 ${this.config.max_pullback_bars} 根`);
+    const max_pullback_bars = this.config.max_pullback_bars_by_tf[ctx.timeframe];
+    if (pb.bar_count > max_pullback_bars) {
+      return this._abandon(ctx, wave, `回调根数 ${pb.bar_count} 超过 ${max_pullback_bars} 根`);
     }
 
     // ---- 废弃条件3：进入N根K线后成交额仍低于5M ----

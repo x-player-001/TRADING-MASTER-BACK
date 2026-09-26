@@ -3,6 +3,7 @@
  *
  * GET /api/trend-follow/alerts          查询报警列表
  * GET /api/trend-follow/alerts/recent   最近 N 条报警（前端轮询用）
+ * GET /api/trend-follow/watchlist       按币种合并的观察列表（附关键数字与排序分）
  * DELETE /api/trend-follow/alerts/cleanup  清理旧数据
  */
 
@@ -11,6 +12,7 @@ import { TrendFollowRepository } from '@/database/trend_follow_repository';
 import { KlineAggregator } from '@/core/data/kline_aggregator';
 import { Kline5mRepository } from '@/database/kline_5m_repository';
 import { logger } from '@/utils/logger';
+import { build_watchlist, WATCHLIST_DEFAULT_TIMEFRAMES } from '@/services/trend_follow_watchlist';
 
 const kline_aggregator = new KlineAggregator();
 const kline_5m_repo = new Kline5mRepository();
@@ -187,6 +189,34 @@ router.get('/watch-contexts', async (req: Request, res: Response): Promise<void>
     });
   } catch (error: any) {
     logger.error('[TrendFollow API] get_watch_contexts failed:', error);
+    res.status(500).json({ success: false, error: error.message });
+  }
+});
+
+/**
+ * GET /api/trend-follow/watchlist
+ * 按币种合并的观察列表（同一币种多个周期合并为一行，附关键数字与排序分，按分数降序）
+ *
+ * Query params:
+ *   timeframes - 纳入合并的周期，逗号分隔，默认 15m,1h,4h（5m 请用 /watch-contexts 单独看）
+ *   min_score  - 只返回分数 >= 该值的币种（可选）
+ */
+router.get('/watchlist', async (req: Request, res: Response): Promise<void> => {
+  try {
+    const { timeframes, min_score } = req.query as Record<string, string>;
+    const tfs = timeframes
+      ? timeframes.split(',').map(s => s.trim()).filter(s => ['5m', '15m', '1h', '4h'].includes(s))
+      : WATCHLIST_DEFAULT_TIMEFRAMES;
+
+    const records = await get_repository().get_watch_contexts({ limit: 2000 });
+    let data = build_watchlist(records, tfs);
+    if (min_score !== undefined && !isNaN(Number(min_score))) {
+      data = data.filter(d => d.score >= Number(min_score));
+    }
+
+    res.json({ success: true, data, count: data.length, timeframes: tfs });
+  } catch (error: any) {
+    logger.error('[TrendFollow API] get_watchlist failed:', error);
     res.status(500).json({ success: false, error: error.message });
   }
 });

@@ -20,7 +20,7 @@ module.exports = {
     'lcov',
     'html'
   ],
-  moduleNameMapping: {
+  moduleNameMapper: {
     '^@/(.*)$': '<rootDir>/src/$1'
   },
   setupFilesAfterEnv: ['<rootDir>/tests/setup.ts'],

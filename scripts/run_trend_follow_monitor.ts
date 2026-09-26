@@ -147,8 +147,8 @@ function print_ema20_push(alert: EMA20PushAlert): void {
 
 // ==================== K线处理 ====================
 
-/** 更新某币种所有活跃观察区的24h成交额（节流：每币种最多5分钟一次） */
-async function update_quote_volume_for_symbol(symbol: string): Promise<void> {
+/** 更新某币种所有活跃观察区的24h成交额与现价（节流：每币种最多5分钟一次）；current_price 为最新 5m 收盘价 */
+async function update_quote_volume_for_symbol(symbol: string, current_price: number): Promise<void> {
   const contexts = trend_service.get_watching_contexts().filter(c => c.symbol === symbol && c.db_id !== undefined);
   if (contexts.length === 0) return;
 
@@ -178,7 +178,7 @@ async function update_quote_volume_for_symbol(symbol: string): Promise<void> {
       pullback_lowest_price: ctx.pullback.lowest_price,
       pullback_bar_count:    ctx.pullback.bar_count,
       pullback_avg_volume:   ctx.pullback.avg_volume,
-      current_price:         ctx.pullback.lowest_close,
+      current_price,
       quote_volume_24h:      volume,
       last_alert_level:      ctx.last_alert_level ?? null,
       watch_start_time:      ctx.watch_start_time ?? Date.now(),
@@ -211,8 +211,8 @@ async function process_kline(symbol: string, kline_raw: any): Promise<void> {
     console.error(`DB write error ${symbol}:`, err.message);
   });
 
-  // 3. 每根5m K线完结后，更新该币种所有活跃观察区的24h成交额（异步，不阻塞）
-  update_quote_volume_for_symbol(symbol);
+  // 3. 每根5m K线完结后，更新该币种所有活跃观察区的24h成交额与现价（异步，不阻塞）
+  update_quote_volume_for_symbol(symbol, kline_data.close);
 
   // 4. 聚合 → 15m / 1h / 4h
   const aggregated = kline_aggregator.process_5m_kline(kline_data);
