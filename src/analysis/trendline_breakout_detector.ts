@@ -10,7 +10,8 @@
  * 2. 任意两个高点连线（x 轴按真实时间，跨数据空洞也不失真；默认线性坐标），斜率须 ≤ 水平阈值
  * 3. 从起点向右推进：影线刺穿过深 → 线无效；收盘站上线 → 突破
  *    突破前第二个锚点必须已确认（b + pivot_window < t），避免前视
- * 4. 统计突破前所有贴线的摆动高点作为触点，按「触点数 → 跨度 → 拟合误差」择优
+ * 4. 统计突破前所有贴线的摆动高点作为触点，相邻触点间隔过远的线丢弃（远隔两点连线无意义），
+ *    按「触点数 → 跨度 → 拟合误差」择优
  * 5. 突破后跟踪：回踩（低点回到线附近）/ 失败（收盘跌破线）
  * 6. 时间相近的突破归为同一事件，只保留最优连线
  */
@@ -46,6 +47,7 @@ export interface TrendlineBreakoutConfig {
   breakout_min_pct: number;            // 收盘高出线此幅度算突破
   min_depth_pct: number;               // 首尾触点之间价格离线的最大深度下限（排除贴着线横走）
   min_touches: number;                 // 最少触点数
+  max_touch_gap_days: number;          // 相邻触点最大间隔（天），超出则线无意义
   retest_tol_pct: number;              // 突破后低点离线在此范围内算回踩
   fail_tol_pct: number;                // 突破后收盘跌破线此幅度算失败
   max_breakout_age_days: number;       // 只输出最近 N 天内的突破（Infinity = 全部历史）
@@ -64,6 +66,7 @@ export const DEFAULT_TRENDLINE_CONFIG: TrendlineBreakoutConfig = {
   breakout_min_pct: 1,
   min_depth_pct: 12,
   min_touches: 2,
+  max_touch_gap_days: 180,
   retest_tol_pct: 3,
   fail_tol_pct: 3,
   max_breakout_age_days: 30,
@@ -227,6 +230,9 @@ export function detect_trendline_breakouts(
       }
     }
     if (touches.length < cfg.min_touches) return null;
+    for (let i = 1; i < touches.length; i++) {
+      if (x[touches[i]] - x[touches[i - 1]] > cfg.max_touch_gap_days) return null;
+    }
 
     const first = touches[0];
     const last = touches[touches.length - 1];

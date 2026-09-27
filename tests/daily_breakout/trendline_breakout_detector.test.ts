@@ -106,3 +106,12 @@ describe('detect_trendline_breakouts', () => {
     expect(r.breakout_volume_ratio).toBeCloseTo(2.5);
   });
 });
+
+describe('max_touch_gap_days', () => {
+  it('相邻触点间隔超限的线丢弃', () => {
+    // 高点 10 / 50 / 90 相邻间隔 40 天
+    const bars = build_bars([...DESCENDING_BASE, [135, 77], [150, 90]]);
+    expect(detect_trendline_breakouts(bars, { ...ALL, max_touch_gap_days: 40 })).toHaveLength(1);
+    expect(detect_trendline_breakouts(bars, { ...ALL, max_touch_gap_days: 39 })).toHaveLength(0);
+  });
+});

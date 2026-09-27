@@ -10,7 +10,7 @@
  *   --max-age 30                 只输出最近 N 天内的突破；--history 输出全部历史
  *   --scale linear|log           连线坐标（默认 linear）
  *   --from KMNOUSDT              从该币种（含）起按字母序续扫
- *   --save                       结果写入 daily_trendline_breakouts
+ *   --save                       结果写入 daily_trendline_breakouts（先删该币种窗口内旧事件再写入）
  *
  * 运行:
  *   npx ts-node -r tsconfig-paths/register scripts/dev/analysis/scan_daily_trendline_breakout.ts --source 4h --symbols RUNEUSDT,QNTUSDT,KITEUSDT
@@ -102,6 +102,10 @@ async function main(): Promise<void> {
         ? await repo.get_daily_klines_from_4h(symbol, since)
         : await repo.get_daily_klines(symbol, since);
       const results = detect_trendline_breakouts(bars, args.config);
+      if (args.save && bars.length > 0) {
+        const window_start = bars[bars.length - 1].open_time - cfg.max_breakout_age_days * DAY_MS;
+        await repo.delete_breakouts_since(symbol, Number.isFinite(window_start) ? window_start : 0);
+      }
       if (results.length === 0) continue;
 
       counts.symbols_hit++;

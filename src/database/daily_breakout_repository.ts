@@ -254,6 +254,13 @@ export class DailyBreakoutRepository extends BaseRepository {
     ]);
   }
 
+  /** 删除某币种指定时间后的突破事件（重扫前清理，避免已不成立的旧事件残留） */
+  async delete_breakouts_since(symbol: string, since_time: number): Promise<number> {
+    return this.delete_and_get_affected_rows(
+      'DELETE FROM daily_trendline_breakouts WHERE symbol = ? AND breakout_time >= ?', [symbol, since_time]
+    );
+  }
+
   /** 按 id 查询单条突破事件 */
   async get_breakout(id: number): Promise<DailyBreakoutRecord | null> {
     const rows = await this.execute_query('SELECT * FROM daily_trendline_breakouts WHERE id = ?', [id]);
