@@ -115,3 +115,26 @@ describe('max_touch_gap_days', () => {
     expect(detect_trendline_breakouts(bars, { ...ALL, max_touch_gap_days: 39 })).toHaveLength(0);
   });
 });
+
+describe('max_wick_breaks', () => {
+  /** 盘整区间（上沿 100）中间插一根长上影：高 120、收盘回到区间 */
+  function range_with_spike(): DailyBar[] {
+    const bars = build_bars([
+      [0, 80], [10, 100], [30, 85], [50, 100], [70, 82], [90, 100], [110, 86], [125, 110], [135, 102], [150, 115],
+    ]);
+    const spike = bars[60];
+    spike.high = 120;
+    return bars;
+  }
+
+  it('单根插针不废掉盘整上沿', () => {
+    const [r] = detect_trendline_breakouts(range_with_spike(), ALL);
+    expect(r.line_type).toBe('horizontal');
+    expect(r.touch_count).toBe(3);
+  });
+
+  it('插针超过允许根数 → 上沿作废', () => {
+    const results = detect_trendline_breakouts(range_with_spike(), { ...ALL, max_wick_breaks: 0 });
+    expect(results.every(r => r.line_type !== 'horizontal' || r.touch_count < 3)).toBe(true);
+  });
+});

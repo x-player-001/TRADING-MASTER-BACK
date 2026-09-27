@@ -8,7 +8,8 @@
  * 算法：
  * 1. 找摆动高点（左右各 pivot_window 根更低）
  * 2. 任意两个高点连线（x 轴按真实时间，跨数据空洞也不失真；默认线性坐标），斜率须 ≤ 水平阈值
- * 3. 从起点向右推进：影线刺穿过深 → 线无效；收盘站上线 → 突破
+ * 3. 从起点向右推进：收盘站上线 → 突破；影线刺穿过深超过 max_wick_breaks 根 → 线无效
+ *    （允许零星插针：收盘回到线下的长上影，人工画线通常忽略）
  *    突破前第二个锚点必须已确认（b + pivot_window < t），避免前视
  * 4. 统计突破前所有贴线的摆动高点作为触点，相邻触点间隔过远的线丢弃（远隔两点连线无意义），
  *    按「触点数 → 跨度 → 拟合误差」择优
@@ -43,7 +44,8 @@ export interface TrendlineBreakoutConfig {
   max_lookback_days: number;           // 起始锚点最远回看（天）
   horizontal_slope_pct: number;        // |斜率| 小于此（%/天）视为水平线；上升线超过此值丢弃
   touch_tol_pct: number;               // 高点离线在此范围内算触点
-  wick_tol_pct: number;                // 突破前影线最多刺穿线的幅度，超出则线无效
+  wick_tol_pct: number;                // 突破前影线刺穿线在此幅度内不计
+  max_wick_breaks: number;             // 允许刺穿超过 wick_tol 的插针根数（只计收盘在线下的）
   breakout_min_pct: number;            // 收盘高出线此幅度算突破
   min_depth_pct: number;               // 首尾触点之间价格离线的最大深度下限（排除贴着线横走）
   min_touches: number;                 // 最少触点数
@@ -63,6 +65,7 @@ export const DEFAULT_TRENDLINE_CONFIG: TrendlineBreakoutConfig = {
   horizontal_slope_pct: 0.05,
   touch_tol_pct: 2,
   wick_tol_pct: 4,
+  max_wick_breaks: 1,
   breakout_min_pct: 1,
   min_depth_pct: 12,
   min_touches: 2,
@@ -205,6 +208,7 @@ export function detect_trendline_breakouts(
   function evaluate_line(a: number, b: number, slope: number): Candidate | null {
     const line = (k: number) => th[a] + slope * (x[k] - x[a]);
     let t = -1;
+    let wick_breaks = 0;
     for (let k = a + 1; k < n; k++) {
       const lv = line(k);
       if (!is_log && lv <= 0) return null;
@@ -213,7 +217,8 @@ export function detect_trendline_breakouts(
         t = k;
         break;
       }
-      if (rel(th[k], lv) > wick_tol) return null;
+      // 只有收盘回到线下的长上影才算插针；收盘在线上（未达突破幅度）是突破尝试，不计
+      if (tc[k] < lv && rel(th[k], lv) > wick_tol && ++wick_breaks > cfg.max_wick_breaks) return null;
     }
     if (t < 0 || bars[t].open_time < earliest_breakout) return null;
 
