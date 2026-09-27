@@ -9,6 +9,7 @@
  *   --symbols RUNEUSDT,QNTUSDT   指定币种（默认全表）
  *   --max-age 30                 只输出最近 N 天内的突破；--history 输出全部历史
  *   --scale linear|log           连线坐标（默认 linear）
+ *   --from KMNOUSDT              从该币种（含）起按字母序续扫
  *   --save                       结果写入 daily_trendline_breakouts
  *
  * 运行:
@@ -30,6 +31,7 @@ const DAY_MS = 86_400_000;
 interface ScanArgs {
   source: '1d' | '4h';
   symbols: string[] | null;
+  from: string | null;
   save: boolean;
   config: Partial<TrendlineBreakoutConfig>;
 }
@@ -48,6 +50,7 @@ function parse_args(): ScanArgs {
   return {
     source: get('--source') === '4h' ? '4h' : '1d',
     symbols: get('--symbols')?.split(',').map(s => s.trim().toUpperCase()) ?? null,
+    from: get('--from')?.toUpperCase() ?? null,
     save: argv.includes('--save'),
     config,
   };
@@ -87,7 +90,8 @@ async function main(): Promise<void> {
   if (args.save) await repo.init_tables();
 
   const cfg = { ...DEFAULT_TRENDLINE_CONFIG, ...args.config };
-  const symbols = args.symbols ?? (args.source === '4h' ? await repo.get_4h_symbols() : await repo.get_daily_symbols());
+  const all_symbols = args.symbols ?? (args.source === '4h' ? await repo.get_4h_symbols() : await repo.get_daily_symbols());
+  const symbols = args.from ? all_symbols.filter(s => s >= args.from!) : all_symbols;
   const since = Date.now() - (cfg.max_lookback_days + 60) * DAY_MS;
   console.log(`数据源 ${args.source}  币种 ${symbols.length}  坐标 ${cfg.price_scale}  突破窗口 ${cfg.max_breakout_age_days} 天`);
 
