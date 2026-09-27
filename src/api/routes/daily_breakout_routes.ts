@@ -5,6 +5,7 @@
  * GET /api/daily-breakout/signals/:id         单条事件 + 画图用日线
  * GET /api/daily-breakout/klines/:symbol      日线K线
  *
+ * 每条事件附带 avg_quote_volume_10d：最近 10 根已收盘日线平均成交额（USDT，实时计算）
  * 每条事件附带 line 字段：[{time, value}, ...]，前端直接连线即可
  * （首触点 → 最新日，线性坐标为直线；对数坐标已按日插值成折线）
  */
@@ -65,14 +66,15 @@ function build_line_points(r: DailyBreakoutRecord): { time: number; value: numbe
  *   min_touches       - 最少触点数
  *   min_span_days     - 最小跨度（天）
  *   max_distance_pct  - 最新收盘离线最大距离（%），找还在回踩位置的
- *   sort              - breakout_time（默认）/ distance / volume_ratio / touches
+ *   min_avg_volume    - 最近 10 天日均成交额下限（USDT）
+ *   sort              - breakout_time（默认）/ distance / volume_ratio / touches / avg_volume
  *   limit             - 默认 200，最大 1000
  */
 router.get('/signals', async (req: Request, res: Response): Promise<void> => {
   try {
     const q = req.query as Record<string, string>;
     const days = opt_number(q.days) ?? 30;
-    const sorts = ['breakout_time', 'distance', 'volume_ratio', 'touches'];
+    const sorts = ['breakout_time', 'distance', 'volume_ratio', 'touches', 'avg_volume'];
 
     const filter: DailyBreakoutFilter = {
       symbol: q.symbol || undefined,
@@ -84,6 +86,7 @@ router.get('/signals', async (req: Request, res: Response): Promise<void> => {
       min_touches: opt_number(q.min_touches),
       min_span_days: opt_number(q.min_span_days),
       max_distance_pct: opt_number(q.max_distance_pct),
+      min_avg_volume_10d: opt_number(q.min_avg_volume),
       sort: sorts.includes(q.sort) ? q.sort as DailyBreakoutFilter['sort'] : 'breakout_time',
       limit: opt_number(q.limit),
     };

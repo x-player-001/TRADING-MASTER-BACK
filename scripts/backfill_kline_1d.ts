@@ -3,6 +3,7 @@
  *
  * - 无数据的币种：拉取 --limit 根（默认 1000，约 2.7 年，权重 5）
  * - 已有数据的币种：只拉最近若干根增量（limit < 100，权重 1）
+ * - --full：忽略已有数据，每个币种都拉 --limit 根（补历史字段用，如 quote_volume）
  * - 只写已收盘日线，已存在则覆盖
  * - 限速：并发 2 + 请求间隔 500ms，全市场首次回填约 1200 权重/分钟
  *
@@ -36,7 +37,7 @@ const REQUEST_HEADERS = {
 };
 
 /** 解析命令行参数 */
-function parse_args(): { symbols: string[] | null; limit: number } {
+function parse_args(): { symbols: string[] | null; limit: number; full: boolean } {
   const argv = process.argv.slice(2);
   const get = (name: string) => {
     const i = argv.indexOf(name);
@@ -45,6 +46,7 @@ function parse_args(): { symbols: string[] | null; limit: number } {
   return {
     symbols: get('--symbols')?.split(',').map(s => s.trim().toUpperCase()) ?? null,
     limit: Math.min(1500, Math.max(1, Number(get('--limit') ?? 1000))),
+    full: argv.includes('--full'),
   };
 }
 
@@ -77,6 +79,7 @@ async function fetch_daily_klines(symbol: string, limit: number): Promise<DailyK
           low: parseFloat(k[3]),
           close: parseFloat(k[4]),
           volume: parseFloat(k[5]),
+          quote_volume: parseFloat(k[7]),
         }));
     } catch (error: any) {
       if (retry >= CONFIG.max_retries - 1) throw error;
@@ -92,7 +95,7 @@ function sleep(ms: number): Promise<void> {
 
 /** 主流程 */
 async function main(): Promise<void> {
-  const { symbols: specified, limit } = parse_args();
+  const { symbols: specified, limit, full } = parse_args();
   ConfigManager.getInstance().initialize();
   const repo = new DailyBreakoutRepository();
   await repo.init_tables();
@@ -109,7 +112,7 @@ async function main(): Promise<void> {
       const symbol = queue.shift()!;
       const progress = `[${++stats.done}/${symbols.length}]`;
       try {
-        const latest = await repo.get_latest_daily_time(symbol);
+        const latest = full ? null : await repo.get_latest_daily_time(symbol);
         // 增量：从最新一根（可能是之前的未收盘数据）起补齐，多拉 2 根冗余
         const n = latest === null ? limit : Math.min(limit, Math.ceil((Date.now() - latest) / DAY_MS) + 2);
         const rows = await fetch_daily_klines(symbol, n);

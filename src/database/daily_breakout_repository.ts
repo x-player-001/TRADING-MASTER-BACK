@@ -10,12 +10,14 @@ import { BaseRepository } from './base_repository';
 import { DailyBar, TrendlineBreakout } from '@/analysis/trendline_breakout_detector';
 
 const DAY_MS = 86_400_000;
+const AVG_VOLUME_DAYS = 10;
 const H4_MS = 4 * 3_600_000;
 
 /** 日线K线入库结构 */
 export interface DailyKlineRow extends DailyBar {
   symbol: string;
   close_time: number;
+  quote_volume: number;   // 成交额（USDT）
 }
 
 /** 突破事件记录 */
@@ -50,6 +52,7 @@ export interface DailyBreakoutRecord {
   last_close: number;
   last_line_value: number;
   last_distance_pct: number;
+  avg_quote_volume_10d: number | null;   // 最近 10 根已收盘日线平均成交额（USDT），查询时实时计算
   created_at?: Date;
   updated_at?: Date;
 }
@@ -70,6 +73,7 @@ export class DailyBreakoutRepository extends BaseRepository {
         low DECIMAL(20,8) NOT NULL,
         close DECIMAL(20,8) NOT NULL,
         volume DECIMAL(30,8) NOT NULL,
+        quote_volume DECIMAL(30,8) NULL COMMENT '成交额（USDT）',
         created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
 
         UNIQUE KEY uk_symbol_time (symbol, open_time),
@@ -77,6 +81,8 @@ export class DailyBreakoutRepository extends BaseRepository {
         INDEX idx_symbol (symbol)
       ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COMMENT='日线K线'
     `);
+    await this.add_column_if_missing('kline_1d_agg', 'quote_volume',
+      "DECIMAL(30,8) NULL COMMENT '成交额（USDT）' AFTER volume");
 
     await this.execute_query(`
       CREATE TABLE IF NOT EXISTS daily_trendline_breakouts (
@@ -120,15 +126,18 @@ export class DailyBreakoutRepository extends BaseRepository {
     `);
 
     // 早期建表缺 line_start_value，补列（幂等）
+    await this.add_column_if_missing('daily_trendline_breakouts', 'line_start_value',
+      "DECIMAL(20,8) NOT NULL DEFAULT 0 COMMENT '首触点时刻的精确线值（画线用）' AFTER line_start_price");
+  }
+
+  /** 列不存在时补列（幂等，兼容早期建的表） */
+  private async add_column_if_missing(table: string, column: string, definition: string): Promise<void> {
     const cols = await this.execute_query(`
       SELECT COLUMN_NAME FROM information_schema.COLUMNS
-      WHERE TABLE_SCHEMA = DATABASE() AND TABLE_NAME = 'daily_trendline_breakouts' AND COLUMN_NAME = 'line_start_value'
-    `);
+      WHERE TABLE_SCHEMA = DATABASE() AND TABLE_NAME = ? AND COLUMN_NAME = ?
+    `, [table, column]);
     if (cols.length === 0) {
-      await this.execute_query(`
-        ALTER TABLE daily_trendline_breakouts
-        ADD COLUMN line_start_value DECIMAL(20,8) NOT NULL DEFAULT 0 COMMENT '首触点时刻的精确线值（画线用）' AFTER line_start_price
-      `);
+      await this.execute_query(`ALTER TABLE ${table} ADD COLUMN ${column} ${definition}`);
     }
   }
 
@@ -139,13 +148,14 @@ export class DailyBreakoutRepository extends BaseRepository {
       const batch = rows.slice(i, i + 500);
       const params: any[] = [];
       for (const r of batch) {
-        params.push(r.symbol, '1d', r.open_time, r.close_time, r.open, r.high, r.low, r.close, r.volume);
+        params.push(r.symbol, '1d', r.open_time, r.close_time, r.open, r.high, r.low, r.close, r.volume, r.quote_volume);
       }
       affected += await this.update_and_get_affected_rows(`
-        INSERT INTO kline_1d_agg (symbol, \`interval\`, open_time, close_time, open, high, low, close, volume)
-        VALUES ${batch.map(() => '(?, ?, ?, ?, ?, ?, ?, ?, ?)').join(', ')}
+        INSERT INTO kline_1d_agg (symbol, \`interval\`, open_time, close_time, open, high, low, close, volume, quote_volume)
+        VALUES ${batch.map(() => '(?, ?, ?, ?, ?, ?, ?, ?, ?, ?)').join(', ')}
         ON DUPLICATE KEY UPDATE open = VALUES(open), high = VALUES(high), low = VALUES(low),
-          close = VALUES(close), volume = VALUES(volume), close_time = VALUES(close_time)
+          close = VALUES(close), volume = VALUES(volume), quote_volume = VALUES(quote_volume),
+          close_time = VALUES(close_time)
       `, params);
     }
     return affected;
@@ -264,14 +274,27 @@ export class DailyBreakoutRepository extends BaseRepository {
   /** 按 id 查询单条突破事件 */
   async get_breakout(id: number): Promise<DailyBreakoutRecord | null> {
     const rows = await this.execute_query('SELECT * FROM daily_trendline_breakouts WHERE id = ?', [id]);
-    return rows.length ? to_breakout_record(rows[0]) : null;
+    if (!rows.length) return null;
+    const record = to_breakout_record(rows[0]);
+    record.avg_quote_volume_10d = await this.get_avg_quote_volume(record.symbol, AVG_VOLUME_DAYS);
+    return record;
+  }
+
+  /** 最近 N 根已收盘日线平均成交额（USDT），无数据返回 null */
+  async get_avg_quote_volume(symbol: string, days: number): Promise<number | null> {
+    const since = Math.floor(Date.now() / DAY_MS) * DAY_MS - days * DAY_MS;
+    const rows = await this.execute_query(`
+      SELECT AVG(COALESCE(quote_volume, volume * close)) AS v FROM kline_1d_agg
+      WHERE symbol = ? AND open_time >= ? AND close_time < ?
+    `, [symbol, since, Date.now()]);
+    return rows[0]?.v != null ? Math.round(Number(rows[0].v)) : null;
   }
 
   /** 按条件查询突破事件 */
   async list_breakouts(filter: DailyBreakoutFilter = {}): Promise<DailyBreakoutRecord[]> {
     const where: string[] = [];
     const params: any[] = [];
-    if (filter.symbol) { where.push('symbol = ?'); params.push(filter.symbol.toUpperCase()); }
+    if (filter.symbol) { where.push('b.symbol = ?'); params.push(filter.symbol.toUpperCase()); }
     if (filter.statuses?.length) {
       where.push(`status IN (${filter.statuses.map(() => '?').join(', ')})`);
       params.push(...filter.statuses);
@@ -283,20 +306,31 @@ export class DailyBreakoutRepository extends BaseRepository {
     if (filter.min_touches != null) { where.push('touch_count >= ?'); params.push(filter.min_touches); }
     if (filter.min_span_days != null) { where.push('span_days >= ?'); params.push(filter.min_span_days); }
     if (filter.max_distance_pct != null) { where.push('last_distance_pct <= ?'); params.push(filter.max_distance_pct); }
+    if (filter.min_avg_volume_10d != null) { where.push('v.avg_quote_volume_10d >= ?'); params.push(filter.min_avg_volume_10d); }
 
     const order = {
       breakout_time: 'breakout_time DESC',
       distance: 'last_distance_pct ASC',
       volume_ratio: 'breakout_volume_ratio DESC',
       touches: 'touch_count DESC, span_days DESC',
+      avg_volume: 'v.avg_quote_volume_10d DESC',
     }[filter.sort ?? 'breakout_time'];
     const limit = Math.max(1, Math.min(Math.floor(filter.limit ?? 200), 1000));
 
+    // 最近 10 根已收盘日线平均成交额（旧数据无 quote_volume 时按 量×收盘 近似）
+    const since_10d = Math.floor(Date.now() / DAY_MS) * DAY_MS - AVG_VOLUME_DAYS * DAY_MS;
     const rows = await this.execute_query(`
-      SELECT * FROM daily_trendline_breakouts
+      SELECT b.*, v.avg_quote_volume_10d
+      FROM daily_trendline_breakouts b
+      LEFT JOIN (
+        SELECT symbol, AVG(COALESCE(quote_volume, volume * close)) AS avg_quote_volume_10d
+        FROM kline_1d_agg
+        WHERE open_time >= ? AND close_time < ?
+        GROUP BY symbol
+      ) v ON v.symbol = b.symbol
       ${where.length ? 'WHERE ' + where.join(' AND ') : ''}
       ORDER BY ${order} LIMIT ${limit}
-    `, params);
+    `, [since_10d, Date.now(), ...params]);
     return rows.map(to_breakout_record);
   }
 }
@@ -312,7 +346,8 @@ export interface DailyBreakoutFilter {
   min_touches?: number;
   min_span_days?: number;
   max_distance_pct?: number;
-  sort?: 'breakout_time' | 'distance' | 'volume_ratio' | 'touches';
+  min_avg_volume_10d?: number;
+  sort?: 'breakout_time' | 'distance' | 'volume_ratio' | 'touches' | 'avg_volume';
   limit?: number;
 }
 
@@ -350,6 +385,7 @@ function to_breakout_record(r: any): DailyBreakoutRecord {
     last_close: Number(r.last_close),
     last_line_value: Number(r.last_line_value),
     last_distance_pct: Number(r.last_distance_pct),
+    avg_quote_volume_10d: r.avg_quote_volume_10d != null ? Math.round(Number(r.avg_quote_volume_10d)) : null,
     created_at: r.created_at,
     updated_at: r.updated_at,
   };
