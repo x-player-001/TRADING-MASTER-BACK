@@ -271,6 +271,12 @@ export class DailyBreakoutRepository extends BaseRepository {
     );
   }
 
+  /** 替换某币种扫描窗口内的突破事件：先删窗口内旧事件，再写入本次结果 */
+  async replace_breakouts(symbol: string, since_time: number, breakouts: TrendlineBreakout[]): Promise<void> {
+    await this.delete_breakouts_since(symbol, since_time);
+    for (const b of breakouts) await this.upsert_breakout(symbol, b);
+  }
+
   /** 按 id 查询单条突破事件 */
   async get_breakout(id: number): Promise<DailyBreakoutRecord | null> {
     const rows = await this.execute_query('SELECT * FROM daily_trendline_breakouts WHERE id = ?', [id]);

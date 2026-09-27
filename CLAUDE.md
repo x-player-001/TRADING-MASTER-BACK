@@ -21,13 +21,14 @@ OI 监控、成交量异动、盘口、形态扫描、支撑阻力等作为**辅
 
 ## 🚀 运行形态（生产）
 
-服务跑在**服务器**上，通过 pm2 托管三个进程（见 `ecosystem.config.js`）：
+服务跑在**服务器**上，通过 pm2 托管三个常驻进程 + 一个每日定时任务（见 `ecosystem.config.js`）：
 
 | 进程 | 入口 | 职责 |
 |---|---|---|
 | `api` | `dist/index_api_only.js` | 只读 API 服务（swc build 产物，非 ts-node） |
 | `trend` | `scripts/run_trend_follow_monitor.ts` | **核心**：全市场 5m WS 监控 + 分级报警 |
 | `alerts` | `scripts/evaluate_alert_outcomes.ts --loop` | 报警事后评估器（常驻） |
+| `daily-breakout` | `scripts/run_daily_breakout_job.ts` | 日线趋势线突破：每天 08:10（北京）回填日线 + 扫描入库，跑完退出（pm2 cron） |
 
 ```bash
 npm run build          # swc 编译到 dist/

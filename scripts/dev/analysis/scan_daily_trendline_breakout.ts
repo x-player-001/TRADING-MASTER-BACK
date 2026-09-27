@@ -21,12 +21,8 @@ dotenv.config({ override: true });
 
 import { ConfigManager } from '@/core/config/config_manager';
 import { DatabaseConfig } from '@/core/config/database';
-import { DailyBreakoutRepository } from '@/database/daily_breakout_repository';
-import {
-  detect_trendline_breakouts, TrendlineBreakout, TrendlineBreakoutConfig, DEFAULT_TRENDLINE_CONFIG,
-} from '@/analysis/trendline_breakout_detector';
-
-const DAY_MS = 86_400_000;
+import { DailyBreakoutService } from '@/services/daily_breakout_service';
+import { TrendlineBreakout, TrendlineBreakoutConfig, DEFAULT_TRENDLINE_CONFIG } from '@/analysis/trendline_breakout_detector';
 
 interface ScanArgs {
   source: '1d' | '4h';
@@ -82,44 +78,19 @@ function print_breakout(symbol: string, b: TrendlineBreakout): void {
     ` (${b.last_distance_pct >= 0 ? '+' : ''}${b.last_distance_pct.toFixed(2)}%)  突破后最大涨幅 ${b.max_gain_pct.toFixed(1)}%`);
 }
 
-/** 主流程：串行逐币读取 → 检测 → 打印/入库 */
+/** 主流程：串行逐币读取 → 检测 → 打印/入库（逻辑在 DailyBreakoutService） */
 async function main(): Promise<void> {
   const args = parse_args();
   ConfigManager.getInstance().initialize();
-  const repo = new DailyBreakoutRepository();
-  if (args.save) await repo.init_tables();
+  const service = new DailyBreakoutService();
+  if (args.save) await service.init();
 
   const cfg = { ...DEFAULT_TRENDLINE_CONFIG, ...args.config };
-  const all_symbols = args.symbols ?? (args.source === '4h' ? await repo.get_4h_symbols() : await repo.get_daily_symbols());
-  const symbols = args.from ? all_symbols.filter(s => s >= args.from!) : all_symbols;
-  const since = Date.now() - (cfg.max_lookback_days + 60) * DAY_MS;
-  console.log(`数据源 ${args.source}  币种 ${symbols.length}  坐标 ${cfg.price_scale}  突破窗口 ${cfg.max_breakout_age_days} 天`);
+  console.log(`数据源 ${args.source}  坐标 ${cfg.price_scale}  突破窗口 ${cfg.max_breakout_age_days} 天`);
 
-  const counts = { symbols_hit: 0, breakout: 0, retest: 0, failed: 0, extended: 0 };
-  for (const symbol of symbols) {
-    try {
-      const bars = args.source === '4h'
-        ? await repo.get_daily_klines_from_4h(symbol, since)
-        : await repo.get_daily_klines(symbol, since);
-      const results = detect_trendline_breakouts(bars, args.config);
-      if (args.save && bars.length > 0) {
-        const window_start = bars[bars.length - 1].open_time - cfg.max_breakout_age_days * DAY_MS;
-        await repo.delete_breakouts_since(symbol, Number.isFinite(window_start) ? window_start : 0);
-      }
-      if (results.length === 0) continue;
-
-      counts.symbols_hit++;
-      for (const b of results) {
-        counts[b.status]++;
-        print_breakout(symbol, b);
-        if (args.save) await repo.upsert_breakout(symbol, b);
-      }
-    } catch (error: any) {
-      console.error(`${symbol} 扫描失败: ${error.message}`);
-    }
-  }
-
-  console.log(`\n命中币种 ${counts.symbols_hit}  已突破 ${counts.breakout}  回踩中 ${counts.retest}  已远离 ${counts.extended}  失败 ${counts.failed}`);
+  const r = await service.scan_breakouts({ ...args, on_result: print_breakout });
+  console.log(`\n扫描 ${r.symbols} 币  命中币种 ${r.symbols_hit}  已突破 ${r.counts.breakout}  回踩中 ${r.counts.retest}` +
+    `  已远离 ${r.counts.extended}  失败 ${r.counts.failed}  扫描失败 ${r.failed.length}`);
 }
 
 main()
