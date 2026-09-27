@@ -154,3 +154,18 @@ describe('extended', () => {
     expect(detect_trendline_breakouts(bars, { ...ALL, extended_pct: 30 })[0].status).toBe('retest');
   });
 });
+
+describe('breakout_new_high_days', () => {
+  it('价格深跌后底部横盘，线自己降下来横着穿过 → 不算突破', () => {
+    // 高点 100 → 92 → 84 的下降线；第 90 天后跌到 40 横盘，线约在第 ~300 天降到 40 附近
+    const bars = build_bars([...DESCENDING_BASE.slice(0, 7), [110, 40], [400, 40.4]]);
+    expect(detect_trendline_breakouts(bars, ALL)).toHaveLength(0);
+  });
+
+  it('同样的底部横盘，放量拉出新高穿线 → 算突破', () => {
+    const bars = build_bars([...DESCENDING_BASE.slice(0, 7), [110, 40], [250, 40.4], [260, 70]]);
+    const [r] = detect_trendline_breakouts(bars, ALL);
+    expect(r).toBeDefined();
+    expect(day_of(r.breakout_time)).toBeGreaterThan(250);
+  });
+});

@@ -11,6 +11,8 @@
  * 3. 从起点向右推进：收盘站上线 → 突破；影线刺穿过深超过 max_wick_breaks 根 → 线无效
  *    （允许零星插针：收盘回到线下的长上影，人工画线通常忽略）
  *    突破前第二个锚点必须已确认（b + pivot_window < t），避免前视
+ *    站上线后 breakout_confirm_days 内须有收盘创前 breakout_new_high_days 日新高，
+ *    否则视为「线自己降下来横着穿过价格」（底部横盘），线作废
  * 4. 统计突破前所有贴线的摆动高点作为触点，相邻触点间隔过远的线丢弃（远隔两点连线无意义），
  *    按「触点数 → 跨度 → 拟合误差」择优
  * 5. 突破后跟踪：回踩（低点回到线附近）/ 失败（收盘跌破线）/ 已远离（最新收盘离线过远，不再是回踩机会）
@@ -47,6 +49,8 @@ export interface TrendlineBreakoutConfig {
   wick_tol_pct: number;                // 突破前影线刺穿线在此幅度内不计
   max_wick_breaks: number;             // 允许刺穿超过 wick_tol 的插针根数（只计收盘在线下的）
   breakout_min_pct: number;            // 收盘高出线此幅度算突破
+  breakout_new_high_days: number;      // 突破日收盘须高于此前 N 日最高价（排除横着穿线）
+  breakout_confirm_days: number;       // 首次站上线后，最多再等几根K线创新高
   min_depth_pct: number;               // 首尾触点之间价格离线的最大深度下限（排除贴着线横走）
   min_touches: number;                 // 最少触点数
   max_touch_gap_days: number;          // 相邻触点最大间隔（天），超出则线无意义
@@ -68,6 +72,8 @@ export const DEFAULT_TRENDLINE_CONFIG: TrendlineBreakoutConfig = {
   wick_tol_pct: 4,
   max_wick_breaks: 1,
   breakout_min_pct: 1,
+  breakout_new_high_days: 10,
+  breakout_confirm_days: 3,
   min_depth_pct: 12,
   min_touches: 2,
   max_touch_gap_days: 180,
@@ -222,6 +228,8 @@ export function detect_trendline_breakouts(
       // 只有收盘回到线下的长上影才算插针；收盘在线上（未达突破幅度）是突破尝试，不计
       if (tc[k] < lv && rel(th[k], lv) > wick_tol && ++wick_breaks > cfg.max_wick_breaks) return null;
     }
+    if (t < 0) return null;
+    t = confirm_new_high(t, line);
     if (t < 0 || bars[t].open_time < earliest_breakout) return null;
 
     // 触点：突破前已确认的摆动高点中贴线者
@@ -253,6 +261,22 @@ export function detect_trendline_breakouts(
       depth,
       fit_error: err_sum / touches.length,
     };
+  }
+
+  /**
+   * 突破确认：从首次站上线的 t0 起 breakout_confirm_days 根内，
+   * 找第一根「仍站在线上且收盘高于此前 N 日最高价」的K线
+   * @returns 确认突破的下标；未确认（横着穿线）返回 -1
+   */
+  function confirm_new_high(t0: number, line: (k: number) => number): number {
+    const nd = cfg.breakout_new_high_days;
+    for (let k = t0; k < n && k <= t0 + cfg.breakout_confirm_days; k++) {
+      if (rel(tc[k], line(k)) <= breakout_min) return -1;   // 跌回线下：假突破
+      let prior_high = -Infinity;
+      for (let j = Math.max(0, k - nd); j < k; j++) prior_high = Math.max(prior_high, bars[j].high);
+      if (bars[k].close > prior_high) return k;
+    }
+    return -1;
   }
 
   /** 候选排序：触点多 → 跨度长 → 误差小 */
