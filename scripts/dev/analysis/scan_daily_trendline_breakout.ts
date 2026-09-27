@@ -69,7 +69,7 @@ function fmt_price(p: number): string {
 /** 打印一条突破事件 */
 function print_breakout(symbol: string, b: TrendlineBreakout): void {
   const type = b.line_type === 'descending' ? '下降趋势线' : '盘整上沿';
-  const status = { breakout: '已突破', retest: '回踩中', failed: '失败' }[b.status];
+  const status = { breakout: '已突破', retest: '回踩中', failed: '失败', extended: '已远离' }[b.status];
   console.log(`\n${symbol}  ${type}  [${status}]  触点 ${b.touch_count}  跨度 ${Math.round(b.span_days)}天  斜率 ${b.slope_pct_per_day.toFixed(3)}%/天`);
   console.log(`  触点: ${b.touches.map(t => `${fmt_day(t.time)}@${fmt_price(t.price)}`).join('  ')}`);
   console.log(`  突破: ${fmt_day(b.breakout_time)} 收 ${fmt_price(b.breakout_close)} / 线 ${fmt_price(b.breakout_line_value)}` +
@@ -95,7 +95,7 @@ async function main(): Promise<void> {
   const since = Date.now() - (cfg.max_lookback_days + 60) * DAY_MS;
   console.log(`数据源 ${args.source}  币种 ${symbols.length}  坐标 ${cfg.price_scale}  突破窗口 ${cfg.max_breakout_age_days} 天`);
 
-  const counts = { symbols_hit: 0, breakout: 0, retest: 0, failed: 0 };
+  const counts = { symbols_hit: 0, breakout: 0, retest: 0, failed: 0, extended: 0 };
   for (const symbol of symbols) {
     try {
       const bars = args.source === '4h'
@@ -119,7 +119,7 @@ async function main(): Promise<void> {
     }
   }
 
-  console.log(`\n命中币种 ${counts.symbols_hit}  已突破 ${counts.breakout}  回踩中 ${counts.retest}  失败 ${counts.failed}`);
+  console.log(`\n命中币种 ${counts.symbols_hit}  已突破 ${counts.breakout}  回踩中 ${counts.retest}  已远离 ${counts.extended}  失败 ${counts.failed}`);
 }
 
 main()

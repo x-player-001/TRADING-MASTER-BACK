@@ -59,7 +59,7 @@ function build_line_points(r: DailyBreakoutRecord): { time: number; value: numbe
  * 查询突破事件
  *
  * Query params:
- *   status            - breakout / retest / failed，逗号分隔多选（默认 breakout,retest）
+ *   status            - breakout / retest / extended（已远离：最新收盘离线 >20%）/ failed，逗号分隔多选（默认 breakout,retest）
  *   days              - 最近 N 天内突破，默认 30
  *   line_type         - descending / horizontal
  *   symbol            - 币种

@@ -50,7 +50,7 @@ describe('find_pivot_highs', () => {
 
 describe('detect_trendline_breakouts', () => {
   it('下降趋势线：连上 3 个触点，突破后回踩', () => {
-    const bars = build_bars([...DESCENDING_BASE, [135, 77], [150, 90]]);
+    const bars = build_bars([...DESCENDING_BASE, [135, 77], [150, 85]]);
     const [r, ...rest] = detect_trendline_breakouts(bars, ALL);
 
     expect(rest).toHaveLength(0);
@@ -86,7 +86,7 @@ describe('detect_trendline_breakouts', () => {
   });
 
   it('数据空洞不影响连线（x 轴按真实时间）', () => {
-    const full = build_bars([...DESCENDING_BASE, [135, 77], [150, 90]]);
+    const full = build_bars([...DESCENDING_BASE, [135, 77], [150, 85]]);
     const holed = full.filter(b => { const d = day_of(b.open_time); return d < 60 || d > 80; });
     const [a] = detect_trendline_breakouts(full, ALL);
     const [b] = detect_trendline_breakouts(holed, ALL);
@@ -110,7 +110,7 @@ describe('detect_trendline_breakouts', () => {
 describe('max_touch_gap_days', () => {
   it('相邻触点间隔超限的线丢弃', () => {
     // 高点 10 / 50 / 90 相邻间隔 40 天
-    const bars = build_bars([...DESCENDING_BASE, [135, 77], [150, 90]]);
+    const bars = build_bars([...DESCENDING_BASE, [135, 77], [150, 85]]);
     expect(detect_trendline_breakouts(bars, { ...ALL, max_touch_gap_days: 40 })).toHaveLength(1);
     expect(detect_trendline_breakouts(bars, { ...ALL, max_touch_gap_days: 39 })).toHaveLength(0);
   });
@@ -136,5 +136,21 @@ describe('max_wick_breaks', () => {
   it('插针超过允许根数 → 上沿作废', () => {
     const results = detect_trendline_breakouts(range_with_spike(), { ...ALL, max_wick_breaks: 0 });
     expect(results.every(r => r.line_type !== 'horizontal' || r.touch_count < 3)).toBe(true);
+  });
+});
+
+describe('extended', () => {
+  it('突破后回踩过、但最新收盘离线过远 → extended', () => {
+    // 回踩后一路拉升到 130，远离线（约 73）
+    const bars = build_bars([...DESCENDING_BASE, [135, 77], [160, 130]]);
+    const [r] = detect_trendline_breakouts(bars, ALL);
+    expect(r.retest_time).not.toBeNull();
+    expect(r.status).toBe('extended');
+    expect(r.last_distance_pct).toBeGreaterThan(20);
+  });
+
+  it('离线未超阈值仍为 retest', () => {
+    const bars = build_bars([...DESCENDING_BASE, [135, 77], [150, 85]]);
+    expect(detect_trendline_breakouts(bars, { ...ALL, extended_pct: 30 })[0].status).toBe('retest');
   });
 });

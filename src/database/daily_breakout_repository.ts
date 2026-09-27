@@ -106,7 +106,7 @@ export class DailyBreakoutRepository extends BaseRepository {
         breakout_line_value   DECIMAL(20,8) NOT NULL,
         breakout_pct          DECIMAL(10,4) NOT NULL,
         breakout_volume_ratio DECIMAL(10,4) NOT NULL,
-        status                VARCHAR(10)   NOT NULL COMMENT 'breakout / retest / failed',
+        status                VARCHAR(10)   NOT NULL COMMENT 'breakout / retest / extended / failed',
         retest_time           BIGINT        NULL,
         retest_low            DECIMAL(20,8) NULL,
         retest_distance_pct   DECIMAL(10,4) NULL,

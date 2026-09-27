@@ -13,7 +13,7 @@
  *    突破前第二个锚点必须已确认（b + pivot_window < t），避免前视
  * 4. 统计突破前所有贴线的摆动高点作为触点，相邻触点间隔过远的线丢弃（远隔两点连线无意义），
  *    按「触点数 → 跨度 → 拟合误差」择优
- * 5. 突破后跟踪：回踩（低点回到线附近）/ 失败（收盘跌破线）
+ * 5. 突破后跟踪：回踩（低点回到线附近）/ 失败（收盘跌破线）/ 已远离（最新收盘离线过远，不再是回踩机会）
  * 6. 时间相近的突破归为同一事件，只保留最优连线
  */
 
@@ -28,7 +28,7 @@ export interface DailyBar {
 }
 
 export type TrendlineType = 'descending' | 'horizontal';
-export type TrendlineBreakoutStatus = 'breakout' | 'retest' | 'failed';
+export type TrendlineBreakoutStatus = 'breakout' | 'retest' | 'failed' | 'extended';
 
 /** 趋势线触点 */
 export interface TrendlineTouch {
@@ -52,6 +52,7 @@ export interface TrendlineBreakoutConfig {
   max_touch_gap_days: number;          // 相邻触点最大间隔（天），超出则线无意义
   retest_tol_pct: number;              // 突破后低点离线在此范围内算回踩
   fail_tol_pct: number;                // 突破后收盘跌破线此幅度算失败
+  extended_pct: number;                // 最新收盘离线超过此幅度算已远离（按当前状态，跌回来会恢复）
   max_breakout_age_days: number;       // 只输出最近 N 天内的突破（Infinity = 全部历史）
   event_merge_days: number;            // 突破时间相差不超过此天数视为同一事件
   volume_lookback: number;             // 突破量比的均量回看根数
@@ -72,6 +73,7 @@ export const DEFAULT_TRENDLINE_CONFIG: TrendlineBreakoutConfig = {
   max_touch_gap_days: 180,
   retest_tol_pct: 3,
   fail_tol_pct: 3,
+  extended_pct: 20,
   max_breakout_age_days: 30,
   event_merge_days: 10,
   volume_lookback: 20,
@@ -300,6 +302,9 @@ export function detect_trendline_breakouts(
       }
     }
 
+    const last_distance = rel(tc[n - 1], line(n - 1));
+    if (status !== 'failed' && last_distance > cfg.extended_pct / 100) status = 'extended';
+
     const vol_from = Math.max(0, t - cfg.volume_lookback);
     const vol_bars = bars.slice(vol_from, t);
     const avg_vol = vol_bars.length ? vol_bars.reduce((s, b) => s + b.volume, 0) / vol_bars.length : 0;
@@ -333,7 +338,7 @@ export function detect_trendline_breakouts(
       last_time,
       last_close: bars[n - 1].close,
       last_line_value: inv(line(n - 1)),
-      last_distance_pct: pct(rel(tc[n - 1], line(n - 1))),
+      last_distance_pct: pct(last_distance),
       days_since_breakout: x[n - 1] - x[t],
 
       line_value_at,
