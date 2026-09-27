@@ -22,12 +22,14 @@ import pattern_scan_routes, { set_pattern_scan_service } from './routes/pattern_
 import orderbook_monitor_routes, { set_orderbook_service } from './routes/orderbook_monitor_routes';
 import trend_follow_routes, { set_trend_follow_repository } from './routes/trend_follow_routes';
 import ema20_push_routes, { set_ema20_push_repository } from './routes/ema20_push_routes';
+import daily_breakout_routes, { set_daily_breakout_repository } from './routes/daily_breakout_routes';
 import { TradeRecordRoutes } from './routes/trade_record_routes';
 import { KlineReplayRoutes } from './routes/kline_replay_routes';
 import { TradeLogService } from '@/services/trade_log_service';
 import { VolumeMonitorRepository } from '@/database/volume_monitor_repository';
 import { TrendFollowRepository } from '@/database/trend_follow_repository';
 import { EMA20PushRepository } from '@/database/ema20_push_repository';
+import { DailyBreakoutRepository } from '@/database/daily_breakout_repository';
 import { PatternScanService } from '@/services/pattern_scan_service';
 import { OrderBookMonitorService } from '@/services/orderbook_monitor_service';
 import { BinanceDepthUpdate } from '@/types/orderbook_types';
@@ -60,6 +62,7 @@ export class APIServer {
   private orderbook_monitor_service: OrderBookMonitorService;
   private trend_follow_repository: TrendFollowRepository;
   private ema20_push_repository: EMA20PushRepository;
+  private daily_breakout_repository: DailyBreakoutRepository;
   private trade_record_routes: TradeRecordRoutes;
   private kline_replay_routes: KlineReplayRoutes;
   private ws_depth: WebSocket | null = null;
@@ -86,6 +89,7 @@ export class APIServer {
     this.orderbook_monitor_service = new OrderBookMonitorService();
     this.trend_follow_repository = new TrendFollowRepository();
     this.ema20_push_repository = new EMA20PushRepository();
+    this.daily_breakout_repository = new DailyBreakoutRepository();
     this.trade_record_routes = new TradeRecordRoutes();
     this.kline_replay_routes = new KlineReplayRoutes();
     this.setup_middleware();
@@ -95,6 +99,7 @@ export class APIServer {
     this.init_trade_record_service();
     this.init_trend_follow_services();
     this.init_ema20_push_services();
+    this.init_daily_breakout_services();
     this.init_kline_replay_services();
   }
 
@@ -166,6 +171,17 @@ export class APIServer {
       logger.info('[APIServer] Kline replay services initialized');
     } catch (error) {
       logger.error('[APIServer] Failed to init kline replay services:', error);
+    }
+  }
+
+  /** 日线趋势线突破：建表 + 注入 repository */
+  private async init_daily_breakout_services(): Promise<void> {
+    try {
+      await this.daily_breakout_repository.init_tables();
+      set_daily_breakout_repository(this.daily_breakout_repository);
+      logger.info('[APIServer] Daily breakout services initialized');
+    } catch (error) {
+      logger.error('[APIServer] Failed to init daily breakout services:', error);
     }
   }
 
@@ -388,6 +404,9 @@ export class APIServer {
 
     // EMA20 均线推动路由
     this.app.use('/api/ema20-push', ema20_push_routes);
+
+    // 日线趋势线 / 盘整上沿突破
+    this.app.use('/api/daily-breakout', daily_breakout_routes);
 
     // 交易日志路由
     this.app.use('/api/trade-record', this.trade_record_routes.get_router());
