@@ -15,6 +15,8 @@ import { DailyBreakoutRepository, DailyBreakoutRecord, DailyBreakoutFilter } fro
 import { logger } from '@/utils/logger';
 
 const DAY_MS = 86_400_000;
+/** 默认日均成交额门槛：约为全市场中位数，剔除最冷门的一半；用户例子 QNT/RUNE/KITE 均在其上 */
+const DEFAULT_MIN_AVG_VOLUME = 5_000_000;
 const router = Router();
 let repository: DailyBreakoutRepository | null = null;
 
@@ -66,7 +68,7 @@ function build_line_points(r: DailyBreakoutRecord): { time: number; value: numbe
  *   min_touches       - 最少触点数
  *   min_span_days     - 最小跨度（天）
  *   max_distance_pct  - 最新收盘离线最大距离（%），找还在回踩位置的
- *   min_avg_volume    - 最近 10 天日均成交额下限（USDT）
+ *   min_avg_volume    - 最近 10 天日均成交额下限（USDT），默认 5000000（剔除冷门币），传 0 不限
  *   sort              - breakout_time（默认）/ distance / volume_ratio / touches / avg_volume
  *   limit             - 默认 200，最大 1000
  */
@@ -86,7 +88,7 @@ router.get('/signals', async (req: Request, res: Response): Promise<void> => {
       min_touches: opt_number(q.min_touches),
       min_span_days: opt_number(q.min_span_days),
       max_distance_pct: opt_number(q.max_distance_pct),
-      min_avg_volume_10d: opt_number(q.min_avg_volume),
+      min_avg_volume_10d: opt_number(q.min_avg_volume) ?? DEFAULT_MIN_AVG_VOLUME,
       sort: sorts.includes(q.sort) ? q.sort as DailyBreakoutFilter['sort'] : 'breakout_time',
       limit: opt_number(q.limit),
     };

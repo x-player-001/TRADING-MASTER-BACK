@@ -306,7 +306,7 @@ export class DailyBreakoutRepository extends BaseRepository {
     if (filter.min_touches != null) { where.push('touch_count >= ?'); params.push(filter.min_touches); }
     if (filter.min_span_days != null) { where.push('span_days >= ?'); params.push(filter.min_span_days); }
     if (filter.max_distance_pct != null) { where.push('last_distance_pct <= ?'); params.push(filter.max_distance_pct); }
-    if (filter.min_avg_volume_10d != null) { where.push('v.avg_quote_volume_10d >= ?'); params.push(filter.min_avg_volume_10d); }
+    if (filter.min_avg_volume_10d) { where.push('v.avg_quote_volume_10d >= ?'); params.push(filter.min_avg_volume_10d); }
 
     const order = {
       breakout_time: 'breakout_time DESC',
