@@ -171,7 +171,7 @@ npx ts-node -r tsconfig-paths/register scripts/dev/analysis/analyze_trend_signal
 | **K线回放模拟交易** | `replay_sessions`、`replay_orders`、`replay_positions`、`replay_fills` |
 | **EMA20 推动** | `ema20_push_contexts`、`ema20_push_records` |
 | **日线趋势线突破** | `kline_1d_agg`（日线）、`daily_trendline_breakouts`（独立于趋势跟随） |
-| **CME 期货K线** | `cme_klines`（ES / GC，Databento 连续合约 1m 聚合成 5m/15m/1h/4h，`scripts/backfill_cme_klines.ts` 回填，本机/服务器均可跑） |
+| **CME 期货K线** | `cme_klines`（ES / GC，Databento 连续合约 1m 聚合成 5m/15m/1h/4h；ES 只存美股常规时段 09:30~16:00 ET、从开盘起算分桶，见 `cme_contracts.ts` 的 session；`scripts/backfill_cme_klines.ts` 回填，本机/服务器均可跑） |
 | **交易日志** | `trade_log`、`trade_log_analysis`、`trade_log_review`、`binance_trades`、`trade_records`、`order_records` |
 | **其他报警** | `volume_alerts`、`orderbook_alerts`、`sr_alerts`、`sr_levels`、`pattern_alerts`、`pattern_scan_results`、`pattern_scan_tasks` |
 | **配置** | `symbol_configs`、`top_symbols_config`、`subscription_status`、`volume_monitor_symbols` |

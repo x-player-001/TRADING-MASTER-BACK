@@ -15,7 +15,8 @@
 import { Kline5mRepository, Kline5mData } from '@/database/kline_5m_repository';
 import { CmeKlineRepository, CmeKlineRow } from '@/database/cme_kline_repository';
 import { KlineAggregator } from '@/core/data/kline_aggregator';
-import { is_cme_symbol } from '@/core/config/cme_contracts';
+import { CME_CONTRACTS, is_cme_symbol } from '@/core/config/cme_contracts';
+import { kline_bucket } from '@/utils/trading_session';
 import {
   ReplayBar,
   ReplayIntervalBar,
@@ -233,9 +234,23 @@ export class ReplayKlineLoader {
       return rows.map(r => ({ ...cme_to_bar(r), is_closed: true }));
     }
 
-    const current_start = bucket_start(cursor_time, interval_ms);
+    // 游标所在桶：有交易时段（ES）从开盘起算、收盘截断，与入库聚合规则一致
+    const session = CME_CONTRACTS[symbol.toUpperCase()]?.session ?? null;
+    const bucket = kline_bucket(cursor_time, interval_ms, session)
+      ?? { start: bucket_start(cursor_time, interval_ms), end: bucket_start(cursor_time, interval_ms) + interval_ms };
+    const current_start = bucket.start;
     const current_5m = await this.load_5m(symbol, current_start, cursor_time);
-    const current_bar = aggregate_bars(current_5m, interval_ms, cursor_time);
+    const current_bar: ReplayIntervalBar[] = current_5m.length === 0 ? [] : [{
+      open_time: bucket.start,
+      close_time: bucket.end - 1,
+      open: current_5m[0].open,
+      high: Math.max(...current_5m.map(b => b.high)),
+      low: Math.min(...current_5m.map(b => b.low)),
+      close: current_5m[current_5m.length - 1].close,
+      volume: current_5m.reduce((s, b) => s + b.volume, 0),
+      contract: current_5m[current_5m.length - 1].contract,
+      is_closed: cursor_time + REPLAY_BASE_INTERVAL_MS >= bucket.end,
+    }];
 
     const history = limit > 1
       ? await this.cme_repo.get_klines_before(symbol, interval, current_start - 1, limit - current_bar.length)

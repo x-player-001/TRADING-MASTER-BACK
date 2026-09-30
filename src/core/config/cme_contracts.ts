@@ -6,6 +6,8 @@
  * 手续费按名义价值比例近似（真实为每手固定费用，约 $2~3/边）。
  */
 
+import { TradingSession } from '@/utils/trading_session';
+
 /** 合约规格 */
 export interface CmeContractSpec {
   symbol: string;              // 品种根代码（cme_klines.symbol）
@@ -16,6 +18,7 @@ export interface CmeContractSpec {
   default_fee_rate: number;    // 回放默认手续费率（taker/maker 相同）
   default_leverage: number;    // 回放默认杠杆（约等于 1 / 保证金比例）
   default_balance: number;     // 回放默认初始资金（1 手名义价值数十万美元，1 万不够开仓）
+  session: TradingSession | null;  // 只保留该时段的K线并从开盘起算分桶；null = 全时段、UTC 整点分桶
 }
 
 export const CME_CONTRACTS: Record<string, CmeContractSpec> = {
@@ -28,6 +31,8 @@ export const CME_CONTRACTS: Record<string, CmeContractSpec> = {
     default_fee_rate: 0.00001,
     default_leverage: 20,
     default_balance: 100000,
+    // 美股常规交易时段（RTH），与 SPX / SPY 图一致；夜盘不入库
+    session: { time_zone: 'America/New_York', open: '09:30', close: '16:00' },
   },
   GC: {
     symbol: 'GC',
@@ -38,6 +43,7 @@ export const CME_CONTRACTS: Record<string, CmeContractSpec> = {
     default_fee_rate: 0.00001,
     default_leverage: 20,
     default_balance: 100000,
+    session: null,
   },
 };
 

@@ -68,6 +68,14 @@ export class CmeKlineRepository extends BaseRepository {
     return affected;
   }
 
+  /** 删除某品种区间内全部周期的K线（open_time 在 [start, end) 内），返回删除行数 */
+  async delete_range(symbol: string, start: number, end: number): Promise<number> {
+    return this.delete_and_get_affected_rows(
+      'DELETE FROM cme_klines WHERE symbol = ? AND open_time >= ? AND open_time < ?',
+      [symbol, start, end],
+    );
+  }
+
   /** 某品种某周期最新一根的 open_time，无数据返回 null */
   async get_latest_open_time(symbol: string, interval: string): Promise<number | null> {
     const rows = await this.execute_query(

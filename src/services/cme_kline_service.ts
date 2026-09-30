@@ -3,10 +3,14 @@
  *
  * 从 Databento 拉连续合约 1m，聚合成 5m / 15m / 1h / 4h 写入 cme_klines。
  *   - 首次：拉最近 N 天
- *   - 增量：从库里最新 5m 所在的 4h 桶起点重拉，保证最后一个（可能未收盘的）桶被完整重算
+ *   - 增量：从库里最新 5m 所在 UTC 日的零点重拉，保证最后一个（可能未收盘的）桶被完整重算
+ *   - force：先删掉该品种区间内的旧数据再整段重拉（分桶规则变更后重建用）
  *   - 下载前先估价，超过上限直接中止（Databento 按量计费）
  *
- * 分桶按 UTC 对齐（与币安K线、回放模块一致）；换月发生在 UTC 零点，不会出现一个桶跨两个合约。
+ * 分桶规则见合约规格的 session（cme_contracts.ts）：
+ *   - 无时段（GC）：全时段，UTC 整点对齐
+ *   - 有时段（ES）：只保留美股常规时段 09:30~16:00 ET，15m/1h/4h 从开盘起算
+ * 换月发生在 UTC 零点，不会出现一个桶跨两个合约。
  */
 
 import {
@@ -18,6 +22,8 @@ import {
   resolve_contract_names,
 } from '@/api/databento_api';
 import { CmeKlineRepository, CmeKlineRow } from '@/database/cme_kline_repository';
+import { CME_CONTRACTS } from '@/core/config/cme_contracts';
+import { TradingSession, kline_bucket } from '@/utils/trading_session';
 import { logger } from '@/utils/logger';
 
 const ONE_MINUTE_MS = 60 * 1000;
@@ -32,7 +38,6 @@ export const CME_INTERVALS: Record<string, number> = {
   '1h': 60 * ONE_MINUTE_MS,
   '4h': 4 * 60 * ONE_MINUTE_MS,
 };
-const MAX_INTERVAL_MS = CME_INTERVALS['4h'];
 
 /** 回填参数 */
 export interface CmeBackfillOptions {
@@ -55,25 +60,28 @@ export interface CmeBackfillResult {
 /**
  * 把 1m 聚合成指定周期（输入须按时间升序）
  * 合约取桶内最后一根 1m 的合约
+ * @param session 交易时段：时段外的 1m 丢弃，桶从开盘起算、收盘截断；null 为 UTC 整点分桶
  */
 export function aggregate_1m(
   symbol: string,
   bars: DatabentoBar[],
   interval: string,
   contract_names: Map<number, string>,
+  session: TradingSession | null = null,
 ): CmeKlineRow[] {
   const interval_ms = CME_INTERVALS[interval];
   const result: CmeKlineRow[] = [];
   let current: CmeKlineRow | null = null;
   for (const b of bars) {
-    const start = Math.floor(b.open_time / interval_ms) * interval_ms;
+    const bucket = kline_bucket(b.open_time, interval_ms, session);
+    if (!bucket) continue;
     const contract = contract_names.get(b.instrument_id) ?? String(b.instrument_id);
-    if (!current || current.open_time !== start) {
+    if (!current || current.open_time !== bucket.start) {
       current = {
         symbol,
         interval,
-        open_time: start,
-        close_time: start + interval_ms - 1,
+        open_time: bucket.start,
+        close_time: bucket.end - 1,
         open: b.open,
         high: b.high,
         low: b.low,
@@ -110,9 +118,12 @@ export class CmeKlineService {
     const code = continuous_symbol(root);
     const end = Math.floor(await get_available_end('ohlcv-1m') / ONE_MINUTE_MS) * ONE_MINUTE_MS;
 
+    const session = CME_CONTRACTS[root]?.session ?? null;
+
     const latest = options.force ? null : await this.repository.get_latest_open_time(root, '5m');
     const from = latest ?? end - options.days * ONE_DAY_MS;
-    const start = Math.floor(from / MAX_INTERVAL_MS) * MAX_INTERVAL_MS;
+    // 对齐到 UTC 零点：4h 桶与美股常规时段（13:30~21:00 UTC）都不跨 UTC 日
+    const start = Math.floor(from / ONE_DAY_MS) * ONE_DAY_MS;
 
     const result: CmeBackfillResult = { symbol: root, start, end, cost: 0, bars_1m: 0, written: {}, contracts: [] };
     if (start >= end) return result;
@@ -137,8 +148,12 @@ export class CmeKlineService {
     const names = await resolve_contract_names(code, start, end);
     result.contracts = ids.map(id => names.get(id) ?? String(id));
 
+    if (options.force) {
+      const deleted = await this.repository.delete_range(root, start, end);
+      logger.info(`[CmeKline] ${root} force 重建：删除区间内旧数据 ${deleted} 行`);
+    }
     for (const interval of Object.keys(CME_INTERVALS)) {
-      const rows = aggregate_1m(root, bars, interval, names);
+      const rows = aggregate_1m(root, bars, interval, names, session);
       await this.repository.upsert_klines(rows);
       result.written[interval] = rows.length;
     }
