@@ -50,6 +50,7 @@ export interface ReplayBar {
   low: number;
   close: number;
   volume: number;
+  contract?: string;          // 期货具体合约（如 ESZ6），相邻两根不同即为换月；币安品种无此字段
 }
 
 /** 大周期K线（带是否已收盘标记） */

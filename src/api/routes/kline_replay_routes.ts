@@ -1,7 +1,8 @@
 /**
  * K线回放 + 模拟交易 API 路由（撮合在前端，后端只存储）
  *
- *   GET    /api/replay/data-coverage                 5m 数据覆盖区间（选起点用）
+ *   GET    /api/replay/data-coverage                 5m 数据覆盖区间（选起点用；?symbol=ES 查 CME 期货）
+ *   GET    /api/replay/cme-contracts                 可回放的 CME 期货（规格 + 数据起止）
  *   POST   /api/replay/sessions                      创建会话
  *   GET    /api/replay/sessions                      会话列表
  *   GET    /api/replay/sessions/:id                  会话完整状态（恢复用：会话 + 游标K线 + 仓位/委托/成交）
@@ -86,7 +87,8 @@ export class KlineReplayRoutes {
     const s = this.service;
     const r = this.router;
 
-    r.get('/data-coverage', this.wrap(() => s.get_data_coverage()));
+    r.get('/data-coverage', this.wrap(req => s.get_data_coverage(req.query.symbol as string | undefined)));
+    r.get('/cme-contracts', this.wrap(() => s.list_cme_contracts()));
 
     // ---------- 会话 ----------
     r.post('/sessions', this.wrap(req => s.create_session({

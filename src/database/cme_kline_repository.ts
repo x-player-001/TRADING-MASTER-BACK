@@ -85,7 +85,38 @@ export class CmeKlineRepository extends BaseRepository {
       WHERE symbol = ? AND \`interval\` = ? AND open_time BETWEEN ? AND ?
       ORDER BY open_time
     `, [symbol, interval, start_time, end_time]);
-    return rows.map(r => ({
+    return rows.map(r => this.map_row(r));
+  }
+
+  /** end_time 及之前最近的 limit 根（按时间升序返回） */
+  async get_klines_before(symbol: string, interval: string, end_time: number, limit: number): Promise<CmeKlineRow[]> {
+    const safe_limit = Math.max(1, Math.floor(limit));
+    const rows = await this.execute_query(`
+      SELECT symbol, \`interval\`, open_time, close_time, open, high, low, close, volume, contract
+      FROM cme_klines
+      WHERE symbol = ? AND \`interval\` = ? AND open_time <= ?
+      ORDER BY open_time DESC
+      LIMIT ${safe_limit}
+    `, [symbol, interval, end_time]);
+    return rows.map(r => this.map_row(r)).reverse();
+  }
+
+  /** after_time 之后（不含）的 limit 根（按时间升序） */
+  async get_klines_after(symbol: string, interval: string, after_time: number, limit: number): Promise<CmeKlineRow[]> {
+    const safe_limit = Math.max(1, Math.floor(limit));
+    const rows = await this.execute_query(`
+      SELECT symbol, \`interval\`, open_time, close_time, open, high, low, close, volume, contract
+      FROM cme_klines
+      WHERE symbol = ? AND \`interval\` = ? AND open_time > ?
+      ORDER BY open_time
+      LIMIT ${safe_limit}
+    `, [symbol, interval, after_time]);
+    return rows.map(r => this.map_row(r));
+  }
+
+  /** 行转对象（DECIMAL 转 number） */
+  private map_row(r: any): CmeKlineRow {
+    return {
       symbol: r.symbol,
       interval: r.interval,
       open_time: Number(r.open_time),
@@ -96,7 +127,7 @@ export class CmeKlineRepository extends BaseRepository {
       close: Number(r.close),
       volume: Number(r.volume),
       contract: r.contract,
-    }));
+    };
   }
 
   /** 各品种各周期的数据概况 */

@@ -198,7 +198,8 @@ npx ts-node -r tsconfig-paths/register scripts/dev/analysis/analyze_trend_signal
 - **后端只存储**：下发 5m 批量块（跨数据空洞）与历史K线（大周期未收盘由 5m 聚合），
   接收前端同步（进度 + 整份交易记录，`client_id` 关联，`revision` 防乱序），基于已存回合出统计
 - 引擎规则：单向持仓、多空、市价/限价/条件单、SL/TP；K线内路径按不利方向优先（先打止损），跳空不利按开盘价、有利按挂单价
-- 单测 `tests/kline_replay/`；端到端验证 `scripts/dev/verify/verify_kline_replay.ts`（需在服务器跑）
+- 支持 CME 期货 ES / GC（`symbol=ES|GC`，数据读 `cme_klines`，规格见 `src/core/config/cme_contracts.ts`，qty = 手数 × 乘数）
+- 单测 `tests/kline_replay/`；端到端验证 `scripts/dev/verify/verify_kline_replay.ts`（需在服务器跑）、`verify_kline_replay_cme.ts`（本机可跑）
 
 ## 🤖 AI 交易复盘
 

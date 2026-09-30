@@ -1,14 +1,21 @@
 /**
  * K线回放数据加载
  *
+ * 币安品种：
  * - 5m：按日分表 kline_5m_YYYYMMDD（回放步进的唯一数据源）
  * - 15m/1h/4h：已收盘K线读聚合表（kline_15m_agg_* / kline_1h_agg / kline_4h_agg），
  *   游标所在的未收盘K线由 5m 实时聚合，保证看不到未来数据。
  *   聚合表缺失的桶用 5m 补齐。
+ *
+ * CME 期货（ES / GC，见 cme_contracts.ts）：
+ * - 全部周期读 cme_klines，未收盘K线同样由 5m 实时聚合
+ * - 有每日休市和周末，按「前/后 N 根」查询而不是按时间窗口，K线带 contract 标注换月
  */
 
 import { Kline5mRepository, Kline5mData } from '@/database/kline_5m_repository';
+import { CmeKlineRepository, CmeKlineRow } from '@/database/cme_kline_repository';
 import { KlineAggregator } from '@/core/data/kline_aggregator';
+import { is_cme_symbol } from '@/core/config/cme_contracts';
 import {
   ReplayBar,
   ReplayIntervalBar,
@@ -21,6 +28,22 @@ const ONE_DAY_MS = 24 * 60 * 60 * 1000;
 const FORWARD_CHUNK_MS = 2 * ONE_DAY_MS;
 /** 用 5m 补齐聚合表缺失桶时最多回溯的跨度（避免跨几十张日表） */
 const MAX_BACKFILL_SPAN_MS = 20 * ONE_DAY_MS;
+/** CME 起点对齐时最多回溯的跨度（覆盖周末 + 节假日） */
+const CME_MAX_LOOKBACK_MS = 7 * ONE_DAY_MS;
+
+/** CME 行转回放K线（带合约） */
+function cme_to_bar(r: CmeKlineRow): ReplayBar {
+  return {
+    open_time: r.open_time,
+    close_time: r.close_time,
+    open: r.open,
+    high: r.high,
+    low: r.low,
+    close: r.close,
+    volume: r.volume,
+    contract: r.contract,
+  };
+}
 
 /** 5m 行转回放K线 */
 function to_bar(k: Kline5mData | ReplayBar): ReplayBar {
@@ -62,12 +85,14 @@ export function aggregate_bars(bars: ReplayBar[], interval_ms: number, cursor_ti
         volume: b.volume,
         is_closed: true,
       };
+      if (b.contract !== undefined) current.contract = b.contract;
       result.push(current);
     } else {
       current.high = Math.max(current.high, b.high);
       current.low = Math.min(current.low, b.low);
       current.close = b.close;
       current.volume += b.volume;
+      if (b.contract !== undefined) current.contract = b.contract;
     }
   }
   const last = result[result.length - 1];
@@ -80,6 +105,7 @@ export function aggregate_bars(bars: ReplayBar[], interval_ms: number, cursor_ti
 export class ReplayKlineLoader {
   private readonly kline_5m_repo: Kline5mRepository;
   private readonly aggregator: KlineAggregator;
+  private readonly cme_repo = new CmeKlineRepository();
 
   constructor() {
     // 只读使用，关闭写入定时器
@@ -91,14 +117,22 @@ export class ReplayKlineLoader {
 
   /** 读取 5m 区间（含两端） */
   async load_5m(symbol: string, start_time: number, end_time: number): Promise<ReplayBar[]> {
+    if (is_cme_symbol(symbol)) {
+      const rows = await this.cme_repo.get_klines(symbol, '5m', start_time, end_time);
+      return rows.map(cme_to_bar);
+    }
     const rows = await this.kline_5m_repo.get_klines_by_time_range(symbol, start_time, end_time);
     return rows.map(to_bar);
   }
 
   /**
-   * 取某时刻所在或之前最近的一根 5m（1 天内）
+   * 取某时刻所在或之前最近的一根 5m（币安 1 天内，CME 7 天内）
    */
   async get_bar_at_or_before(symbol: string, time: number): Promise<ReplayBar | null> {
+    if (is_cme_symbol(symbol)) {
+      const [row] = await this.cme_repo.get_klines_before(symbol, '5m', time, 1);
+      return row && row.open_time >= time - CME_MAX_LOOKBACK_MS ? cme_to_bar(row) : null;
+    }
     const bars = await this.load_5m(symbol, time - ONE_DAY_MS, time);
     return bars.length > 0 ? bars[bars.length - 1] : null;
   }
@@ -121,6 +155,11 @@ export class ReplayKlineLoader {
    * @returns end_of_data=true 表示后面已经没有数据
    */
   async load_bars_after(symbol: string, after_time: number, limit: number): Promise<{ bars: ReplayBar[]; end_of_data: boolean }> {
+    if (is_cme_symbol(symbol)) {
+      const rows = await this.cme_repo.get_klines_after(symbol, '5m', after_time, limit);
+      return { bars: rows.map(cme_to_bar), end_of_data: rows.length < limit };
+    }
+
     const bars: ReplayBar[] = [];
     let after = after_time;
     while (bars.length < limit) {
@@ -145,6 +184,10 @@ export class ReplayKlineLoader {
   async get_interval_bars(symbol: string, interval: string, cursor_time: number, limit: number): Promise<ReplayIntervalBar[]> {
     const interval_ms = REPLAY_INTERVALS[interval];
     if (!interval_ms) throw new Error(`不支持的周期: ${interval}`);
+
+    if (is_cme_symbol(symbol)) {
+      return this.get_cme_interval_bars(symbol, interval, interval_ms, cursor_time, limit);
+    }
 
     if (interval_ms === REPLAY_BASE_INTERVAL_MS) {
       const bars = await this.load_5m(symbol, cursor_time - (limit - 1) * interval_ms, cursor_time);
@@ -172,6 +215,32 @@ export class ReplayKlineLoader {
 
     const merged = [...history.values()].sort((a, b) => a.open_time - b.open_time);
     return [...merged, ...current_bar].slice(-limit);
+  }
+
+  /**
+   * CME 期货：游标视角下某周期的K线
+   * 已收盘的直接按根数读 cme_klines（跨休市/周末），游标所在桶由 5m 聚合
+   */
+  private async get_cme_interval_bars(
+    symbol: string,
+    interval: string,
+    interval_ms: number,
+    cursor_time: number,
+    limit: number,
+  ): Promise<ReplayIntervalBar[]> {
+    if (interval_ms === REPLAY_BASE_INTERVAL_MS) {
+      const rows = await this.cme_repo.get_klines_before(symbol, '5m', cursor_time, limit);
+      return rows.map(r => ({ ...cme_to_bar(r), is_closed: true }));
+    }
+
+    const current_start = bucket_start(cursor_time, interval_ms);
+    const current_5m = await this.load_5m(symbol, current_start, cursor_time);
+    const current_bar = aggregate_bars(current_5m, interval_ms, cursor_time);
+
+    const history = limit > 1
+      ? await this.cme_repo.get_klines_before(symbol, interval, current_start - 1, limit - current_bar.length)
+      : [];
+    return [...history.map(r => ({ ...cme_to_bar(r), is_closed: true })), ...current_bar].slice(-limit);
   }
 
   /** 用 5m 聚合补齐聚合表里缺失的已收盘桶 */

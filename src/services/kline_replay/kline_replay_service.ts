@@ -14,6 +14,8 @@ import {
   ReplaySessionProgress,
   ReplayTradeRecords,
 } from '@/database/kline_replay_repository';
+import { CmeKlineRepository } from '@/database/cme_kline_repository';
+import { CME_CONTRACTS, CmeContractSpec, is_cme_symbol } from '@/core/config/cme_contracts';
 import { logger } from '@/utils/logger';
 import { ReplayKlineLoader } from './replay_kline_loader';
 import { build_stats_report, ReplayStatsReport } from './replay_stats';
@@ -77,6 +79,7 @@ export class KlineReplayService {
   private static instance: KlineReplayService | null = null;
 
   private readonly repository = new KlineReplayRepository();
+  private readonly cme_repo = new CmeKlineRepository();
   private readonly loader = new ReplayKlineLoader();
   private initialized = false;
 
@@ -90,6 +93,7 @@ export class KlineReplayService {
   async init(): Promise<void> {
     if (this.initialized) return;
     await this.repository.init_tables();
+    await this.cme_repo.init_tables();
     this.initialized = true;
   }
 
@@ -101,13 +105,15 @@ export class KlineReplayService {
     if (!symbol) throw new ReplayError('symbol 必填');
     if (!Number.isFinite(input.start_time)) throw new ReplayError('start_time 必填（毫秒时间戳）');
 
-    const initial_balance = input.initial_balance ?? 10000;
-    const leverage = input.leverage ?? 10;
+    // CME 期货：默认杠杆与手续费率按合约规格（名义价值大、每手费用低）
+    const spec = is_cme_symbol(symbol) ? CME_CONTRACTS[symbol] : null;
+    const initial_balance = input.initial_balance ?? spec?.default_balance ?? 10000;
+    const leverage = input.leverage ?? spec?.default_leverage ?? 10;
     if (!(initial_balance > 0)) throw new ReplayError('initial_balance 必须大于 0');
     if (!(leverage >= 1 && leverage <= 125)) throw new ReplayError('leverage 范围 1~125');
 
     const bar = await this.loader.get_bar_at_or_before(symbol, input.start_time);
-    if (!bar) throw new ReplayError(`${symbol} 在该时间附近（前 1 天内）没有 5m 数据`);
+    if (!bar) throw new ReplayError(`${symbol} 在该时间附近（前 ${spec ? 7 : 1} 天内）没有 5m 数据`);
 
     const session: ReplaySession = {
       name: input.name?.trim() || `${symbol} ${this.format_beijing_time(bar.open_time)}`,
@@ -118,8 +124,8 @@ export class KlineReplayService {
       initial_balance,
       balance: initial_balance,
       leverage,
-      taker_fee_rate: input.taker_fee_rate ?? 0.0005,
-      maker_fee_rate: input.maker_fee_rate ?? 0.0002,
+      taker_fee_rate: input.taker_fee_rate ?? spec?.default_fee_rate ?? 0.0005,
+      maker_fee_rate: input.maker_fee_rate ?? spec?.default_fee_rate ?? 0.0002,
       slippage_rate: input.slippage_rate ?? 0,
       status: 'active',
       bars_stepped: 0,
@@ -240,8 +246,31 @@ export class KlineReplayService {
     return this.repository.list_orders(session_id, status);
   }
 
-  /** 5m 数据覆盖区间（按日表连续段合并，北京时间日期） */
-  async get_data_coverage(): Promise<Array<{ start_date: string; end_date: string; days: number }>> {
+  /** 可回放的 CME 期货：合约规格 + 5m 数据起止时间 */
+  async list_cme_contracts(): Promise<Array<CmeContractSpec & { first_time: number | null; last_time: number | null }>> {
+    const summary = await this.cme_repo.get_summary();
+    return Object.values(CME_CONTRACTS).map(spec => {
+      const s = summary.find(x => x.symbol === spec.symbol && x.interval === '5m');
+      return { ...spec, first_time: s?.first_time ?? null, last_time: s?.last_time ?? null };
+    });
+  }
+
+  /**
+   * 5m 数据覆盖区间（北京时间日期）
+   * - 币安（不传 symbol）：按日表连续段合并
+   * - CME 期货（symbol=ES/GC）：单段首尾（周末休市不算缺口）
+   */
+  async get_data_coverage(symbol?: string): Promise<Array<{ start_date: string; end_date: string; days: number }>> {
+    if (symbol && is_cme_symbol(symbol)) {
+      const s = (await this.cme_repo.get_summary()).find(x => x.symbol === symbol.toUpperCase() && x.interval === '5m');
+      if (!s) return [];
+      const to_date = (ts: number) => new Date(ts + 8 * 60 * 60 * 1000).toISOString().slice(0, 10).replace(/-/g, '');
+      const start_date = to_date(s.first_time);
+      const end_date = to_date(s.last_time);
+      const to_ms = (d: string) => Date.UTC(+d.slice(0, 4), +d.slice(4, 6) - 1, +d.slice(6, 8));
+      return [{ start_date, end_date, days: (to_ms(end_date) - to_ms(start_date)) / (24 * 60 * 60 * 1000) + 1 }];
+    }
+
     const dates = await this.loader.list_5m_dates();
     const ranges: Array<{ start_date: string; end_date: string; days: number }> = [];
     const to_ms = (d: string) => Date.UTC(+d.slice(0, 4), +d.slice(4, 6) - 1, +d.slice(6, 8));

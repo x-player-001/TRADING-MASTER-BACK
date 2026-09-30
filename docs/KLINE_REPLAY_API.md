@@ -66,7 +66,8 @@ POST(`/sessions/${id}/sync`, account.to_sync_payload(
 
 | 方法 | 路径 | 说明 |
 |---|---|---|
-| GET | `/data-coverage` | 5m 数据的连续段 `[{start_date:'20251214', end_date, days}]`，日期是北京时间 |
+| GET | `/data-coverage?symbol=` | 5m 数据的连续段 `[{start_date:'20251214', end_date, days}]`，日期是北京时间。不传 `symbol` 为币安数据；`symbol=ES`/`GC` 返回该期货的首尾一段（周末休市不算缺口） |
+| GET | `/cme-contracts` | 可回放的 CME 期货，见下文「CME 期货」 |
 | POST | `/sessions` | 创建会话。body：`symbol`*、`start_time`*、`name`、`initial_balance`=10000、`leverage`=10、`taker_fee_rate`=0.0005、`maker_fee_rate`=0.0002、`slippage_rate`=0、`note`。起点会对齐到所在（或之前 1 天内最近）的 5m K 线。返回结构与 `GET /sessions/:id` 相同 |
 | GET | `/sessions?status=active\|finished&symbol=&limit=&offset=` | 会话列表，按最近更新排序 |
 | GET | `/sessions/:id` | 完整状态 `{ session, cursor_bar, positions, orders, fills }`，用于恢复 `ReplayAccount` |
@@ -83,6 +84,26 @@ POST(`/sessions/${id}/sync`, account.to_sync_payload(
 | GET | `/sessions/:id/klines?interval=5m\|15m\|1h\|4h&end_time=&limit=300` | 截止到 `end_time`（默认会话起点）的历史 K 线，`limit` 最大 1500。每根带 `is_closed`；大周期的最后一根可能未收盘，由 5m 聚合而来 |
 
 5m 数据在 **2026-02-09 ~ 2026-05-25 整段缺失**，另有零星缺天，以 `/data-coverage` 的结果为准。
+
+### CME 期货（ES / GC）
+
+`symbol` 传 `ES`（E-mini 标普500）或 `GC`（COMEX 黄金）即为期货会话，其余接口和流程与币安品种完全一样。数据来自交易所连续合约（按成交量换月、**不复权**），目前约最近一年。
+
+**GET `/cme-contracts`** 返回：
+
+```ts
+[{ symbol: 'ES', name: 'E-mini 标普500', exchange: 'CME', multiplier: 50, tick_size: 0.25,
+   default_fee_rate: 0.00001, default_leverage: 20, default_balance: 100000,
+   first_time, last_time }]   // 5m 数据首尾 open_time，无数据为 null
+```
+
+与币安品种的差别：
+
+- **数量按「单位」而不是「手」**：引擎按 `qty × 价格` 记账，所以 `qty = 手数 × multiplier`（1 手 ES = 50，1 手 GC = 100），盈亏直接就是美元。按风险算出的 `qty` 请向下取整到 `multiplier` 的整数倍；价格建议按 `tick_size` 取整。
+- **建会话的默认值不同**：不传时 `initial_balance`=100000、`leverage`=20、`taker/maker_fee_rate`=0.00001（1 手 ES 名义价值约 30 多万美元，1 万资金开不了仓；手续费按比例近似每手几美元）。显式传入则以传入为准。
+- **有休市**：每天约 1 小时休市、周末休市，`/bars` 会直接跨过去（周末间隔约 49 小时）；`/klines` 按根数返回，休市不占根数。起点落在周末时对齐到之前 7 天内最近的一根（通常是周五收盘）。
+- **K 线多一个 `contract` 字段**（如 `ESZ6`）：相邻两根不同即为换月，换月那根会有跳空（不复权），建议在图上标出。
+- 大周期按 UTC 整点分桶（4h 为 0/4/8/12/16/20 点），与 TradingView 按交易时段起算的 4h 边界不同。
 
 ### 同步
 
