@@ -84,7 +84,7 @@ POST(`/sessions/${id}/sync`, account.to_sync_payload(
 | GET | `/sessions/:id/bars?after=&limit=600` | `after` 之后的 5m，默认从会话起点之后开始，`limit` 最大 2000。返回 `{ bars, end_of_data }`。**会自动跨过数据空洞**，前端可以比较相邻两根的时间差来提示「跳过了 N 天」 |
 | GET | `/sessions/:id/klines?interval=5m\|15m\|1h\|4h&end_time=&limit=300` | 截止到 `end_time`（默认会话起点）的历史 K 线，`limit` 最大 1500。每根带 `is_closed`；大周期的最后一根可能未收盘，由 5m 聚合而来 |
 
-5m 数据在 **2026-02-09 ~ 2026-05-25 整段缺失**，另有零星缺天，以 `/data-coverage` 的结果为准。
+5m 数据在 **2026-02-09 ~ 2026-05-25 整段缺失**，另有零星缺天。其中 `/symbols` 里的 11 个币种（BTC、ETH、ZEC、SOL、XRP、HYPE、DOGE、NEAR、UNI、BNB、SUI）这一段已从币安补齐，5m 和 15m/1h/4h 都完整；其他币种这一段仍然没有数据。注意 `/data-coverage` 按日表判断，补数据时建了这些日表，所以它现在会显示为连续，**对其他币种不准**。
 
 ### CME 期货（ES / GC）
 
