@@ -15,6 +15,7 @@ import {
   ReplayTradeRecords,
 } from '@/database/kline_replay_repository';
 import { CmeKlineRepository } from '@/database/cme_kline_repository';
+import { DailyBreakoutRepository } from '@/database/daily_breakout_repository';
 import { CME_CONTRACTS, CmeContractSpec, is_cme_symbol } from '@/core/config/cme_contracts';
 import { logger } from '@/utils/logger';
 import { ReplayKlineLoader } from './replay_kline_loader';
@@ -35,6 +36,9 @@ import {
 const MAX_BARS_PER_REQUEST = 2000;
 /** 单次同步的记录数上限（防误传） */
 const MAX_SYNC_RECORDS = 20000;
+/** 推荐币种：成交额排名统计天数 / 除 BTC 外的数量 */
+const SYMBOL_RANK_DAYS = 30;
+const TOP_SYMBOL_COUNT = 10;
 
 /** 业务错误（带 HTTP 状态码） */
 export class ReplayError extends Error {
@@ -80,6 +84,7 @@ export class KlineReplayService {
 
   private readonly repository = new KlineReplayRepository();
   private readonly cme_repo = new CmeKlineRepository();
+  private readonly daily_repo = new DailyBreakoutRepository();
   private readonly loader = new ReplayKlineLoader();
   private initialized = false;
 
@@ -244,6 +249,20 @@ export class KlineReplayService {
   async list_orders(session_id: number, status?: ReplayOrderStatus): Promise<ReplayOrder[]> {
     await this.require_session(session_id);
     return this.repository.list_orders(session_id, status);
+  }
+
+  /**
+   * 回放可选币种：BTC 固定在首位 + 近 30 天日均成交额前 10（排除 BTC）
+   * 仅作推荐列表，其他有 5m 数据的币种仍可直接建会话
+   */
+  async list_crypto_symbols(): Promise<Array<{ symbol: string; avg_quote_volume_30d: number | null }>> {
+    const ranked = await this.daily_repo.get_top_symbols_by_quote_volume(SYMBOL_RANK_DAYS, TOP_SYMBOL_COUNT + 1);
+    const btc = ranked.find(r => r.symbol === 'BTCUSDT');
+    const others = ranked.filter(r => r.symbol !== 'BTCUSDT').slice(0, TOP_SYMBOL_COUNT);
+    return [
+      { symbol: 'BTCUSDT', avg_quote_volume_30d: btc?.avg_quote_volume ?? null },
+      ...others.map(r => ({ symbol: r.symbol, avg_quote_volume_30d: r.avg_quote_volume })),
+    ];
   }
 
   /** 可回放的 CME 期货：合约规格 + 5m 数据起止时间 */

@@ -296,6 +296,20 @@ export class DailyBreakoutRepository extends BaseRepository {
     return rows[0]?.v != null ? Math.round(Number(rows[0].v)) : null;
   }
 
+  /** 最近 N 根已收盘日线平均成交额排名（USDT，降序） */
+  async get_top_symbols_by_quote_volume(days: number, limit: number): Promise<Array<{ symbol: string; avg_quote_volume: number }>> {
+    const since = Math.floor(Date.now() / DAY_MS) * DAY_MS - days * DAY_MS;
+    const safe_limit = Math.max(1, Math.floor(limit));
+    const rows = await this.execute_query(`
+      SELECT symbol, AVG(COALESCE(quote_volume, volume * close)) AS v FROM kline_1d_agg
+      WHERE open_time >= ? AND close_time < ?
+      GROUP BY symbol
+      ORDER BY v DESC
+      LIMIT ${safe_limit}
+    `, [since, Date.now()]);
+    return rows.map(r => ({ symbol: r.symbol, avg_quote_volume: Math.round(Number(r.v)) }));
+  }
+
   /** 按条件查询突破事件 */
   async list_breakouts(filter: DailyBreakoutFilter = {}): Promise<DailyBreakoutRecord[]> {
     const where: string[] = [];

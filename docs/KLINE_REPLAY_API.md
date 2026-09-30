@@ -67,6 +67,7 @@ POST(`/sessions/${id}/sync`, account.to_sync_payload(
 | 方法 | 路径 | 说明 |
 |---|---|---|
 | GET | `/data-coverage?symbol=` | 5m 数据的连续段 `[{start_date:'20251214', end_date, days}]`，日期是北京时间。不传 `symbol` 为币安数据；`symbol=ES`/`GC` 返回该期货的首尾一段（周末休市不算缺口） |
+| GET | `/symbols` | 推荐品种（下拉框用）：`{ crypto: [{symbol, avg_quote_volume_30d}], cme: [同 /cme-contracts] }`。`crypto` 为 BTCUSDT 固定首位 + 近 30 天日均成交额前 10（USDT，实时排名，会随市场变化）。**不在列表里的币种只要有 5m 数据也能直接建会话**（全市场约 500+ 个，2026-02 起完整） |
 | GET | `/cme-contracts` | 可回放的 CME 期货，见下文「CME 期货」 |
 | POST | `/sessions` | 创建会话。body：`symbol`*、`start_time`*、`name`、`initial_balance`=10000、`leverage`=10、`taker_fee_rate`=0.0005、`maker_fee_rate`=0.0002、`slippage_rate`=0、`note`。起点会对齐到所在（或之前 1 天内最近）的 5m K 线。返回结构与 `GET /sessions/:id` 相同 |
 | GET | `/sessions?status=active\|finished&symbol=&limit=&offset=` | 会话列表，按最近更新排序 |
