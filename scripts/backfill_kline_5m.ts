@@ -13,6 +13,8 @@
  * --start 2024-12-20   起始日期（默认：3天前）
  * --end 2024-12-22     结束日期（默认：今天）
  * --symbols BTCUSDT,ETHUSDT  指定币种（默认：所有USDT永续合约）
+ * --force              全区间拉取，补中间空洞
+ * --concurrency 2      并发数（默认 5，约 2040 权重/分钟；线上运行时建议 2~3）
  */
 
 import * as dotenv from 'dotenv';
@@ -38,6 +40,9 @@ const CONFIG = {
 // ==================== 解析命令行参数 ====================
 function parse_args(): { start_date: Date; end_date: Date; symbols: string[] | null; force: boolean } {
   const args = process.argv.slice(2);
+  // --concurrency N：降低并发以给线上进程留出权重余量（每并发约 400 权重/分钟）
+  const ci = args.indexOf('--concurrency');
+  if (ci >= 0 && args[ci + 1]) CONFIG.concurrency = Math.max(1, Math.min(5, parseInt(args[ci + 1], 10) || CONFIG.concurrency));
   let start_date: Date | null = null;
   let end_date: Date | null = null;
   let symbols: string[] | null = null;
@@ -202,7 +207,7 @@ async function main() {
 
   console.log(`\n📅 补全范围: ${format_date(start_date)} ~ ${format_date(end_date)}`);
   console.log(`⏱️  K线周期: ${CONFIG.interval}`);
-  console.log(`⏳ 请求间隔: ${CONFIG.request_delay_ms}ms`);
+  console.log(`⏳ 请求间隔: ${CONFIG.request_delay_ms}ms，并发 ${CONFIG.concurrency}（约 ${Math.round(CONFIG.concurrency * 60000 / CONFIG.request_delay_ms * 5)} 权重/分钟）`);
   if (force) console.log(`🔁 强制模式: 全区间拉取，补中间空洞（INSERT IGNORE 去重）`);
 
   // 初始化
@@ -244,8 +249,16 @@ async function main() {
     start_time: Date.now()
   };
 
-  // 并发处理
+  // 并发处理（拉取并发，写库串行：多 worker 同时 INSERT IGNORE 同一张日表会触发间隙锁死锁）
   const queue = [...symbols];
+  let write_chain: Promise<unknown> = Promise.resolve();
+
+  /** 串行执行写库操作 */
+  function with_write_lock<T>(fn: () => Promise<T>): Promise<T> {
+    const p = write_chain.then(fn);
+    write_chain = p.catch(() => undefined);
+    return p;
+  }
 
   async function worker(): Promise<void> {
     const repo = new Kline5mRepository();
@@ -271,10 +284,12 @@ async function main() {
         const klines = await fetch_klines(symbol, actual_start, end_ts);
         if (klines.length === 0) continue;
         // 立即 flush，读取累计差值得到该币种真实入库行数（去重后）
-        const before = repo.get_inserted_total();
-        await repo.add_klines(klines);
-        await repo.flush();
-        const inserted = repo.get_inserted_total() - before;
+        const inserted = await with_write_lock(async () => {
+          const before = repo.get_inserted_total();
+          await repo.add_klines(klines);
+          await repo.flush();
+          return repo.get_inserted_total() - before;
+        });
         stats.total_klines += klines.length;
         stats.total_inserted += inserted;
         stats.success++;
