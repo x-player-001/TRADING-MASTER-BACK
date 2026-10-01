@@ -25,11 +25,13 @@ import ema20_push_routes, { set_ema20_push_repository } from './routes/ema20_pus
 import daily_breakout_routes, { set_daily_breakout_repository } from './routes/daily_breakout_routes';
 import { TradeRecordRoutes } from './routes/trade_record_routes';
 import { KlineReplayRoutes } from './routes/kline_replay_routes';
+import paper_trading_routes, { set_paper_trading_repository } from './routes/paper_trading_routes';
 import { TradeLogService } from '@/services/trade_log_service';
 import { VolumeMonitorRepository } from '@/database/volume_monitor_repository';
 import { TrendFollowRepository } from '@/database/trend_follow_repository';
 import { EMA20PushRepository } from '@/database/ema20_push_repository';
 import { DailyBreakoutRepository } from '@/database/daily_breakout_repository';
+import { PaperTradingRepository } from '@/database/paper_trading_repository';
 import { PatternScanService } from '@/services/pattern_scan_service';
 import { OrderBookMonitorService } from '@/services/orderbook_monitor_service';
 import { BinanceDepthUpdate } from '@/types/orderbook_types';
@@ -63,6 +65,7 @@ export class APIServer {
   private trend_follow_repository: TrendFollowRepository;
   private ema20_push_repository: EMA20PushRepository;
   private daily_breakout_repository: DailyBreakoutRepository;
+  private paper_trading_repository: PaperTradingRepository;
   private trade_record_routes: TradeRecordRoutes;
   private kline_replay_routes: KlineReplayRoutes;
   private ws_depth: WebSocket | null = null;
@@ -90,6 +93,7 @@ export class APIServer {
     this.trend_follow_repository = new TrendFollowRepository();
     this.ema20_push_repository = new EMA20PushRepository();
     this.daily_breakout_repository = new DailyBreakoutRepository();
+    this.paper_trading_repository = new PaperTradingRepository();
     this.trade_record_routes = new TradeRecordRoutes();
     this.kline_replay_routes = new KlineReplayRoutes();
     this.setup_middleware();
@@ -101,6 +105,7 @@ export class APIServer {
     this.init_ema20_push_services();
     this.init_daily_breakout_services();
     this.init_kline_replay_services();
+    this.init_paper_trading_services();
   }
 
   /**
@@ -171,6 +176,17 @@ export class APIServer {
       logger.info('[APIServer] Kline replay services initialized');
     } catch (error) {
       logger.error('[APIServer] Failed to init kline replay services:', error);
+    }
+  }
+
+  /** 模拟盘：建表 + 注入 repository（交易由 pm2 paper 进程写入，API 只读） */
+  private async init_paper_trading_services(): Promise<void> {
+    try {
+      await this.paper_trading_repository.init_tables();
+      set_paper_trading_repository(this.paper_trading_repository);
+      logger.info('[APIServer] Paper trading services initialized');
+    } catch (error) {
+      logger.error('[APIServer] Failed to init paper trading services:', error);
     }
   }
 
@@ -342,6 +358,7 @@ export class APIServer {
           'pattern-scan': '/api/pattern-scan/*',
           orderbook: '/api/orderbook/*',
           replay: '/api/replay/*',
+          paper: '/api/paper/*',
           status: '/api/status'
         },
         timestamp: new Date().toISOString()
@@ -413,6 +430,9 @@ export class APIServer {
 
     // K线回放 + 模拟交易
     this.app.use('/api/replay', this.kline_replay_routes.get_router());
+
+    // 模拟盘（只读）
+    this.app.use('/api/paper', paper_trading_routes);
 
     // 系统状态
     this.app.get('/api/status', async (req: Request, res: Response) => {

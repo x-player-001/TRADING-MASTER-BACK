@@ -341,6 +341,30 @@ export class Kline5mRepository {
   }
 
   /**
+   * 读取某个日表的全部币种K线（一次顺序扫描，比逐币查询轻得多；用于进程启动预热）
+   * @param day_ts 落在该日表内的任意时间戳（本地时间分表）
+   * @param since_ts 只取 open_time >= since_ts 的K线
+   * @returns 按 symbol、open_time 升序；表不存在返回空数组
+   */
+  async get_day_klines(day_ts: number, since_ts: number = 0): Promise<Kline5mData[]> {
+    const table = this.get_table_name_from_timestamp(day_ts);
+    const connection = await DatabaseConfig.get_mysql_connection();
+    try {
+      const [rows] = await connection.execute(
+        `SELECT /*+ MAX_EXECUTION_TIME(60000) */ symbol, open_time, close_time, open, high, low, close, volume
+         FROM ${table} WHERE open_time >= ? ORDER BY symbol, open_time`,
+        [since_ts]
+      );
+      return (rows as any[]).map(row => this.convert_row_types(row));
+    } catch (error: any) {
+      if (error.code === 'ER_NO_SUCH_TABLE') return [];
+      throw error;
+    } finally {
+      connection.release();
+    }
+  }
+
+  /**
    * 列出已存在的 5m 日表日期（YYYYMMDD，升序）
    */
   async list_table_dates(): Promise<string[]> {

@@ -1,0 +1,70 @@
+/**
+ * 模拟盘统计（纯函数）：胜率、盈亏、R、最大回撤、资金曲线
+ */
+
+import { PaperTrade } from './paper_types';
+
+export interface PaperStats {
+  closed: number;
+  wins: number;
+  losses: number;
+  win_rate: number | null;
+  total_pnl: number;
+  total_fees: number;
+  total_r: number;
+  avg_r: number | null;
+  profit_factor: number | null;
+  max_drawdown: number;          // 已实现资金曲线最大回撤（U）
+  best_r: number | null;
+  worst_r: number | null;
+  by_exit_reason: Record<string, number>;
+}
+
+export interface EquityPoint {
+  time: number;          // 平仓时间
+  trade_id: number | undefined;
+  symbol: string;
+  pnl: number;
+  equity: number;        // 累计已实现盈亏
+  drawdown: number;      // 距前高回撤（≥0）
+}
+
+/** 资金曲线（按平仓时间排序的已平仓交易） */
+export function equity_curve(closed: PaperTrade[]): EquityPoint[] {
+  const sorted = [...closed].filter(t => t.status === 'closed').sort((a, b) => (a.exit_time ?? 0) - (b.exit_time ?? 0));
+  let equity = 0, peak = 0;
+  return sorted.map(t => {
+    equity += t.pnl ?? 0;
+    peak = Math.max(peak, equity);
+    return { time: t.exit_time ?? 0, trade_id: t.id, symbol: t.symbol, pnl: t.pnl ?? 0, equity, drawdown: peak - equity };
+  });
+}
+
+/** 汇总统计 */
+export function compute_stats(trades: PaperTrade[]): PaperStats {
+  const closed = trades.filter(t => t.status === 'closed');
+  const pnls = closed.map(t => t.pnl ?? 0);
+  const rs = closed.map(t => t.r_multiple ?? 0);
+  const gain = pnls.filter(p => p > 0).reduce((a, b) => a + b, 0);
+  const loss = -pnls.filter(p => p < 0).reduce((a, b) => a + b, 0);
+  const curve = equity_curve(closed);
+  const by_exit_reason: Record<string, number> = {};
+  for (const t of closed) by_exit_reason[t.exit_reason ?? 'unknown'] = (by_exit_reason[t.exit_reason ?? 'unknown'] ?? 0) + 1;
+  const total_r = rs.reduce((a, b) => a + b, 0);
+
+  return {
+    closed: closed.length,
+    wins: pnls.filter(p => p > 0).length,
+    losses: pnls.filter(p => p <= 0).length,
+    win_rate: closed.length ? pnls.filter(p => p > 0).length / closed.length : null,
+    total_pnl: pnls.reduce((a, b) => a + b, 0),
+    total_fees: closed.reduce((a, t) => a + (t.fees ?? 0), 0),
+    total_r,
+    avg_r: closed.length ? total_r / closed.length : null,
+    profit_factor: loss > 0 ? gain / loss : null,
+    max_drawdown: curve.reduce((m, p) => Math.max(m, p.drawdown), 0),
+    best_r: rs.length ? Math.max(...rs) : null,
+    worst_r: rs.length ? Math.min(...rs) : null,
+    by_exit_reason,
+  };
+}

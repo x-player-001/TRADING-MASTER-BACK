@@ -21,19 +21,20 @@ OI 监控、成交量异动、盘口、形态扫描、支撑阻力等作为**辅
 
 ## 🚀 运行形态（生产）
 
-服务跑在**服务器**上，通过 pm2 托管三个常驻进程 + 一个每日定时任务（见 `ecosystem.config.js`）：
+服务跑在**服务器**上，通过 pm2 托管四个常驻进程 + 一个每日定时任务（见 `ecosystem.config.js`）：
 
 | 进程 | 入口 | 职责 |
 |---|---|---|
 | `api` | `dist/index_api_only.js` | 只读 API 服务（swc build 产物，非 ts-node） |
 | `trend` | `scripts/run_trend_follow_monitor.ts` | **核心**：全市场 5m WS 监控 + 分级报警 |
 | `alerts` | `scripts/evaluate_alert_outcomes.ts --loop` | 报警事后评估器（常驻） |
+| `paper` | `scripts/run_paper_trading.ts` | 模拟盘：独立订阅全市场 5m，MACD 顶背离信号 → 条件单 → 模拟撮合（见下） |
 | `daily-breakout` | `scripts/run_daily_breakout_job.ts` | 日线趋势线突破：每天 08:10（北京）回填日线 + 扫描入库，跑完退出（pm2 cron） |
 
 ```bash
 npm run build          # swc 编译到 dist/
 pm2 restart api        # 更新 api 需先 build
-pm2 restart trend alerts
+pm2 restart trend alerts paper
 ```
 
 > ⚠️ **本机无法访问币安 API**，涉及行情拉取的脚本必须在服务器执行。
@@ -103,6 +104,7 @@ src/
 │   ├── pattern_scan_service.ts
 │   ├── perfect_hammer_trader.ts
 │   ├── trade_log_service.ts        # AI 复盘（三层架构）
+│   ├── paper_trading/              # 模拟盘：背离检测器 + 撮合引擎
 │   ├── market_sentiment_manager.ts
 │   └── telegram_service.ts
 ├── analysis/                # 技术分析
@@ -168,6 +170,7 @@ npx ts-node -r tsconfig-paths/register scripts/dev/analysis/analyze_trend_signal
 | 域 | 表 |
 |---|---|
 | **趋势跟随** | `trend_follow_watch_contexts`、`trend_follow_alerts`、`trend_follow_entry_triggers`、`trend_follow_alert_outcomes` |
+| **模拟盘** | `paper_trades`（信号→挂单→持仓→平仓全生命周期，唯一键 strategy_id+symbol+setup_time） |
 | **K线回放模拟交易** | `replay_sessions`、`replay_orders`、`replay_positions`、`replay_fills` |
 | **EMA20 推动** | `ema20_push_contexts`、`ema20_push_records` |
 | **日线趋势线突破** | `kline_1d_agg`（日线）、`daily_trendline_breakouts`（独立于趋势跟随） |
@@ -187,8 +190,18 @@ npx ts-node -r tsconfig-paths/register scripts/dev/analysis/analyze_trend_signal
 /api/quant         /api/trading        /api/backtest       /api/breakout
 /api/boundary-alerts    /api/sr        /api/volume-monitor /api/pattern-scan
 /api/orderbook     /api/trend-follow   /api/ema20-push     /api/trade-record
-/api/replay        /api/daily-breakout
+/api/replay        /api/daily-breakout   /api/paper
 ```
+
+## 📈 模拟盘（MACD 顶背离）
+
+`src/services/paper_trading/`，接口文档 `docs/PAPER_TRADING_API.md`，策略参数 `paper_strategies.ts`。
+
+- 信号：MACD 红柱峰新高背离（DIF比<0.6、红柱比<0.3、两峰间翻绿）+ 前波≥20% & 末段≥10% → 0~3 根内出现反转K线 → 挂单突破其低点做空，止损新高（5m 加 0.5ATR），2R 止盈，48 根时间平仓
+- 两套策略：`macd_top_div_15m`、`macd_top_div_5m`；每笔固定止损 10U、单币单仓
+- 检测器/撮合引擎为纯计算（单测 `tests/paper_trading/`，检测器与回测参照实现逐信号对拍）；15m 也用 5m 撮合，同根先判止损
+- 进程重启从 `paper_trades` 恢复进行中交易，按 `last_bar_time` 续跑；启动预热按日表扫最近 4 天 5m
+- 与回测对拍：`scripts/dev/verify/verify_paper_trading_parity.ts`（服务器跑，需 `/tmp/macd_div` 回测缓存）
 
 ## 🎬 K线回放 + 模拟交易
 
