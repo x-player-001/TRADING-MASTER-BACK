@@ -23,8 +23,8 @@ const DIR = process.argv[2] || '/tmp/macd_div';
 /** 回测事件（只取需要的列） */
 interface BacktestEvent { sym: string; setup_time: number; fill_time: number; risk: number; r: number }
 
-/** 读取回测事件并按策略过滤（与研究结论一致） */
-function load_backtest(tf: '5m' | '15m', r_col: string): Map<string, BacktestEvent> {
+/** 读取回测事件并按策略过滤（与研究结论一致）；extra 为策略附加条件 */
+function load_backtest(tf: '5m' | '15m', r_col: string, extra: (g: (k: string) => number) => boolean): Map<string, BacktestEvent> {
   const lines = fs.readFileSync(`${DIR}/rev_${tf}.csv`, 'utf8').split('\n');
   const hd = lines.shift()!.split(',');
   const ix = (k: string) => hd.indexOf(k);
@@ -35,7 +35,7 @@ function load_backtest(tf: '5m' | '15m', r_col: string): Map<string, BacktestEve
     const g = (k: string) => +p[ix(k)];
     if (g('dir') !== 1) continue;
     if (!(g('gap') >= 3 && g('gdep') >= 0.2 && g('dif_ratio') < 0.6 && g('hist_ratio') < 0.3
-      && g('imp_pct') >= 20 && g('leg_pct') >= 10 && g('qv24') >= 10 && g('risk') >= 0.3 && g('risk') <= 10)) continue;
+      && g('imp_pct') >= 20 && g('leg_pct') >= 10 && g('qv24') >= 10 && g('risk') >= 0.3 && g('risk') <= 10 && extra(g))) continue;
     const fill_time = g('t');
     const setup_time = fill_time - g('delay') * TIMEFRAME_MS[tf];
     out.set(`${p[0]}|${setup_time}`, { sym: p[0], setup_time, fill_time, risk: g('risk'), r: g(r_col) });
@@ -70,7 +70,9 @@ async function main(): Promise<void> {
   }
 
   for (const st of PAPER_STRATEGIES) {
-    const bt = load_backtest(st.timeframe, st.timeframe === '15m' ? 'm_r2' : 'm_sb2');
+    const f = st.filters;
+    const bt = load_backtest(st.timeframe, st.timeframe === '15m' ? 'm_r2' : 'm_sb2',
+      g => g('imp_pct') >= f.min_imp_pct && (f.min_qv_surge === undefined || g('qv_surge') >= f.min_qv_surge));
     const filled = trades.filter(t => t.strategy_id === st.id && t.fill_price !== null);
     const closed = filled.filter(t => t.status === 'closed');
     const paper = new Map(filled.map(t => [`${t.symbol}|${t.setup_time}`, t]));

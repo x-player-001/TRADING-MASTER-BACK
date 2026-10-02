@@ -9,6 +9,8 @@ import { DivergenceSetup, PaperBar, PaperStrategyConfig } from '@/services/paper
 const M5 = 300_000, M15 = 900_000;
 const S15 = PAPER_STRATEGIES.find(s => s.id === 'macd_top_div_15m')!;
 const S5 = PAPER_STRATEGIES.find(s => s.id === 'macd_top_div_5m')!;
+const S15_VOL = PAPER_STRATEGIES.find(s => s.id === 'macd_top_div_15m_vol')!;
+const S5_IMP30 = PAPER_STRATEGIES.find(s => s.id === 'macd_top_div_5m_imp30')!;
 
 /** 满足过滤条件的顶背离 setup（反转K线 open_time = t0） */
 function setup(tf: '5m' | '15m', t0: number, over: Partial<DivergenceSetup> = {}): DivergenceSetup {
@@ -17,7 +19,7 @@ function setup(tf: '5m' | '15m', t0: number, over: Partial<DivergenceSetup> = {}
     symbol: 'ABCUSDT', timeframe: tf, dir: 1,
     trigger_time: t0 - tf_ms, setup_time: t0, setup_close_time: t0 + tf_ms - 1,
     entry_trigger: 100, extreme: 104, atr: 2,
-    features: { dif_ratio: 0.4, hist_ratio: 0.1, gap: 10, gdep: 0.5, imp_pct: 30, leg_pct: 12, qv24_m: 50, atr_pct: 2, range48: 20, wait: 1, wick: 0.3, body: 0.6 },
+    features: { dif_ratio: 0.4, hist_ratio: 0.1, gap: 10, gdep: 0.5, imp_pct: 30, leg_pct: 12, qv24_m: 50, qv_surge: 1.5, atr_pct: 2, range48: 20, wait: 1, wick: 0.3, body: 0.6 },
     ...over,
   };
 }
@@ -121,13 +123,29 @@ describe('PaperEngine', () => {
     expect(t.mfe_r).toBeCloseTo(0.25, 10);
   });
 
-  it('单币单仓：已有挂单/持仓时新信号记为 skipped；同一 setup 不重复下单', () => {
+  it('单仓按策略计算：同策略同币已有挂单时记为 skipped，不同策略互不影响；同一 setup 不重复下单', () => {
     const e = engine();
     expect(e.submit(S15.id, setup('15m', T0))!.status).toBe('pending');
-    const s = e.submit(S5.id, setup('5m', T0 + M15))!;
+    const s = e.submit(S15.id, setup('15m', T0 + M15))!;
     expect(s.status).toBe('skipped');
     expect(s.cancel_reason).toBe('symbol_busy');
+    expect(e.submit(S5.id, setup('5m', T0 + M15))!.status).toBe('pending');
     expect(e.submit(S15.id, setup('15m', T0))).toBeNull();
+  });
+
+  it('放量策略要求 qv_surge ≥ 2（NaN 视为不满足）', () => {
+    const e = engine();
+    const base = setup('15m', T0);
+    expect(e.submit(S15_VOL.id, base)).toBeNull();
+    expect(e.submit(S15_VOL.id, setup('15m', T0 + M15, { features: { ...base.features, qv_surge: NaN } }))).toBeNull();
+    expect(e.submit(S15_VOL.id, setup('15m', T0 + 2 * M15, { features: { ...base.features, qv_surge: 2.5 } }))!.status).toBe('pending');
+  });
+
+  it('前波≥30% 策略', () => {
+    const e = engine();
+    const base = setup('5m', T0);
+    expect(e.submit(S5_IMP30.id, setup('5m', T0, { features: { ...base.features, imp_pct: 25 } }))).toBeNull();
+    expect(e.submit(S5_IMP30.id, setup('5m', T0 + M5, { features: { ...base.features, imp_pct: 35 } }))!.status).toBe('pending');
   });
 
   it('成交价止损距离超出 [0.3%, 10%] → 撤单', () => {

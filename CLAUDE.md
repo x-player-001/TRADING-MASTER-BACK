@@ -170,7 +170,7 @@ npx ts-node -r tsconfig-paths/register scripts/dev/analysis/analyze_trend_signal
 | 域 | 表 |
 |---|---|
 | **趋势跟随** | `trend_follow_watch_contexts`、`trend_follow_alerts`、`trend_follow_entry_triggers`、`trend_follow_alert_outcomes` |
-| **模拟盘** | `paper_trades`（信号→挂单→持仓→平仓全生命周期，唯一键 strategy_id+symbol+setup_time） |
+| **模拟盘** | `paper_trades`（信号→挂单→持仓→平仓全生命周期，唯一键 strategy_id+symbol+setup_time）、`paper_runtime_status`（进程心跳） |
 | **K线回放模拟交易** | `replay_sessions`、`replay_orders`、`replay_positions`、`replay_fills` |
 | **EMA20 推动** | `ema20_push_contexts`、`ema20_push_records` |
 | **日线趋势线突破** | `kline_1d_agg`（日线）、`daily_trendline_breakouts`（独立于趋势跟随） |
@@ -198,7 +198,7 @@ npx ts-node -r tsconfig-paths/register scripts/dev/analysis/analyze_trend_signal
 `src/services/paper_trading/`，接口文档 `docs/PAPER_TRADING_API.md`，策略参数 `paper_strategies.ts`。
 
 - 信号：MACD 红柱峰新高背离（DIF比<0.6、红柱比<0.3、两峰间翻绿）+ 前波≥20% & 末段≥10% → 0~3 根内出现反转K线 → 挂单突破其低点做空，止损新高（5m 加 0.5ATR），2R 止盈，48 根时间平仓
-- 两套策略：`macd_top_div_15m`、`macd_top_div_5m`；每笔固定止损 10U、单币单仓
+- 五套策略 S1~S5：`macd_top_div_15m` / `_5m` / `_15m_vol`（放量≥2）/ `_5m_vol` / `_5m_imp30`（前波≥30%）；每笔固定止损 10U、同策略单币单仓
 - 检测器/撮合引擎为纯计算（单测 `tests/paper_trading/`，检测器与回测参照实现逐信号对拍）；15m 也用 5m 撮合，同根先判止损
 - 进程重启从 `paper_trades` 恢复进行中交易，按 `last_bar_time` 续跑；启动预热按日表扫最近 4 天 5m
 - 与回测对拍：`scripts/dev/verify/verify_paper_trading_parity.ts`（服务器跑，需 `/tmp/macd_div` 回测缓存）

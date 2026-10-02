@@ -68,3 +68,29 @@ export function compute_stats(trades: PaperTrade[]): PaperStats {
     by_exit_reason,
   };
 }
+
+export interface DailyStat {
+  date: string;          // 北京时间日期 YYYY-MM-DD（按平仓时间）
+  trades: number;
+  wins: number;
+  pnl: number;
+  r: number;
+  equity: number;        // 截至当日累计已实现盈亏
+}
+
+/** 按北京时间日期汇总已平仓交易 */
+export function daily_stats(closed: PaperTrade[]): DailyStat[] {
+  const by = new Map<string, DailyStat>();
+  for (const t of closed) {
+    if (t.status !== 'closed' || t.exit_time === null) continue;
+    const date = new Date(t.exit_time + 8 * 3600_000).toISOString().slice(0, 10);
+    const d = by.get(date) ?? { date, trades: 0, wins: 0, pnl: 0, r: 0, equity: 0 };
+    d.trades++;
+    if ((t.pnl ?? 0) > 0) d.wins++;
+    d.pnl += t.pnl ?? 0;
+    d.r += t.r_multiple ?? 0;
+    by.set(date, d);
+  }
+  let equity = 0;
+  return [...by.values()].sort((a, b) => a.date.localeCompare(b.date)).map(d => ({ ...d, equity: (equity += d.pnl) }));
+}

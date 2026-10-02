@@ -33,6 +33,7 @@ export interface DivergenceFeatures {
   imp_pct: number;       // 前波涨幅%：前峰之前 60 根内低点 → 新高
   leg_pct: number;       // 末段涨幅%：两峰间回调低点 → 新高
   qv24_m: number;        // 信号K线时刻的 24h 成交额（百万 USDT）
+  qv_surge: number;      // 放量倍数：信号时刻 24h 成交额 / 前一个 24h 成交额（历史不足为 NaN）
   atr_pct: number;       // 反转K线 ATR14 / 收盘价 %
   range48: number;       // 最近 48 根高低差 / 收盘价 %
   wait: number;          // 触发K线 → 反转K线 相隔根数
@@ -63,6 +64,7 @@ export interface DivergenceFilters {
   min_imp_pct: number;
   min_leg_pct: number;
   min_qv24_m: number;
+  min_qv_surge?: number;     // 放量倍数下限（不设则不过滤）
   min_risk_pct: number;      // 成交价到基础止损的距离下限（%）
   max_risk_pct: number;      // 上限（%）
 }
@@ -85,7 +87,7 @@ export interface PaperStrategyConfig {
 export interface PaperAccountConfig {
   risk_per_trade_usdt: number;   // 每笔固定止损金额
   fee_rate: number;              // 单边手续费率（按名义价值）
-  one_position_per_symbol: boolean;
+  one_position_per_symbol: boolean;   // 同一策略内同一币只保留一笔挂单/持仓（不同策略互不影响）
 }
 
 /** 模拟交易状态 */

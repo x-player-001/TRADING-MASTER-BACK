@@ -67,7 +67,7 @@ function reference_setups(bars: PaperBar[], dir: DivergenceDir, W24 = 288) {
             entry_trigger: dir > 0 ? l[rj] : h[rj], extreme: stp,
             dif_ratio: dir * dif[i] / P.dif, hist_ratio: hs / P.hist, gap: cur.s - P.e - 1, gdep: cur.gdep,
             imp_pct: dir * (stp - base) / base * 100, leg_pct: dir * (stp - lb) / lb * 100,
-            qv24_m: q24[rj] / 1e6, range48: (rh - rl) / c[rj] * 100, wait: rj - i,
+            qv24_m: q24[rj] / 1e6, qv_surge: rj - W24 >= 0 ? q24[rj] / q24[rj - W24] : NaN, range48: (rh - rl) / c[rj] * 100, wait: rj - i,
           });
         }
       }
@@ -105,6 +105,8 @@ describe('MacdDivergenceDetector', () => {
           expect(a.features.imp_pct).toBeCloseTo(e.imp_pct, 9);
           expect(a.features.leg_pct).toBeCloseTo(e.leg_pct, 9);
           expect(a.features.qv24_m).toBeCloseTo(e.qv24_m, 6);
+          if (Number.isNaN(e.qv_surge)) expect(a.features.qv_surge).toBeNaN();
+          else expect(a.features.qv_surge).toBeCloseTo(e.qv_surge, 9);
           expect(a.features.range48).toBeCloseTo(e.range48, 9);
           expect(a.features.wait).toBe(e.wait);
         });

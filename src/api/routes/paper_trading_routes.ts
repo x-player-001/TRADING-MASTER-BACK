@@ -1,11 +1,13 @@
 /**
  * 模拟盘 API 路由（只读；交易由 pm2 paper 进程产生）
  *
+ * GET /api/paper/status            paper 进程运行状态（是否在线、数据延迟、挂单/持仓数）
  * GET /api/paper/strategies        策略与账户配置
  * GET /api/paper/summary           各策略统计 + 当前持仓（含浮动盈亏）
  * GET /api/paper/trades            交易列表（筛选、分页）
  * GET /api/paper/trades/:id        单笔交易 + 画图用K线（按策略周期）
  * GET /api/paper/equity            已实现资金曲线
+ * GET /api/paper/daily             按日统计（北京时间，按平仓日）
  *
  * 详细说明见 docs/PAPER_TRADING_API.md
  */
@@ -14,13 +16,15 @@ import { Router, Request, Response } from 'express';
 import { PaperTradingRepository } from '@/database/paper_trading_repository';
 import { Kline5mRepository, Kline5mData } from '@/database/kline_5m_repository';
 import { PAPER_ACCOUNT, PAPER_STRATEGIES, TIMEFRAME_MS } from '@/services/paper_trading/paper_strategies';
-import { compute_stats, equity_curve } from '@/services/paper_trading/paper_stats';
+import { compute_stats, daily_stats, equity_curve } from '@/services/paper_trading/paper_stats';
 import { PaperTrade, PaperTradeStatus } from '@/services/paper_trading/paper_types';
 import { logger } from '@/utils/logger';
 
 const router = Router();
 const STATUSES: PaperTradeStatus[] = ['pending', 'open', 'closed', 'cancelled', 'expired', 'skipped'];
 const MAX_CHART_5M_BARS = 3000;
+const HEARTBEAT_STALE_MS = 3 * 60_000;     // 超过 3 分钟无心跳视为离线
+const DATA_LAG_WARN_MINUTES = 15;          // 最新K线落后超过 15 分钟视为数据延迟
 
 let repository: PaperTradingRepository | null = null;
 let kline_repository: Kline5mRepository | null = null;
@@ -79,6 +83,32 @@ async function with_unrealized(trades: PaperTrade[]) {
     return { ...t, last_price: last.close, unrealized_pnl: pnl, unrealized_r: pnl / t.risk_usdt };
   }));
 }
+
+/**
+ * GET /api/paper/status
+ * phase: offline（无心跳）/ starting（预热中）/ reconnecting（WS 断开）/ lagging（数据延迟）/ running
+ */
+router.get('/status', async (_req: Request, res: Response): Promise<void> => {
+  try {
+    const s = await get_repo().get_runtime_status();
+    const now = Date.now();
+    if (!s) { res.json({ success: true, data: { phase: 'offline', online: false, status: null } }); return; }
+    const online = now - s.heartbeat_at < HEARTBEAT_STALE_MS;
+    const data_lag_minutes = s.last_bar_time ? Math.max(0, (now - (s.last_bar_time + 300_000)) / 60_000) : null;
+    const phase = !online ? 'offline'
+      : !s.last_bar_time ? 'starting'
+      : !s.ws_connected ? 'reconnecting'
+      : (data_lag_minutes ?? 0) > DATA_LAG_WARN_MINUTES ? 'lagging'
+      : 'running';
+    res.json({
+      success: true,
+      data: { phase, online, data_lag_minutes, uptime_minutes: Math.round((now - s.started_at) / 60_000), server_time: now, status: s },
+    });
+  } catch (error: any) {
+    logger.error('[Paper API] status failed:', error);
+    res.status(500).json({ success: false, error: error.message });
+  }
+});
 
 /**
  * GET /api/paper/strategies
@@ -191,6 +221,24 @@ router.get('/equity', async (req: Request, res: Response): Promise<void> => {
     res.json({ success: true, data: equity_curve(closed) });
   } catch (error: any) {
     logger.error('[Paper API] equity failed:', error);
+    res.status(500).json({ success: false, error: error.message });
+  }
+});
+
+/**
+ * GET /api/paper/daily
+ * Query: strategy_id（不传为全部）/ days（最近 N 天，默认 90）
+ */
+router.get('/daily', async (req: Request, res: Response): Promise<void> => {
+  try {
+    const days = Math.min(Math.max(opt_number(req.query.days) ?? 90, 1), 3650);
+    const closed = await get_repo().get_closed_trades({
+      strategy_id: (req.query.strategy_id as string) || undefined,
+      from: Date.now() - days * 86_400_000,
+    });
+    res.json({ success: true, data: daily_stats(closed) });
+  } catch (error: any) {
+    logger.error('[Paper API] daily failed:', error);
     res.status(500).json({ success: false, error: error.message });
   }
 });

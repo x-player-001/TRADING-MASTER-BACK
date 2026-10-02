@@ -2,7 +2,7 @@
  * 模拟盘统计单测
  */
 
-import { compute_stats, equity_curve } from '@/services/paper_trading/paper_stats';
+import { compute_stats, daily_stats, equity_curve } from '@/services/paper_trading/paper_stats';
 import { PaperTrade } from '@/services/paper_trading/paper_types';
 
 function closed(id: number, exit_time: number, pnl: number, reason: 'stop' | 'take_profit' | 'time'): PaperTrade {
@@ -12,7 +12,7 @@ function closed(id: number, exit_time: number, pnl: number, reason: 'stop' | 'ta
     expire_at: 0, max_hold_until: 0, fill_time: 0, fill_price: 1, qty: 100, notional: 100, risk_usdt: 10,
     exit_time, exit_price: 1, exit_reason: reason, gross_pnl: pnl, fees: 0.1, pnl, r_multiple: pnl / 10,
     mfe_r: 0, mae_r: 0, cancel_reason: null, last_bar_time: 0,
-    features: { dif_ratio: 0, hist_ratio: 0, gap: 0, gdep: 0, imp_pct: 0, leg_pct: 0, qv24_m: 0, atr_pct: 0, range48: 0, wait: 0, wick: 0, body: 0 },
+    features: { dif_ratio: 0, hist_ratio: 0, gap: 0, gdep: 0, imp_pct: 0, leg_pct: 0, qv24_m: 0, qv_surge: 0, atr_pct: 0, range48: 0, wait: 0, wick: 0, body: 0 },
   };
 }
 
@@ -37,6 +37,15 @@ describe('paper_stats', () => {
     expect(s.profit_factor).toBeCloseTo(25 / 20, 10);
     expect(s.max_drawdown).toBe(20);
     expect(s.by_exit_reason).toEqual({ take_profit: 1, stop: 2, time: 1 });
+  });
+
+  it('按北京时间日期汇总（UTC 16:00 后算次日）', () => {
+    const D = Date.parse('2026-10-01T00:00:00Z');
+    const ds = daily_stats([closed(1, D + 3600_000, 20, 'take_profit'), closed(2, D + 17 * 3600_000, -10, 'stop'), closed(3, D + 18 * 3600_000, 5, 'time')]);
+    expect(ds).toEqual([
+      { date: '2026-10-01', trades: 1, wins: 1, pnl: 20, r: 2, equity: 20 },
+      { date: '2026-10-02', trades: 2, wins: 1, pnl: -5, r: -0.5, equity: 15 },
+    ]);
   });
 
   it('无交易时返回空统计', () => {

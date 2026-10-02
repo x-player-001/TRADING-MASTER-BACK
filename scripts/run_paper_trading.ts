@@ -37,6 +37,7 @@ const CONFIG = {
   status_interval_ms: 5 * 60_000,
   ws_silence_timeout_ms: 60_000,
   gap_fill_max_bars: 1000,            // 单次 REST 补齐上限（limit≤1000 → 权重 5）
+  heartbeat_interval_ms: 60_000,      // 运行状态写库间隔（供前端展示）
 };
 
 const M5 = 5 * 60_000;
@@ -52,6 +53,9 @@ const symbol_chains = new Map<string, Promise<void>>();
 const stats = {
   start_time: Date.now(),
   bars: 0,
+  last_bar_time: 0,
+  ws_connected: false,
+  symbols: 0,
   gap_filled: 0,
   signals: 0,
   orders: 0,
@@ -123,6 +127,7 @@ async function handle_bar(symbol: string, bar: PaperBar, live: boolean): Promise
   const before = new Map(engine.get_active().filter(t => t.symbol === symbol).map(t => [t, t.status as string]));
   const res = service.process_5m(symbol, bar, live);
   stats.bars++;
+  if (bar.open_time > stats.last_bar_time) stats.last_bar_time = bar.open_time;
   if (live) stats.signals += res.setups.length;
 
   for (const t of res.changed) {
@@ -227,7 +232,7 @@ function start_ws(symbols: string[]): void {
   const streams = symbols.map(s => `${s.toLowerCase()}@kline_5m`).join('/');
   last_ws_message = Date.now();
   ws = new WebSocket(`wss://fstream.binance.com/market/stream?streams=${streams}`);
-  ws.on('open', () => { console.log(`✅ WebSocket 已连接（${symbols.length} 个流）`); last_ws_message = Date.now(); });
+  ws.on('open', () => { console.log(`✅ WebSocket 已连接（${symbols.length} 个流）`); last_ws_message = Date.now(); stats.ws_connected = true; });
   ws.on('message', (data: Buffer) => {
     last_ws_message = Date.now();
     try {
@@ -246,6 +251,7 @@ function start_ws(symbols: string[]): void {
   });
   ws.on('error', err => console.error('WebSocket 错误:', err.message));
   ws.on('close', () => {
+    stats.ws_connected = false;
     console.log('⚠️  WebSocket 断开，5 秒后重连...');
     setTimeout(() => start_ws(symbols), 5000);
   });
@@ -274,6 +280,27 @@ function print_status(): void {
     `挂单中 ${pending} 持仓 ${open.length}${open.length ? '：' + open.map(t => t.symbol).join(',') : ''}`);
 }
 
+/** 写入运行状态心跳（失败只记日志） */
+async function heartbeat(): Promise<void> {
+  if (DRY_RUN) return;
+  const active = engine.get_active();
+  try {
+    await repo.save_runtime_status({
+      started_at: stats.start_time,
+      heartbeat_at: Date.now(),
+      last_bar_time: stats.last_bar_time,
+      ws_connected: stats.ws_connected,
+      symbols: stats.symbols,
+      bars_processed: stats.bars,
+      gap_filled: stats.gap_filled,
+      pending: active.filter(t => t.status === 'pending').length,
+      open_positions: active.filter(t => t.status === 'open').length,
+    });
+  } catch (err: any) {
+    console.error(`❌ 写入运行状态失败: ${err.message}`);
+  }
+}
+
 // ==================== 主函数 ====================
 
 async function main(): Promise<void> {
@@ -298,7 +325,9 @@ async function main(): Promise<void> {
   }
 
   const symbols = await get_all_symbols();
+  stats.symbols = symbols.length;
   console.log(`✅ 合约 ${symbols.length} 个`);
+  await heartbeat();
 
   service = new PaperTradingService(engine, PAPER_STRATEGIES);
   await preload(new Set(symbols));
@@ -306,6 +335,8 @@ async function main(): Promise<void> {
   start_ws(symbols);
   start_watchdog();
   setInterval(print_status, CONFIG.status_interval_ms);
+  await heartbeat();
+  setInterval(heartbeat, CONFIG.heartbeat_interval_ms);
 
   process.on('SIGINT', () => { console.log('\n⏹️  停止'); ws?.removeAllListeners('close'); ws?.close(); process.exit(0); });
   console.log('\n📡 模拟盘运行中\n');

@@ -3,6 +3,7 @@
  *
  * 表:
  *   paper_trades - 模拟交易全生命周期（挂单 → 持仓 → 平仓 / 撤单 / 失效 / 跳过）
+ *   paper_runtime_status - paper 进程心跳（单行，供前端展示运行情况）
  *                  唯一键 (strategy_id, symbol, setup_time)：同一根反转K线只下一次单，写入幂等
  */
 
@@ -18,6 +19,19 @@ export interface PaperTradeFilter {
   to?: number;
   limit?: number;
   offset?: number;
+}
+
+/** paper 进程运行状态（心跳） */
+export interface PaperRuntimeStatus {
+  started_at: number;         // 进程启动时间
+  heartbeat_at: number;       // 最近一次心跳
+  last_bar_time: number;      // 已处理的最新 5m open_time（全市场最大值）
+  ws_connected: boolean;
+  symbols: number;            // 跟踪币种数
+  bars_processed: number;     // 本次启动以来处理的 5m 根数（含预热）
+  gap_filled: number;         // 本次启动以来 REST 补齐的根数
+  pending: number;            // 当前挂单数
+  open_positions: number;     // 当前持仓数
 }
 
 /** 可变字段（upsert 时更新） */
@@ -82,6 +96,43 @@ export class PaperTradingRepository extends BaseRepository {
         INDEX idx_exit_time (exit_time)
       ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COMMENT='模拟盘交易'
     `, 'paper_trades');
+
+    await this.ensure_table_exists(`
+      CREATE TABLE IF NOT EXISTS paper_runtime_status (
+        id              TINYINT      PRIMARY KEY,
+        started_at      BIGINT       NOT NULL,
+        heartbeat_at    BIGINT       NOT NULL,
+        last_bar_time   BIGINT       NOT NULL,
+        ws_connected    TINYINT      NOT NULL,
+        symbols         INT          NOT NULL,
+        bars_processed  BIGINT       NOT NULL,
+        gap_filled      BIGINT       NOT NULL,
+        pending         INT          NOT NULL,
+        open_positions  INT          NOT NULL
+      ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COMMENT='模拟盘进程心跳（单行）'
+    `, 'paper_runtime_status');
+  }
+
+  /** 写入进程心跳（单行覆盖） */
+  async save_runtime_status(s: PaperRuntimeStatus): Promise<void> {
+    await this.execute_query(
+      `REPLACE INTO paper_runtime_status
+       (id, started_at, heartbeat_at, last_bar_time, ws_connected, symbols, bars_processed, gap_filled, pending, open_positions)
+       VALUES (1, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+      [s.started_at, s.heartbeat_at, s.last_bar_time, s.ws_connected ? 1 : 0, s.symbols, s.bars_processed, s.gap_filled, s.pending, s.open_positions]
+    );
+  }
+
+  /** 读取进程心跳（从未运行过返回 null） */
+  async get_runtime_status(): Promise<PaperRuntimeStatus | null> {
+    const rows = await this.execute_query(`SELECT * FROM paper_runtime_status WHERE id = 1`);
+    if (!rows.length) return null;
+    const r = rows[0];
+    return {
+      started_at: Number(r.started_at), heartbeat_at: Number(r.heartbeat_at), last_bar_time: Number(r.last_bar_time),
+      ws_connected: Number(r.ws_connected) === 1, symbols: Number(r.symbols), bars_processed: Number(r.bars_processed),
+      gap_filled: Number(r.gap_filled), pending: Number(r.pending), open_positions: Number(r.open_positions),
+    };
   }
 
   /** 新增或更新一笔交易（按唯一键幂等），返回 id */

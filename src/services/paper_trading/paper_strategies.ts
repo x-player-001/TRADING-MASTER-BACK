@@ -1,14 +1,14 @@
 /**
  * 模拟盘策略与账户配置
  *
- * 参数来自 2026-06~09 全市场回测（反转K线 + 突破低点入场、止损新高口径）：
- *   15m 顶背离：前波≥20% & 末段≥10%，止损=新高，2R 止盈 → 约 +0.28R/笔
- *   5m  顶背离：同过滤，止损=新高+0.5ATR（5m 噪音大），2R 止盈 → 约 +0.28R/笔
+ * 研究记录见 docs/MACD_DIVERGENCE_STRATEGIES.md（S1~S5）。所有策略：
+ *   顶背离（DIF比<0.6、红柱比<0.3、两峰间翻绿≥3根且深≥20%）+ 反转K线 → 跌破反转K线低点做空，
+ *   固定 2R 止盈，48 根时间平仓；15m 止损=新高，5m 止损=新高+0.5ATR（5m 噪音大）
  */
 
 import { PaperAccountConfig, PaperStrategyConfig, DivergenceFilters } from './paper_types';
 
-/** 顶背离通用过滤条件 */
+/** 顶背离共同过滤条件 */
 const TOP_DIVERGENCE_FILTERS: DivergenceFilters = {
   max_dif_ratio: 0.6,
   max_hist_ratio: 0.3,
@@ -21,30 +21,40 @@ const TOP_DIVERGENCE_FILTERS: DivergenceFilters = {
   max_risk_pct: 10,
 };
 
+/** 周期共用的出场参数 */
+const EXIT_15M = { timeframe: '15m' as const, stop_atr_buffer: 0, take_profit_r: 2, order_valid_bars: 6, max_hold_bars: 48 };
+const EXIT_5M = { timeframe: '5m' as const, stop_atr_buffer: 0.5, take_profit_r: 2, order_valid_bars: 6, max_hold_bars: 48 };
+
 export const PAPER_STRATEGIES: PaperStrategyConfig[] = [
   {
     id: 'macd_top_div_15m',
-    name: '15m MACD 顶背离 + 反转K线',
-    timeframe: '15m',
-    dir: 1,
-    enabled: true,
+    name: 'S1 15m 顶背离',
+    dir: 1, enabled: true, ...EXIT_15M,
     filters: { ...TOP_DIVERGENCE_FILTERS },
-    stop_atr_buffer: 0,
-    take_profit_r: 2,
-    order_valid_bars: 6,
-    max_hold_bars: 48,
   },
   {
     id: 'macd_top_div_5m',
-    name: '5m MACD 顶背离 + 反转K线',
-    timeframe: '5m',
-    dir: 1,
-    enabled: true,
+    name: 'S2 5m 顶背离',
+    dir: 1, enabled: true, ...EXIT_5M,
     filters: { ...TOP_DIVERGENCE_FILTERS },
-    stop_atr_buffer: 0.5,
-    take_profit_r: 2,
-    order_valid_bars: 6,
-    max_hold_bars: 48,
+  },
+  {
+    id: 'macd_top_div_15m_vol',
+    name: 'S3 15m 顶背离 + 放量',
+    dir: 1, enabled: true, ...EXIT_15M,
+    filters: { ...TOP_DIVERGENCE_FILTERS, min_qv_surge: 2 },
+  },
+  {
+    id: 'macd_top_div_5m_vol',
+    name: 'S4 5m 顶背离 + 放量',
+    dir: 1, enabled: true, ...EXIT_5M,
+    filters: { ...TOP_DIVERGENCE_FILTERS, min_qv_surge: 2 },
+  },
+  {
+    id: 'macd_top_div_5m_imp30',
+    name: 'S5 5m 顶背离 前波≥30%',
+    dir: 1, enabled: true, ...EXIT_5M,
+    filters: { ...TOP_DIVERGENCE_FILTERS, min_imp_pct: 30 },
   },
 ];
 

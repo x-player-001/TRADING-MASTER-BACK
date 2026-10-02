@@ -63,7 +63,7 @@ class IndicatorSeries {
   readonly q24: Float64Array;
   private e12 = 0; private e26 = 0; private dea = 0; private q_acc = 0;
 
-  constructor(cap: number, private readonly w24: number) {
+  constructor(cap: number, readonly w24: number) {
     this.cap = cap;
     this.t = new Float64Array(cap); this.ct = new Float64Array(cap);
     this.o = new Float64Array(cap); this.h = new Float64Array(cap); this.l = new Float64Array(cap); this.c = new Float64Array(cap);
@@ -248,6 +248,8 @@ export class MacdDivergenceDetector {
     }
     const o = s.o[k], c = s.c[k], h = s.h[k], l = s.l[k];
     const rg = h - l || 1e-12;
+    // 放量倍数：当前 24h 成交额 / 前一个 24h（需要往前一整天仍在缓冲区内）
+    const prev24 = rj - s.w24 >= first ? s.q24[s.p(rj - s.w24)] : NaN;
 
     return {
       symbol: this.symbol,
@@ -267,6 +269,7 @@ export class MacdDivergenceDetector {
         imp_pct: dir * (extreme - base) / base * 100,
         leg_pct: dir * (extreme - lb) / lb * 100,
         qv24_m: s.q24[k] / 1e6,
+        qv_surge: prev24 > 0 ? s.q24[k] / prev24 : NaN,
         atr_pct: atr / c * 100,
         range48: (rh - rl) / c * 100,
         wait: rj - w.i,

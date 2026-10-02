@@ -37,7 +37,8 @@ export function passes_filters(strategy: PaperStrategyConfig, setup: DivergenceS
     && x.hist_ratio < f.max_hist_ratio
     && x.imp_pct >= f.min_imp_pct
     && x.leg_pct >= f.min_leg_pct
-    && x.qv24_m >= f.min_qv24_m;
+    && x.qv24_m >= f.min_qv24_m
+    && (f.min_qv_surge === undefined || x.qv_surge >= f.min_qv_surge);
 }
 
 /** 交易唯一键（同策略同币同一根反转K线只下一次单） */
@@ -73,15 +74,15 @@ export class PaperEngine {
     return [...this.active.values()];
   }
 
-  /** 某币是否有进行中的交易 */
-  private symbol_busy(symbol: string): boolean {
-    for (const t of this.active.values()) if (t.symbol === symbol) return true;
+  /** 某策略在某币上是否有进行中的交易（不同策略互不影响） */
+  private symbol_busy(strategy_id: string, symbol: string): boolean {
+    for (const t of this.active.values()) if (t.symbol === symbol && t.strategy_id === strategy_id) return true;
     return false;
   }
 
   /**
    * 提交 setup：不满足过滤返回 null；已处理过返回 null；
-   * 币种已有仓位/挂单时返回 status=skipped 的记录（入库留痕），否则返回 pending 订单
+   * 同策略在该币已有仓位/挂单时返回 status=skipped 的记录（入库留痕），否则返回 pending 订单
    */
   submit(strategy_id: string, setup: DivergenceSetup): PaperTrade | null {
     const st = this.strategies.get(strategy_id);
@@ -116,7 +117,7 @@ export class PaperEngine {
     if (this.seen.has(key)) return null;
     this.seen.add(key);
 
-    if (this.account.one_position_per_symbol && this.symbol_busy(setup.symbol)) {
+    if (this.account.one_position_per_symbol && this.symbol_busy(st.id, setup.symbol)) {
       trade.status = 'skipped';
       trade.cancel_reason = 'symbol_busy';
       return trade;
