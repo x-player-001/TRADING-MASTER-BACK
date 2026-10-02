@@ -26,12 +26,14 @@ import daily_breakout_routes, { set_daily_breakout_repository } from './routes/d
 import { TradeRecordRoutes } from './routes/trade_record_routes';
 import { KlineReplayRoutes } from './routes/kline_replay_routes';
 import paper_trading_routes, { set_paper_trading_repository } from './routes/paper_trading_routes';
+import strategy_backtest_routes, { set_strategy_backtest_repository } from './routes/strategy_backtest_routes';
 import { TradeLogService } from '@/services/trade_log_service';
 import { VolumeMonitorRepository } from '@/database/volume_monitor_repository';
 import { TrendFollowRepository } from '@/database/trend_follow_repository';
 import { EMA20PushRepository } from '@/database/ema20_push_repository';
 import { DailyBreakoutRepository } from '@/database/daily_breakout_repository';
 import { PaperTradingRepository } from '@/database/paper_trading_repository';
+import { StrategyBacktestRepository } from '@/database/strategy_backtest_repository';
 import { PatternScanService } from '@/services/pattern_scan_service';
 import { OrderBookMonitorService } from '@/services/orderbook_monitor_service';
 import { BinanceDepthUpdate } from '@/types/orderbook_types';
@@ -66,6 +68,7 @@ export class APIServer {
   private ema20_push_repository: EMA20PushRepository;
   private daily_breakout_repository: DailyBreakoutRepository;
   private paper_trading_repository: PaperTradingRepository;
+  private strategy_backtest_repository: StrategyBacktestRepository;
   private trade_record_routes: TradeRecordRoutes;
   private kline_replay_routes: KlineReplayRoutes;
   private ws_depth: WebSocket | null = null;
@@ -94,6 +97,7 @@ export class APIServer {
     this.ema20_push_repository = new EMA20PushRepository();
     this.daily_breakout_repository = new DailyBreakoutRepository();
     this.paper_trading_repository = new PaperTradingRepository();
+    this.strategy_backtest_repository = new StrategyBacktestRepository();
     this.trade_record_routes = new TradeRecordRoutes();
     this.kline_replay_routes = new KlineReplayRoutes();
     this.setup_middleware();
@@ -106,6 +110,7 @@ export class APIServer {
     this.init_daily_breakout_services();
     this.init_kline_replay_services();
     this.init_paper_trading_services();
+    this.init_strategy_backtest_services();
   }
 
   /**
@@ -187,6 +192,17 @@ export class APIServer {
       logger.info('[APIServer] Paper trading services initialized');
     } catch (error) {
       logger.error('[APIServer] Failed to init paper trading services:', error);
+    }
+  }
+
+  /** 策略回测结果：建表 + 注入 repository（结果由回测脚本写入，API 只读） */
+  private async init_strategy_backtest_services(): Promise<void> {
+    try {
+      await this.strategy_backtest_repository.init_tables();
+      set_strategy_backtest_repository(this.strategy_backtest_repository);
+      logger.info('[APIServer] Strategy backtest services initialized');
+    } catch (error) {
+      logger.error('[APIServer] Failed to init strategy backtest services:', error);
     }
   }
 
@@ -433,6 +449,9 @@ export class APIServer {
 
     // 模拟盘（只读）
     this.app.use('/api/paper', paper_trading_routes);
+
+    // 策略回测结果（只读）
+    this.app.use('/api/strategy-backtest', strategy_backtest_routes);
 
     // 系统状态
     this.app.get('/api/status', async (req: Request, res: Response) => {

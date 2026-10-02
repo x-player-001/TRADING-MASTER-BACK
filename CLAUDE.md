@@ -170,6 +170,7 @@ npx ts-node -r tsconfig-paths/register scripts/dev/analysis/analyze_trend_signal
 | 域 | 表 |
 |---|---|
 | **趋势跟随** | `trend_follow_watch_contexts`、`trend_follow_alerts`、`trend_follow_entry_triggers`、`trend_follow_alert_outcomes` |
+| **策略回测结果** | `strategy_backtest_runs`（一次回测：策略/参数/区间/汇总）、`strategy_backtest_trades`（逐笔交易含特征与画图标注 JSON） |
 | **模拟盘** | `paper_trades`（信号→挂单→持仓→平仓全生命周期，唯一键 strategy_id+symbol+setup_time）、`paper_runtime_status`（进程心跳） |
 | **K线回放模拟交易** | `replay_sessions`、`replay_orders`、`replay_positions`、`replay_fills` |
 | **EMA20 推动** | `ema20_push_contexts`、`ema20_push_records` |
@@ -191,6 +192,7 @@ npx ts-node -r tsconfig-paths/register scripts/dev/analysis/analyze_trend_signal
 /api/boundary-alerts    /api/sr        /api/volume-monitor /api/pattern-scan
 /api/orderbook     /api/trend-follow   /api/ema20-push     /api/trade-record
 /api/replay        /api/daily-breakout   /api/paper
+/api/strategy-backtest
 ```
 
 ## 📈 模拟盘（MACD 顶背离）
@@ -202,6 +204,15 @@ npx ts-node -r tsconfig-paths/register scripts/dev/analysis/analyze_trend_signal
 - 检测器/撮合引擎为纯计算（单测 `tests/paper_trading/`，检测器与回测参照实现逐信号对拍）；15m 也用 5m 撮合，同根先判止损
 - 进程重启从 `paper_trades` 恢复进行中交易，按 `last_bar_time` 续跑；启动预热按日表扫最近 4 天 5m
 - 与回测对拍：`scripts/dev/verify/verify_paper_trading_parity.ts`（服务器跑，5m 读 `/root/kline_cache/5m`，回测事件读 `/tmp/macd_div/rev_*.csv`）
+
+## 🧪 策略回测结果（通用）
+
+`src/services/strategy_backtest/`，接口文档 `docs/STRATEGY_BACKTEST_API.md`（前端展示列表、统计、逐笔画图）。
+
+- 策略实现 `BacktestStrategy`（`run(series, params)` → `BacktestTrade[]`，自带画图标注 `annotations`），在 `strategy_registry.ts` 登记即可复用脚本/入库/接口
+- 当前策略 `flag_third_push`：高位整理第三推低点限价做多（5m，10U×10 倍不设止损，未破上沿 20 根离场，突破后量度目标或 MACD 柱缩短离场）
+- 运行：`scripts/run_strategy_backtest.ts --strategy=<id> [--params=JSON] [--from/--to] [--dry-run]`（服务器跑，读离线缓存，按币种分批控内存，全市场约 10 分钟）
+- 过滤条件一律按挂单/信号时刻已知信息判断；单测含「截断数据重跑结果一致」的无前视检查（`tests/strategy_backtest/`）
 
 ## 💾 离线K线缓存（服务器）
 
