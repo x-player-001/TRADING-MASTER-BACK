@@ -1,5 +1,5 @@
 /**
- * 模拟盘 ↔ 回测 对拍（需在服务器运行，读取 /tmp/macd_div 下的回测缓存与事件）
+ * 模拟盘 ↔ 回测 对拍（需在服务器运行：5m 读持久缓存 /root/kline_cache/5m，回测事件读 /tmp/macd_div/rev_*.csv）
  *
  * 把缓存的全市场 5m 按时间顺序喂给 PaperTradingService（live 模式、关闭单币单仓），
  * 与回测 rev_{5m,15m}.csv 中满足同样过滤条件且成交的事件逐笔比对：
@@ -8,7 +8,7 @@
  *   · 两边总体 EV（模拟盘 15m 用 5m 撮合，结果允许小幅差异）
  *
  * 运行:
- *   TS_NODE_TRANSPILE_ONLY=1 npx ts-node -r tsconfig-paths/register scripts/dev/verify/verify_paper_trading_parity.ts [/tmp/macd_div]
+ *   TS_NODE_TRANSPILE_ONLY=1 npx ts-node -r tsconfig-paths/register scripts/dev/verify/verify_paper_trading_parity.ts \n *     [事件目录=/tmp/macd_div] [5m缓存=/root/kline_cache/5m] [起始日=20260602] [结束日=20261001]
  */
 
 import * as fs from 'fs';
@@ -19,6 +19,8 @@ import { PAPER_ACCOUNT, PAPER_STRATEGIES, TIMEFRAME_MS } from '@/services/paper_
 import { PaperBar, PaperTrade } from '@/services/paper_trading/paper_types';
 
 const DIR = process.argv[2] || '/tmp/macd_div';
+const CACHE = process.argv[3] || '/root/kline_cache/5m';
+const FROM_DAY = process.argv[4] || '20260602', TO_DAY = process.argv[5] || '20261001';   // 须与生成回测事件时的区间一致
 
 /** 回测事件（只取需要的列） */
 interface BacktestEvent { sym: string; setup_time: number; fill_time: number; risk: number; r: number }
@@ -48,11 +50,11 @@ async function main(): Promise<void> {
   const service = new PaperTradingService(engine, PAPER_STRATEGIES);
   const trades: PaperTrade[] = [];
 
-  const files = fs.readdirSync(`${DIR}/cache`).filter(f => f.endsWith('.csv.gz')).sort();
+  const files = fs.readdirSync(CACHE).filter(f => f.endsWith('.csv.gz') && f.slice(0, 8) >= FROM_DAY && f.slice(0, 8) <= TO_DAY).sort();
   console.log(`读取 ${files.length} 个日缓存...`);
   for (const f of files) {
     const by_symbol = new Map<string, PaperBar[]>();
-    for (const ln of zlib.gunzipSync(fs.readFileSync(`${DIR}/cache/${f}`)).toString().split('\n')) {
+    for (const ln of zlib.gunzipSync(fs.readFileSync(`${CACHE}/${f}`)).toString().split('\n')) {
       const p = ln.split(',');
       if (p.length < 7) continue;
       const close = +p[5], volume = +p[6], t = +p[1];

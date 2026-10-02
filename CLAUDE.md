@@ -201,7 +201,12 @@ npx ts-node -r tsconfig-paths/register scripts/dev/analysis/analyze_trend_signal
 - 五套策略 S1~S5：`macd_top_div_15m` / `_5m` / `_15m_vol`（放量≥2）/ `_5m_vol` / `_5m_imp30`（前波≥30%）；每笔固定止损 10U、同策略单币单仓
 - 检测器/撮合引擎为纯计算（单测 `tests/paper_trading/`，检测器与回测参照实现逐信号对拍）；15m 也用 5m 撮合，同根先判止损
 - 进程重启从 `paper_trades` 恢复进行中交易，按 `last_bar_time` 续跑；启动预热按日表扫最近 4 天 5m
-- 与回测对拍：`scripts/dev/verify/verify_paper_trading_parity.ts`（服务器跑，需 `/tmp/macd_div` 回测缓存）
+- 与回测对拍：`scripts/dev/verify/verify_paper_trading_parity.ts`（服务器跑，5m 读 `/root/kline_cache/5m`，回测事件读 `/tmp/macd_div/rev_*.csv`）
+
+## 💾 离线K线缓存（服务器）
+
+`/root/kline_cache/5m/YYYYMMDD.csv.gz`：全市场 5m（北京时间分日，`symbol,open_time,open,high,low,close,volume`），2025-12-14 起。
+离线回测优先读它，不要批量查库；`cd /root/kline_cache && nice -n 19 node export_5m.js` 增量导出到昨天，说明见同目录 README.md。
 
 ## 🎬 K线回放 + 模拟交易
 
