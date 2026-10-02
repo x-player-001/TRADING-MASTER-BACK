@@ -3,9 +3,9 @@
  */
 
 import { BacktestStrategy } from './backtest_types';
-import { FLAG_THIRD_PUSH } from './strategies/flag_third_push';
+import { FLAG_THIRD_PUSH, FLAG_THIRD_PUSH_CONFIRM } from './strategies/flag_third_push';
 
-const STRATEGIES: BacktestStrategy<any>[] = [FLAG_THIRD_PUSH];
+const STRATEGIES: BacktestStrategy<any>[] = [FLAG_THIRD_PUSH, FLAG_THIRD_PUSH_CONFIRM];
 
 /** 全部已注册策略 */
 export function list_strategies(): BacktestStrategy<any>[] {

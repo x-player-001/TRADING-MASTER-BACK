@@ -5,7 +5,7 @@
  *   3. 默认参数下产出的交易都满足过滤条件
  */
 
-import { run_flag_third_push, FLAG_THIRD_PUSH_DEFAULTS, FlagThirdPushParams } from '@/services/strategy_backtest/strategies/flag_third_push';
+import { run_flag_third_push, FLAG_THIRD_PUSH_DEFAULTS, FLAG_THIRD_PUSH_CONFIRM, FlagThirdPushParams } from '@/services/strategy_backtest/strategies/flag_third_push';
 import { KlineSeries } from '@/services/strategy_backtest/backtest_types';
 
 const T0 = Date.UTC(2026, 0, 1);
@@ -106,6 +106,30 @@ describe('flag_third_push：标准形态', () => {
   });
 });
 
+describe('flag_third_push_confirm：确认入场', () => {
+  const { series, push3 } = standard_pattern();
+
+  test('第三推确认K线收盘直接入场，无挂单线', () => {
+    const t = FLAG_THIRD_PUSH_CONFIRM.run(series, {});
+    expect(t).toHaveLength(1);
+    expect(t[0].strategy_id).toBe('flag_third_push_confirm');
+    expect(t[0].entry_time).toBe(series.time[push3 + 2]);
+    expect(t[0].signal_time).toBe(t[0].entry_time);
+    expect(t[0].entry_price).toBeCloseTo(105.5, 8);
+    expect(t[0].features.hi_trend).toBe(0);
+    expect(t[0].annotations.some(a => a.type === 'hline' && a.label === '限价挂单')).toBe(false);
+    expect(t[0].pnl!).toBeGreaterThan(0);
+  });
+
+  test('第三推前反弹高点抬高时过滤', () => {
+    const rows: number[][] = [];
+    for (let i = 0; i < series.length; i++) rows.push([series.open[i], series.close[i], series.low[i], series.high[i]]);
+    rows[push3 - 3][3] = 106.0;                  // 第二推与第三推之间的反弹高点抬到 106.0（> 105.85）
+    expect(FLAG_THIRD_PUSH_CONFIRM.run(make_series(rows), {})).toHaveLength(0);
+    expect(FLAG_THIRD_PUSH_CONFIRM.run(make_series(rows), { max_hi_trend: null })).toHaveLength(1);
+  });
+});
+
 /** 可复现随机数 */
 function rng(seed: number): () => number {
   let s = seed >>> 0;
@@ -142,6 +166,19 @@ describe('flag_third_push：无前视', () => {
     for (const cut of [2500, 3500, 4500]) {
       const cut_time = full_series.time[cut - 1];
       const part = run_flag_third_push(truncate(full_series, cut), loose);
+      const done_before = (ts: typeof full) => ts.filter(t => t.exit_time !== null && t.exit_time <= cut_time).map(t => JSON.stringify(t));
+      expect(done_before(part)).toEqual(done_before(full));
+    }
+  });
+
+  test.each([1, 2])('确认入场 seed=%i：截断前结束的交易与完整数据一致', seed => {
+    const full_series = random_series(6000, seed);
+    const p = { ...loose, entry_mode: 'confirm' as const };
+    const full = run_flag_third_push(full_series, p);
+    expect(full.length).toBeGreaterThan(3);
+    for (const cut of [3000, 4500]) {
+      const cut_time = full_series.time[cut - 1];
+      const part = run_flag_third_push(truncate(full_series, cut), p);
       const done_before = (ts: typeof full) => ts.filter(t => t.exit_time !== null && t.exit_time <= cut_time).map(t => JSON.stringify(t));
       expect(done_before(part)).toEqual(done_before(full));
     }

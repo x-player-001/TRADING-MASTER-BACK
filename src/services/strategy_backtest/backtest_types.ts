@@ -93,6 +93,6 @@ export interface BacktestStrategy<P extends object = Record<string, unknown>> {
   default_params: P;
   param_docs: ParamDoc[];
   exit_reasons: Record<string, string>;          // 出场原因代码 → 中文说明
-  /** 对单币完整序列运行，返回该币全部交易（含未成交信号） */
-  run(series: KlineSeries, params: P): BacktestTrade[];
+  /** 对单币完整序列运行，返回该币全部交易（含未成交信号）；未给的参数取 default_params */
+  run(series: KlineSeries, params: Partial<P>): BacktestTrade[];
 }

@@ -211,6 +211,7 @@ npx ts-node -r tsconfig-paths/register scripts/dev/analysis/analyze_trend_signal
 
 - 策略实现 `BacktestStrategy`（`run(series, params)` → `BacktestTrade[]`，自带画图标注 `annotations`），在 `strategy_registry.ts` 登记即可复用脚本/入库/接口
 - 当前策略 `flag_third_push`：高位整理第三推低点限价做多（5m，10U×10 倍不设止损，未破上沿 20 根离场，突破后量度目标或 MACD 柱缩短离场）
+- `flag_third_push_confirm`：同一识别，第三推确认K线收盘入场 + 反弹高点不抬高（用户认可的「回调完毕」逻辑；限价版只在预期落空时成交，属逆向选择）
 - 运行：`scripts/run_strategy_backtest.ts --strategy=<id> [--params=JSON] [--from/--to] [--dry-run]`（服务器跑，读离线缓存，按币种分批控内存，全市场约 10 分钟）
 - 过滤条件一律按挂单/信号时刻已知信息判断；单测含「截断数据重跑结果一致」的无前视检查（`tests/strategy_backtest/`）
 
