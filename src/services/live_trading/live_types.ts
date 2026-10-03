@@ -244,6 +244,8 @@ export class ExchangeError extends Error {
 
 /** 币安错误码：条件单会立即触发（挂单时价格已越过触发价） */
 export const ERR_WOULD_IMMEDIATELY_TRIGGER = -2021;
+/** 币安错误码：保证金不足 / 余额不足（开仓信号按跳过处理，只记录不告警） */
+export const INSUFFICIENT_MARGIN_CODES = new Set([-2019, -2018]);
 /** 币安错误码：reduceOnly 单被拒（通常是已无持仓） */
 export const ERR_REDUCE_ONLY_REJECTED = -2022;
 

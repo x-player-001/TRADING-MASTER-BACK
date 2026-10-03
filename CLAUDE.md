@@ -215,7 +215,7 @@ npx ts-node -r tsconfig-paths/register scripts/dev/analysis/analyze_trend_signal
 
 - 信号直接复用模拟盘检测器与 `PAPER_STRATEGIES` 参数；入场 = STOP 卖出条件单（IOC 限价），止损 STOP_MARKET / 止盈 TAKE_PROFIT_MARKET（closePosition，CONTRACT_PRICE）
 - 交易所是唯一事实来源：用户数据流只唤醒同步，状态一律 REST 查询；先落库再下单，client id `LV{id}E/I/S{n}/T{n}/X{n}` 保证结果未知时可查询、不重复下单
-- 风控：每笔 2U、同时 3 笔、日亏损 8U、两策略合计单币单仓、error 状态禁止开新仓；`live_control` 表开关（running/paused/flatten），CLI `scripts/live_control.ts`
+- 风控：每笔 10U、同时 5 笔、日亏损 30U、两策略合计单币单仓、保证金不足记 insufficient_margin 跳过不告警、error 状态禁止开新仓；`live_control` 表开关（running/paused/flatten），CLI `scripts/live_control.ts`
 - 密钥只读 `LIVE_BINANCE_API_KEY/SECRET`；`LIVE_TRADING_MODE=live` 才真实下单，否则影子模式
 - 表：`live_trades`（与 `paper_trades` 同唯一键可对拍）、`live_events`、`live_control`、`live_runtime_status`
 - 单测 `tests/live_trading/`（模拟交易所全生命周期）；接口零风险验证 `scripts/dev/verify/verify_live_api.ts`（服务器跑）

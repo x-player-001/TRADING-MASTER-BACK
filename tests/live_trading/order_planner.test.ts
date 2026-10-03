@@ -4,10 +4,13 @@
 
 import { plan_entry, take_profit_price } from '@/services/live_trading/order_planner';
 import { round_to_step, step_decimals, format_step, beijing_day_start } from '@/services/live_trading/exchange_rules';
-import { LIVE_CONFIG } from '@/services/live_trading/live_config';
+import { LIVE_CONFIG as REAL_LIVE_CONFIG } from '@/services/live_trading/live_config';
 import { LeverageBracket, SymbolRules } from '@/services/live_trading/live_types';
 import { PAPER_STRATEGIES } from '@/services/paper_trading/paper_strategies';
 import { DivergenceSetup, DivergenceStrategyConfig } from '@/services/paper_trading/paper_types';
+
+/** 测试固定配置（与实盘配置解耦，实盘调参不影响用例） */
+const LIVE_CONFIG = { ...REAL_LIVE_CONFIG, risk_per_trade_usdt: 2, max_notional_usdt: 150, max_leverage: 10, max_active_trades: 3, daily_loss_limit_usdt: 8 };
 
 const M15 = 900_000;
 const S1 = PAPER_STRATEGIES.find(s => s.id === 'macd_top_div_15m') as DivergenceStrategyConfig;

@@ -6,10 +6,13 @@
  */
 
 import { LiveExecutor, LiveTradeStore, LiveNotifier, cid } from '@/services/live_trading/live_executor';
-import { LIVE_CONFIG, live_strategies } from '@/services/live_trading/live_config';
+import { LIVE_CONFIG as REAL_LIVE_CONFIG, live_strategies } from '@/services/live_trading/live_config';
 import { ExchangeError, LiveControlMode, LiveTrade, SymbolRules } from '@/services/live_trading/live_types';
 import { DivergenceSetup, PaperBar } from '@/services/paper_trading/paper_types';
 import { FakeExchange } from './fake_exchange';
+
+/** 测试固定配置（与实盘配置解耦，实盘调参不影响用例） */
+const LIVE_CONFIG = { ...REAL_LIVE_CONFIG, risk_per_trade_usdt: 2, max_notional_usdt: 150, max_leverage: 10, max_active_trades: 3, daily_loss_limit_usdt: 8 };
 
 const M5 = 300_000, M15 = 900_000;
 const SYM = 'ABCUSDT';
@@ -240,11 +243,30 @@ describe('LiveExecutor 入场单', () => {
 
   it('交易所明确拒绝入场单 → 取消', async () => {
     const c = make();
-    c.ex.fail_next('new_algo_order', new ExchangeError('Margin is insufficient', -2019, 400, true));
+    c.ex.fail_next('new_algo_order', new ExchangeError('Invalid symbol status', -4140, 400, true));
     const t = (await c.exec.submit_setup('macd_top_div_15m', setup()))!;
     expect(t.status).toBe('cancelled');
-    expect(t.cancel_reason).toBe('entry_rejected:-2019');
+    expect(t.cancel_reason).toBe('entry_rejected:-4140');
     expect(c.alerts.some(a => a.includes('入场条件单被拒'))).toBe(true);
+  });
+
+  it('挂单时保证金不足 → 记录 insufficient_margin，不告警', async () => {
+    const c = make();
+    c.ex.fail_next('new_algo_order', new ExchangeError('Margin is insufficient.', -2019, 400, true));
+    const t = (await c.exec.submit_setup('macd_top_div_15m', setup()))!;
+    expect(t.status).toBe('cancelled');
+    expect(t.cancel_reason).toBe('insufficient_margin');
+    expect(c.alerts).toHaveLength(0);
+    expect(c.store.rows.get(t.id!)!.cancel_reason).toBe('insufficient_margin');
+  });
+
+  it('计划阶段保证金不足 → 记为 skipped / insufficient_margin，不告警', async () => {
+    const c = make();
+    c.ex.available = 10;
+    const t = (await c.exec.submit_setup('macd_top_div_15m', setup()))!;
+    expect(t).toMatchObject({ status: 'skipped', cancel_reason: 'insufficient_margin' });
+    expect(c.alerts).toHaveLength(0);
+    expect(c.store.rows.get(t.id!)!.status).toBe('skipped');
   });
 });
 

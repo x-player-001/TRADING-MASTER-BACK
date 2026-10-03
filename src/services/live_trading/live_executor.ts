@@ -21,7 +21,7 @@ import { bucket_start } from '@/services/paper_trading/paper_engine';
 import { beijing_day_start, format_step } from './exchange_rules';
 import { EntryPlan, plan_entry, take_profit_price } from './order_planner';
 import {
-  ACTIVE_STATUSES, AlgoOrderInfo, ERR_REDUCE_ONLY_REJECTED, ERR_WOULD_IMMEDIATELY_TRIGGER, ExchangeError, ExchangeGateway,
+  ACTIVE_STATUSES, AlgoOrderInfo, ERR_REDUCE_ONLY_REJECTED, INSUFFICIENT_MARGIN_CODES, ERR_WOULD_IMMEDIATELY_TRIGGER, ExchangeError, ExchangeGateway,
   LeverageBracket, LiveConfig, LiveControlMode, LiveExitReason, LiveRunMode, LiveTrade, OrderInfo, SymbolRules,
 } from './live_types';
 
@@ -255,6 +255,12 @@ export class LiveExecutor {
         await this.log(t, 'entry_unknown', { error: err_text(err) });
         return;
       }
+      if (err.code !== null && INSUFFICIENT_MARGIN_CODES.has(err.code)) {
+        // 保证金不足：按跳过处理，只记录不告警
+        await this.finish_cancelled(t, 'insufficient_margin');
+        await this.log(t, 'insufficient_margin', { error: err_text(err) });
+        return;
+      }
       if (err.code !== ERR_WOULD_IMMEDIATELY_TRIGGER) {
         await this.finish_cancelled(t, `entry_rejected:${err.code}`);
         await this.log(t, 'entry_rejected', { error: err_text(err) });
@@ -276,7 +282,10 @@ export class LiveExecutor {
       await this.log(t, 'entry_ioc', { order });
       await this.handle_entry_order(t, order);
     } catch (err) {
-      if (err instanceof ExchangeError && err.definite) {
+      if (err instanceof ExchangeError && err.definite && err.code !== null && INSUFFICIENT_MARGIN_CODES.has(err.code)) {
+        await this.finish_cancelled(t, 'insufficient_margin');
+        await this.log(t, 'insufficient_margin', { error: err_text(err) });
+      } else if (err instanceof ExchangeError && err.definite) {
         await this.finish_cancelled(t, `ioc_rejected:${err.code}`);
         await this.log(t, 'ioc_rejected', { error: err_text(err) });
         this.d.notifier.alert(`❌ ${this.tag(t)} IOC 入场单被拒：${err_text(err)}`);
@@ -359,7 +368,10 @@ export class LiveExecutor {
     }
     if (algo.status === 'TRIGGERED') return;
     // FINISHED 无订单 / CANCELED / EXPIRED / REJECTED
-    const reason = algo.status === 'FINISHED' ? 'entry_unfilled' : (t.cancel_reason ?? `entry_${algo.status.toLowerCase()}`);
+    // REJECTED：触发时撮合引擎拒单，最常见原因是保证金不足（与挂单时同样只记录不告警）
+    const reason = algo.status === 'FINISHED' ? 'entry_unfilled'
+      : algo.status === 'REJECTED' ? 'rejected_on_trigger'
+        : (t.cancel_reason ?? `entry_${algo.status.toLowerCase()}`);
     await this.finish_cancelled(t, reason);
   }
 
