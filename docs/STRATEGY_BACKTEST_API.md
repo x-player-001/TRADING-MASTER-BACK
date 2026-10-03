@@ -156,22 +156,28 @@ Query：`strategy_id`（可选）/ `limit`（默认 50，最大 200）/ `offset`
 
 ### GET /trades/:id
 
-单笔详情：交易（含 `annotations`）+ 画图用 K 线 + 同筛选条件下的上一笔 / 下一笔。
+单笔详情：交易（含 `annotations`）+ 画图用 K 线（可切换周期）+ 同筛选条件下的上一笔 / 下一笔。
 
 | Query | 说明 |
 |---|---|
-| `bars_before` / `bars_after` | 在标注覆盖范围之外，向前 / 向后多取的K线根数（默认 150 / 40，最大 1000） |
+| `interval` | K线周期：`5m` / `15m` / `1h` / `4h`，默认为交易本身的周期（目前都是 `5m`） |
+| `bars_before` / `bars_after` | 在标注覆盖范围之外，向前 / 向后多取的K线根数，**单位是所选 `interval`**（默认 150 / 40，最大 1000） |
 | 其余 | 与 `/runs/:id/trades` 相同的筛选参数（`status` / `symbol` / `exit_reason` / `result` / `from` / `to`），用于计算 `prev_id` / `next_id` |
 
 ```json
 { "success": true, "data": {
   "trade": { "id": 123, "symbol": "牛来USDT", "...": "...", "annotations": [ ... ] },
+  "interval": "1h",
+  "intervals": ["5m", "15m", "1h", "4h"],
   "klines": [{ "open_time": 1789000000000, "open": 0.101, "high": 0.102, "low": 0.1, "close": 0.1015, "volume": 12345 }],
   "prev_id": 122, "next_id": 124
 }}
 ```
 
-- `klines` 为交易周期的K线（来自库中 5m，必要时聚合），覆盖全部标注，最多 3000 根 5m。
+- `klines` 为所选周期的K线，覆盖全部标注：5m 读库中 5m 日表（最多 3000 根）；15m/1h/4h 读聚合表、缺失的K线用 5m 补齐（最多 1500 根），窗口末尾若到当前时刻，最后一根可能未收盘。
+- `interval` 为实际使用的周期，`intervals` 为可切换的周期列表（前端可直接用来生成切换按钮）。
+- **大周期下 `trade.annotations` 的时间已对齐到该周期K线的 open_time**（例如 5m 的 10:35 在 1h 图上变成 10:00），标记可以直接落在K线上；价格不变。
+  切换周期时重新请求本接口即可，不要自己换算。
 - `prev_id` / `next_id`：同一 run、同筛选条件下按 `signal_time` 排序的前一笔 / 后一笔（`prev` 更早，`next` 更晚），没有为 null。前端可以做「上一个 / 下一个」按钮快速翻看；翻页时带上同样的筛选参数。
 
 ## 画图标注 `annotations`

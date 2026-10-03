@@ -6,7 +6,7 @@
  * GET /api/strategy-backtest/runs/:id            单次运行（参数、汇总统计）
  * GET /api/strategy-backtest/runs/:id/trades     交易列表（筛选、排序、分页；不含标注）
  * GET /api/strategy-backtest/runs/:id/stats      按条件重算统计（汇总 / 按月 / 按出场原因 / 按币种）
- * GET /api/strategy-backtest/trades/:id          单笔交易 + 画图标注 + K线 + 上一笔/下一笔
+ * GET /api/strategy-backtest/trades/:id          单笔交易 + 画图标注 + K线（可切 5m/15m/1h/4h）+ 上一笔/下一笔
  *
  * 详细说明见 docs/STRATEGY_BACKTEST_API.md
  */
@@ -16,15 +16,19 @@ import { BacktestTradeFilter, StrategyBacktestRepository } from '@/database/stra
 import { Kline5mRepository } from '@/database/kline_5m_repository';
 import { list_strategies, get_strategy } from '@/services/strategy_backtest/strategy_registry';
 import { compute_full_stats, group_stats } from '@/services/strategy_backtest/backtest_stats';
-import { BacktestTimeframe, BacktestTradeStatus, TIMEFRAME_MS } from '@/services/strategy_backtest/backtest_types';
+import { BacktestTimeframe, BacktestTradeStatus, ChartAnnotation, TIMEFRAME_MS } from '@/services/strategy_backtest/backtest_types';
+import { ReplayKlineLoader } from '@/services/kline_replay/replay_kline_loader';
 import { logger } from '@/utils/logger';
 
 const router = Router();
 const MAX_CHART_5M_BARS = 3000;
+const MAX_CHART_BARS = 1500;          // 15m/1h/4h 单次最多根数
+const CHART_INTERVALS: BacktestTimeframe[] = ['5m', '15m', '1h', '4h'];
 const STATUSES: BacktestTradeStatus[] = ['closed', 'unfilled'];
 
 let repository: StrategyBacktestRepository | null = null;
 let kline_repository: Kline5mRepository | null = null;
+let kline_loader: ReplayKlineLoader | null = null;
 
 /** 由 APIServer 启动时注入（同时完成建表） */
 export function set_strategy_backtest_repository(repo: StrategyBacktestRepository): void {
@@ -42,6 +46,23 @@ function get_kline_repo(): Kline5mRepository {
     kline_repository.stop_flush_timer();
   }
   return kline_repository;
+}
+
+/** 大周期K线读取（聚合表 + 5m 补缺，复用K线回放的加载器） */
+function get_kline_loader(): ReplayKlineLoader {
+  if (!kline_loader) kline_loader = new ReplayKlineLoader();
+  return kline_loader;
+}
+
+/** 把标注时间对齐到周期桶起点（大周期图上标记要落在K线上） */
+function snap_annotations(list: ChartAnnotation[], iv_ms: number): ChartAnnotation[] {
+  if (iv_ms === 300_000) return list;
+  const f = (t: number) => Math.floor(t / iv_ms) * iv_ms;
+  return list.map(a => {
+    if (a.type === 'marker') return { ...a, time: f(a.time) };
+    if (a.type === 'segment') return { ...a, points: a.points.map(p => ({ ...p, time: f(p.time) })) };
+    return { ...a, from_time: f(a.from_time), to_time: f(a.to_time) };
+  });
 }
 
 /** 解析可选数字参数 */
@@ -73,18 +94,6 @@ function parse_filter(q: Record<string, unknown>): BacktestTradeFilter {
     limit: opt_number(q.limit),
     offset: opt_number(q.offset),
   };
-}
-
-/** 5m 聚合为指定周期（UTC 对齐） */
-function aggregate(klines: { open_time: number; open: number; high: number; low: number; close: number; volume: number }[], tf_ms: number) {
-  const out: typeof klines = [];
-  for (const k of klines) {
-    const t = Math.floor(k.open_time / tf_ms) * tf_ms;
-    const last = out[out.length - 1];
-    if (!last || last.open_time !== t) out.push({ open_time: t, open: k.open, high: k.high, low: k.low, close: k.close, volume: k.volume });
-    else { last.high = Math.max(last.high, k.high); last.low = Math.min(last.low, k.low); last.close = k.close; last.volume += k.volume; }
-  }
-  return out;
 }
 
 /** 策略说明（不含 run 函数） */
@@ -173,7 +182,7 @@ router.get('/runs/:id/stats', async (req: Request, res: Response): Promise<void>
 
 /**
  * GET /api/strategy-backtest/trades/:id
- * Query: bars_before（默认 150）/ bars_after（默认 40），单位为该交易周期根数；
+ * Query: interval（5m|15m|1h|4h，默认交易周期）/ bars_before（默认 150）/ bars_after（默认 40），根数单位为 interval；
  *        其余与列表相同的筛选参数（用于计算同条件下的 prev_id / next_id）
  */
 router.get('/trades/:id', async (req: Request, res: Response): Promise<void> => {
@@ -182,7 +191,9 @@ router.get('/trades/:id', async (req: Request, res: Response): Promise<void> => 
     const trade = await repo.get_trade(Number(req.params.id));
     if (!trade) { res.status(404).json({ success: false, error: 'trade not found' }); return; }
 
-    const tf_ms = TIMEFRAME_MS[trade.timeframe as BacktestTimeframe] ?? 300_000;
+    const q_interval = req.query.interval as BacktestTimeframe;
+    const interval: BacktestTimeframe = CHART_INTERVALS.includes(q_interval) ? q_interval : (trade.timeframe as BacktestTimeframe);
+    const iv_ms = TIMEFRAME_MS[interval] ?? 300_000;
     const before = Math.min(opt_number(req.query.bars_before) ?? 150, 1000);
     const after = Math.min(opt_number(req.query.bars_after) ?? 40, 1000);
     // 画图范围覆盖全部标注
@@ -192,14 +203,28 @@ router.get('/trades/:id', async (req: Request, res: Response): Promise<void> => 
       else if (a.type === 'segment') times.push(...a.points.map(p => p.time));
       else times.push(a.from_time, a.to_time);
     }
-    const start = Math.min(...times) - before * tf_ms;
-    const end = Math.min(Math.max(...times) + after * tf_ms, start + MAX_CHART_5M_BARS * 300_000);
-    const klines_5m = (await get_kline_repo().get_klines_by_time_range(trade.symbol, start, end))
-      .map(k => ({ open_time: k.open_time, open: k.open, high: k.high, low: k.low, close: k.close, volume: k.volume }));
-    const klines = trade.timeframe === '5m' ? klines_5m : aggregate(klines_5m, tf_ms);
+    const floor = (t: number) => Math.floor(t / iv_ms) * iv_ms;
+    const start = floor(Math.min(...times)) - before * iv_ms;
+    let end = Math.min(floor(Math.max(...times)) + after * iv_ms, Date.now());
+
+    let klines: { open_time: number; open: number; high: number; low: number; close: number; volume: number }[];
+    if (interval === '5m') {
+      end = Math.min(end, start + MAX_CHART_5M_BARS * 300_000);
+      klines = (await get_kline_repo().get_klines_by_time_range(trade.symbol, start, end))
+        .map(k => ({ open_time: k.open_time, open: k.open, high: k.high, low: k.low, close: k.close, volume: k.volume }));
+    } else {
+      const limit = Math.min(Math.floor((end - start) / iv_ms) + 1, MAX_CHART_BARS);
+      const cursor = Math.min(floor(end) + iv_ms - 300_000, Math.floor(Date.now() / 300_000) * 300_000 - 300_000);
+      klines = (await get_kline_loader().get_interval_bars(trade.symbol, interval, cursor, limit))
+        .filter(k => k.open_time >= start)
+        .map(k => ({ open_time: k.open_time, open: k.open, high: k.high, low: k.low, close: k.close, volume: k.volume }));
+    }
 
     const neighbors = await repo.get_neighbors(trade, parse_filter(req.query as Record<string, unknown>));
-    res.json({ success: true, data: { trade, klines, ...neighbors } });
+    res.json({
+      success: true,
+      data: { trade: { ...trade, annotations: snap_annotations(trade.annotations, iv_ms) }, interval, intervals: CHART_INTERVALS, klines, ...neighbors },
+    });
   } catch (error: any) {
     logger.error('[StrategyBacktest API] get trade failed:', error);
     res.status(500).json({ success: false, error: error.message });
