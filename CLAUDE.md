@@ -194,7 +194,7 @@ npx ts-node -r tsconfig-paths/register scripts/dev/analysis/analyze_trend_signal
 /api/boundary-alerts    /api/sr        /api/volume-monitor /api/pattern-scan
 /api/orderbook     /api/trend-follow   /api/ema20-push     /api/trade-record
 /api/replay        /api/daily-breakout   /api/paper
-/api/strategy-backtest
+/api/strategy-backtest   /api/live
 ```
 
 ## 📈 模拟盘（MACD 顶背离 + 第三推确认做多）
@@ -211,7 +211,7 @@ npx ts-node -r tsconfig-paths/register scripts/dev/analysis/analyze_trend_signal
 
 ## 💰 实盘交易（MACD 顶背离 S1 / S2）
 
-`src/services/live_trading/` + `src/api/binance_live_client.ts`，运维文档 `docs/LIVE_TRADING.md`。**不复用** `src/trading/` 旧系统。
+`src/services/live_trading/` + `src/api/binance_live_client.ts`，运维文档 `docs/LIVE_TRADING.md`，前端接口 `/api/live`（只读，文档 `docs/LIVE_TRADING_API.md`）。**不复用** `src/trading/` 旧系统。
 
 - 信号直接复用模拟盘检测器与 `PAPER_STRATEGIES` 参数；入场 = STOP 卖出条件单（IOC 限价），止损 STOP_MARKET / 止盈 TAKE_PROFIT_MARKET（closePosition，CONTRACT_PRICE）
 - 交易所是唯一事实来源：用户数据流只唤醒同步，状态一律 REST 查询；先落库再下单，client id `LV{id}E/I/S{n}/T{n}/X{n}` 保证结果未知时可查询、不重复下单

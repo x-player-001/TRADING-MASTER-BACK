@@ -181,6 +181,14 @@ export class PaperTradingRepository extends BaseRepository {
     return rows.length ? this.to_trade(rows[0]) : null;
   }
 
+  /** 按唯一键查询（实盘与模拟盘对拍用） */
+  async get_trade_by_key(strategy_id: string, symbol: string, setup_time: number): Promise<PaperTrade | null> {
+    const rows = await this.execute_query(
+      `SELECT * FROM paper_trades WHERE strategy_id = ? AND symbol = ? AND setup_time = ?`, [strategy_id, symbol, setup_time],
+    );
+    return rows.length ? this.to_trade(rows[0]) : null;
+  }
+
   /** 已平仓交易（按平仓时间升序，用于统计与资金曲线） */
   async get_closed_trades(f: { strategy_id?: string; from?: number; to?: number }): Promise<PaperTrade[]> {
     const where = [`status = 'closed'`];

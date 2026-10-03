@@ -1,8 +1,19 @@
 /**
- * 模拟盘统计（纯函数）：胜率、盈亏、R、最大回撤、资金曲线
+ * 交易统计（纯函数）：胜率、盈亏、R、最大回撤、资金曲线
+ * 模拟盘与实盘共用：只依赖 StatTrade 中的字段
  */
 
-import { PaperTrade } from './paper_types';
+/** 统计所需的交易字段（模拟盘 / 实盘交易均满足） */
+export interface StatTrade {
+  id?: number;
+  symbol: string;
+  status: string;
+  pnl: number | null;
+  r_multiple: number | null;
+  fees: number | null;
+  exit_time: number | null;
+  exit_reason: string | null;
+}
 
 export interface PaperStats {
   closed: number;
@@ -30,7 +41,7 @@ export interface EquityPoint {
 }
 
 /** 资金曲线（按平仓时间排序的已平仓交易） */
-export function equity_curve(closed: PaperTrade[]): EquityPoint[] {
+export function equity_curve(closed: StatTrade[]): EquityPoint[] {
   const sorted = [...closed].filter(t => t.status === 'closed').sort((a, b) => (a.exit_time ?? 0) - (b.exit_time ?? 0));
   let equity = 0, peak = 0;
   return sorted.map(t => {
@@ -41,7 +52,7 @@ export function equity_curve(closed: PaperTrade[]): EquityPoint[] {
 }
 
 /** 汇总统计 */
-export function compute_stats(trades: PaperTrade[]): PaperStats {
+export function compute_stats(trades: StatTrade[]): PaperStats {
   const closed = trades.filter(t => t.status === 'closed');
   const pnls = closed.map(t => t.pnl ?? 0);
   const rs = closed.map(t => t.r_multiple ?? 0);
@@ -79,7 +90,7 @@ export interface DailyStat {
 }
 
 /** 按北京时间日期汇总已平仓交易 */
-export function daily_stats(closed: PaperTrade[]): DailyStat[] {
+export function daily_stats(closed: StatTrade[]): DailyStat[] {
   const by = new Map<string, DailyStat>();
   for (const t of closed) {
     if (t.status !== 'closed' || t.exit_time === null) continue;

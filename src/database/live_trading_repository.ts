@@ -12,6 +12,17 @@ import { BaseRepository } from './base_repository';
 import { LiveControlMode, LiveTrade, LiveTradeStatus } from '@/services/live_trading/live_types';
 import { LiveTradeStore } from '@/services/live_trading/live_executor';
 
+/** 列表查询条件 */
+export interface LiveTradeFilter {
+  status?: LiveTradeStatus[];
+  strategy_id?: string;
+  symbol?: string;
+  from?: number;
+  to?: number;
+  limit?: number;
+  offset?: number;
+}
+
 /** live 进程运行状态 */
 export interface LiveRuntimeStatus {
   started_at: number;
@@ -187,16 +198,60 @@ export class LiveTradingRepository extends BaseRepository implements LiveTradeSt
     return rows.map(r => this.to_trade(r));
   }
 
-  /** 列表（按 id 倒序） */
-  async list_trades(f: { status?: LiveTradeStatus[]; limit?: number; offset?: number }): Promise<{ total: number; rows: LiveTrade[] }> {
+  /** 列表（按 id 倒序）；from / to 按信号时间过滤 */
+  async list_trades(f: LiveTradeFilter): Promise<{ total: number; rows: LiveTrade[] }> {
     const where: string[] = [], params: any[] = [];
     if (f.status?.length) { where.push(`status IN (${f.status.map(() => '?').join(', ')})`); params.push(...f.status); }
+    if (f.strategy_id) { where.push('strategy_id = ?'); params.push(f.strategy_id); }
+    if (f.symbol) { where.push('symbol = ?'); params.push(f.symbol); }
+    if (f.from !== undefined) { where.push('signal_time >= ?'); params.push(f.from); }
+    if (f.to !== undefined) { where.push('signal_time <= ?'); params.push(f.to); }
     const w = where.length ? `WHERE ${where.join(' AND ')}` : '';
     const limit = Math.min(Math.max(Number(f.limit) || 50, 1), 500);
     const offset = Math.max(Number(f.offset) || 0, 0);
     const [cnt] = await this.execute_query(`SELECT COUNT(*) AS n FROM live_trades ${w}`, params);
     const rows = await this.execute_query(`SELECT * FROM live_trades ${w} ORDER BY id DESC LIMIT ${limit} OFFSET ${offset}`, params);
     return { total: Number(cnt.n), rows: rows.map(r => this.to_trade(r)) };
+  }
+
+  /** 单笔交易 */
+  async get_trade(id: number): Promise<LiveTrade | null> {
+    const rows = await this.execute_query(`SELECT * FROM live_trades WHERE id = ?`, [id]);
+    return rows.length ? this.to_trade(rows[0]) : null;
+  }
+
+  /** 某交易的审计事件（时间升序） */
+  async get_events(trade_id: number): Promise<{ id: number; kind: string; payload: unknown; created_at: string }[]> {
+    const rows = await this.execute_query(
+      `SELECT id, kind, payload, created_at FROM live_events WHERE trade_id = ? ORDER BY id LIMIT 500`, [trade_id],
+    );
+    return rows.map(r => ({
+      id: Number(r.id), kind: r.kind,
+      payload: typeof r.payload === 'string' ? JSON.parse(r.payload) : r.payload,
+      created_at: r.created_at instanceof Date ? r.created_at.toISOString() : String(r.created_at),
+    }));
+  }
+
+  /** 已平仓交易（按平仓时间升序，用于统计与资金曲线） */
+  async get_closed_trades(f: { strategy_id?: string; from?: number; to?: number }): Promise<LiveTrade[]> {
+    const where = [`status = 'closed'`], params: any[] = [];
+    if (f.strategy_id) { where.push('strategy_id = ?'); params.push(f.strategy_id); }
+    if (f.from !== undefined) { where.push('exit_time >= ?'); params.push(f.from); }
+    if (f.to !== undefined) { where.push('exit_time <= ?'); params.push(f.to); }
+    const rows = await this.execute_query(`SELECT * FROM live_trades WHERE ${where.join(' AND ')} ORDER BY exit_time, id`, params);
+    return rows.map(r => this.to_trade(r));
+  }
+
+  /** 各策略各状态计数 + 取消 / 跳过原因分布（from / to 按信号时间） */
+  async count_by_status_reason(f: { from?: number; to?: number }): Promise<{ strategy_id: string; status: string; reason: string | null; n: number }[]> {
+    const where: string[] = [], params: any[] = [];
+    if (f.from !== undefined) { where.push('signal_time >= ?'); params.push(f.from); }
+    if (f.to !== undefined) { where.push('signal_time <= ?'); params.push(f.to); }
+    const w = where.length ? `WHERE ${where.join(' AND ')}` : '';
+    const rows = await this.execute_query(
+      `SELECT strategy_id, status, cancel_reason, COUNT(*) AS n FROM live_trades ${w} GROUP BY strategy_id, status, cancel_reason`, params,
+    );
+    return rows.map(r => ({ strategy_id: r.strategy_id, status: r.status, reason: r.cancel_reason ?? null, n: Number(r.n) }));
   }
 
   /** 人工处理完 error 交易后标记结束（status → closed 或 cancelled） */
