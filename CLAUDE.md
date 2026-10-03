@@ -28,7 +28,7 @@ OI 监控、成交量异动、盘口、形态扫描、支撑阻力等作为**辅
 | `api` | `dist/index_api_only.js` | 只读 API 服务（swc build 产物，非 ts-node） |
 | `trend` | `scripts/run_trend_follow_monitor.ts` | **核心**：全市场 5m WS 监控 + 分级报警 |
 | `alerts` | `scripts/evaluate_alert_outcomes.ts --loop` | 报警事后评估器（常驻） |
-| `paper` | `scripts/run_paper_trading.ts` | 模拟盘：独立订阅全市场 5m，MACD 顶背离信号 → 条件单 → 模拟撮合（见下） |
+| `paper` | `scripts/run_paper_trading.ts` | 模拟盘：独立订阅全市场 5m，MACD 顶背离（条件单）+ 第三推确认做多（直接开仓）→ 模拟撮合（见下） |
 | `daily-breakout` | `scripts/run_daily_breakout_job.ts` | 日线趋势线突破：每天 08:10（北京）回填日线 + 扫描入库，跑完退出（pm2 cron） |
 
 ```bash
@@ -104,7 +104,7 @@ src/
 │   ├── pattern_scan_service.ts
 │   ├── perfect_hammer_trader.ts
 │   ├── trade_log_service.ts        # AI 复盘（三层架构）
-│   ├── paper_trading/              # 模拟盘：背离检测器 + 撮合引擎
+│   ├── paper_trading/              # 模拟盘：背离检测器 + 撮合引擎（第三推复用 strategy_backtest 的增量核心）
 │   ├── market_sentiment_manager.ts
 │   └── telegram_service.ts
 ├── analysis/                # 技术分析
@@ -195,13 +195,15 @@ npx ts-node -r tsconfig-paths/register scripts/dev/analysis/analyze_trend_signal
 /api/strategy-backtest
 ```
 
-## 📈 模拟盘（MACD 顶背离）
+## 📈 模拟盘（MACD 顶背离 + 第三推确认做多）
 
 `src/services/paper_trading/`，接口文档 `docs/PAPER_TRADING_API.md`，策略参数 `paper_strategies.ts`。
 
 - 信号：MACD 红柱峰新高背离（DIF比<0.6、红柱比<0.3、两峰间翻绿）+ 前波≥20% & 末段≥10% → 0~3 根内出现反转K线 → 挂单突破其低点做空，止损新高（5m 加 0.5ATR），2R 止盈，48 根时间平仓
 - 五套策略 S1~S5：`macd_top_div_15m` / `_5m` / `_15m_vol`（放量≥2）/ `_5m_vol` / `_5m_imp30`（前波≥30%）；每笔固定止损 10U、同策略单币单仓
 - 检测器/撮合引擎为纯计算（单测 `tests/paper_trading/`，检测器与回测参照实现逐信号对拍）；15m 也用 5m 撮合，同根先判止损
+- S6 / S7（`flag_third_push_5m` / `_leg6`）：第三推确认K线收盘直接做多，10U×10 倍不设止损，出场同回测 `flag_third_push_confirm`（对应回测运行 #2 / #4）；
+  识别与出场用 `strategy_backtest/strategies/flag_third_push_core.ts`（逐根增量，回测与模拟盘共用一份代码），`tests/paper_trading/flag_paper_parity.test.ts` 逐笔对拍 + 重启续跑一致
 - 进程重启从 `paper_trades` 恢复进行中交易，按 `last_bar_time` 续跑；启动预热按日表扫最近 4 天 5m
 - 与回测对拍：`scripts/dev/verify/verify_paper_trading_parity.ts`（服务器跑，5m 读 `/root/kline_cache/5m`，回测事件读 `/tmp/macd_div/rev_*.csv`）
 

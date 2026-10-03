@@ -25,13 +25,41 @@ S2、S4、S5 的信号经常重叠（S4、S5 是 S2 的子集），同一个信�
 每笔固定止损 10U（`qty = 10 / |止损 − 成交价|`），手续费按名义价值单边 0.05%；**同一策略内**同一个币同一时间只有一笔挂单或持仓，后来的信号记为 `skipped`；不同策略互不影响。
 撮合用已收盘 5m K 线，同一根内先判止损（不利方向优先）。
 
+### 第三推确认做多（S6 / S7）
+
+与回测策略 `flag_third_push_confirm` **同一份识别与出场代码**（见 docs/STRATEGY_BACKTEST_API.md），回测运行 #2 / #4 对应这两套参数：
+
+| 策略 id | 名称 | 周期 | 第一波涨幅 | 对应回测 |
+|---|---|---|---|---|
+| `flag_third_push_5m` | S6 5m 第三推确认做多 | 5m | 4%~20% | 运行 #2 |
+| `flag_third_push_5m_leg6` | S7 5m 第三推确认做多 第一波≥6% | 5m | 6%~20% | 运行 #4 |
+
+- **入场**：第三推确认的 5m K线收盘时**直接开仓做多**（没有挂单阶段，新记录一出现就是 `open`）。S7 的信号是 S6 的子集，同一个信号两个策略各开一笔、分别统计。
+- **仓位**：10U 保证金 × 10 倍 = 名义 100U，**不设止损**；下跌约 9.5% 视为爆仓，亏损固定 10U。`risk_usdt` = 10，`r_multiple` = 盈亏 / 10U。
+- **出场**（逐根，同根先判不利方向）：爆仓 → 到量度目标（区间上沿 + 拉升高度）→ 已突破区间上沿后 5m MACD 柱首次缩短 → 入场后 20 根内未突破区间上沿按收盘离场 → 持仓 288 根到时。
+- 手续费按名义仓位双边 0.05%（每笔约 0.1U），与回测一致；同策略同币同一时间只有一笔持仓，后来的信号记为 `skipped`。
+
+第三推交易的字段含义：
+
+| 字段 | 含义 |
+|---|---|
+| `trigger_time` | 第三推低点K线 open_time |
+| `setup_time` / `fill_time` | 确认K线 open_time（以其收盘价开仓） |
+| `signal_time` / `expire_at` | 确认K线收盘时刻（无挂单，仅占位） |
+| `entry_trigger` / `fill_price` | 开仓价（确认K线收盘价） |
+| `base_stop` / `stop_price` | 爆仓价（开仓价 × (1 − 9.5%)） |
+| `take_profit` | 量度目标 |
+| `qty` / `notional` | 名义 100U 对应数量 / 100 |
+| `mfe_r` / `mae_r` | 持仓期最大有利 / 不利波动，以「开仓价 − 爆仓价」为 1R |
+| `features` | 同回测：`leg_pct`（第一波涨幅）`leg_bars` `pre_waves`（拉升前 24h 推动波数）`retr` `push1/2/3`（三推低点）`box_top`（区间上沿）`box_low` `lamp`（拉升高度）`dist_to_top` `hi_trend` `qv24` 等；持仓中更新 `breakout`（是否已突破上沿）与 `breakout_time` |
+
 ## 交易状态
 
 | status | 含义 |
 |---|---|
 | `pending` | 已挂条件单，等待成交 |
 | `open` | 已成交持仓 |
-| `closed` | 已平仓，`exit_reason` = `stop` / `take_profit` / `time` |
+| `closed` | 已平仓。背离：`exit_reason` = `stop` / `take_profit` / `time`；第三推：`liquidation`（爆仓）/ `target`（量度目标）/ `macd_shrink`（突破后 MACD 柱缩短）/ `no_breakout`（20 根未破上沿）/ `time` |
 | `cancelled` | 撤单，`cancel_reason` = `stop_before_entry`（先破新高）/ `risk_out_of_range`（止损距离不在 0.3%~10%） |
 | `expired` | 条件单 6 根内未触发 |
 | `skipped` | 信号成立但该策略在该币已有挂单或持仓，`cancel_reason = symbol_busy`（仅留痕，不交易） |
@@ -93,6 +121,10 @@ S2、S4、S5 的信号经常重叠（S4、S5 是 S2 的子集），同一个信�
 { "account": { "risk_per_trade_usdt": 10, "fee_rate": 0.0005, "one_position_per_symbol": true },
   "strategies": [ { "id": "macd_top_div_15m", "name": "...", "timeframe": "15m", "filters": { ... }, "stop_atr_buffer": 0, "take_profit_r": 2, "order_valid_bars": 6, "max_hold_bars": 48 } ] }
 ```
+
+第三推策略的配置形如 `{ "kind": "flag_third_push", "id": "flag_third_push_5m", "name": "...", "timeframe": "5m", "enabled": true, "params": { "leg_min_pct": 0.04, ... } }`
+（`params` 与回测 `/api/strategy-backtest/strategies` 的 `default_params` 同结构）；背离策略没有 `kind` 字段。
+
 
 ### GET `/summary`
 

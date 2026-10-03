@@ -1,12 +1,16 @@
 /**
  * 模拟盘策略与账户配置
  *
- * 研究记录见 docs/MACD_DIVERGENCE_STRATEGIES.md（S1~S5）。所有策略：
+ * S1~S5（研究记录见 docs/MACD_DIVERGENCE_STRATEGIES.md）：
  *   顶背离（DIF比<0.6、红柱比<0.3、两峰间翻绿≥3根且深≥20%）+ 反转K线 → 跌破反转K线低点做空，
  *   固定 2R 止盈，48 根时间平仓；15m 止损=新高，5m 止损=新高+0.5ATR（5m 噪音大）
+ * S6~S7（与回测 flag_third_push_confirm 同一套识别与出场，见 docs/STRATEGY_BACKTEST_API.md）：
+ *   高位整理第三推确认K线收盘做多，10U×10 倍不设止损；20 根未破上沿离场，突破后量度目标或 MACD 柱缩短离场
+ *   S6 = 回测运行 #2（第一波 ≥4%），S7 = 运行 #4（第一波 ≥6%）
  */
 
 import { PaperAccountConfig, PaperStrategyConfig, DivergenceFilters } from './paper_types';
+import { FLAG_THIRD_PUSH_CONFIRM_DEFAULTS } from '@/services/strategy_backtest/strategies/flag_third_push_core';
 
 /** 顶背离共同过滤条件 */
 const TOP_DIVERGENCE_FILTERS: DivergenceFilters = {
@@ -55,6 +59,20 @@ export const PAPER_STRATEGIES: PaperStrategyConfig[] = [
     name: 'S5 5m 顶背离 前波≥30%',
     dir: 1, enabled: true, ...EXIT_5M,
     filters: { ...TOP_DIVERGENCE_FILTERS, min_imp_pct: 30 },
+  },
+  {
+    kind: 'flag_third_push',
+    id: 'flag_third_push_5m',
+    name: 'S6 5m 第三推确认做多',
+    timeframe: '5m', enabled: true,
+    params: { ...FLAG_THIRD_PUSH_CONFIRM_DEFAULTS },
+  },
+  {
+    kind: 'flag_third_push',
+    id: 'flag_third_push_5m_leg6',
+    name: 'S7 5m 第三推确认做多 第一波≥6%',
+    timeframe: '5m', enabled: true,
+    params: { ...FLAG_THIRD_PUSH_CONFIRM_DEFAULTS, leg_min_pct: 0.06 },
   },
 ];
 

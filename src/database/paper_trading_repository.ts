@@ -34,11 +34,11 @@ export interface PaperRuntimeStatus {
   open_positions: number;     // 当前持仓数
 }
 
-/** 可变字段（upsert 时更新） */
+/** 可变字段（upsert 时更新；features 含第三推持仓中更新的 breakout） */
 const MUTABLE_COLUMNS = [
   'status', 'take_profit', 'max_hold_until', 'fill_time', 'fill_price', 'qty', 'notional',
   'exit_time', 'exit_price', 'exit_reason', 'gross_pnl', 'fees', 'pnl', 'r_multiple',
-  'mfe_r', 'mae_r', 'cancel_reason', 'last_bar_time',
+  'mfe_r', 'mae_r', 'cancel_reason', 'last_bar_time', 'features',
 ] as const;
 
 const ALL_COLUMNS = [

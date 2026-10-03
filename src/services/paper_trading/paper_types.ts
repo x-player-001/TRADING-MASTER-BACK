@@ -2,9 +2,12 @@
  * 模拟盘（Paper Trading）类型定义
  *
  * 模拟盘以「真实行情 + 模拟撮合」运行策略信号：
- *   信号 → 条件单（pending）→ 成交开仓（open）→ 止损/止盈/时间平仓（closed）
+ *   MACD 背离：信号 → 条件单（pending）→ 成交开仓（open）→ 止损/止盈/时间平仓（closed）
+ *   第三推（flag_third_push）：第三推确认K线收盘直接开仓（open）→ 爆仓/量度目标/MACD 柱缩短/未突破超时/到时平仓
  * 撮合以已收盘 5m K线为最小粒度，K线内路径按不利方向优先（先判止损）。
  */
+
+import { FlagThirdPushParams } from '@/services/strategy_backtest/strategies/flag_third_push_core';
 
 /** 策略周期 */
 export type PaperTimeframe = '5m' | '15m';
@@ -69,8 +72,9 @@ export interface DivergenceFilters {
   max_risk_pct: number;      // 上限（%）
 }
 
-/** 策略配置 */
-export interface PaperStrategyConfig {
+/** MACD 背离策略配置 */
+export interface DivergenceStrategyConfig {
+  kind?: 'macd_div';
   id: string;
   name: string;
   timeframe: PaperTimeframe;
@@ -83,6 +87,23 @@ export interface PaperStrategyConfig {
   max_hold_bars: number;     // 最长持仓根数（策略周期），到期按收盘价平仓
 }
 
+/** 第三推确认做多策略配置（识别/出场参数与回测 flag_third_push_confirm 同一套） */
+export interface FlagStrategyConfig {
+  kind: 'flag_third_push';
+  id: string;
+  name: string;
+  timeframe: '5m';
+  enabled: boolean;
+  params: FlagThirdPushParams;
+}
+
+export type PaperStrategyConfig = DivergenceStrategyConfig | FlagStrategyConfig;
+
+/** 是否第三推策略 */
+export function is_flag_strategy(s: PaperStrategyConfig): s is FlagStrategyConfig {
+  return s.kind === 'flag_third_push';
+}
+
 /** 账户配置 */
 export interface PaperAccountConfig {
   risk_per_trade_usdt: number;   // 每笔固定止损金额
@@ -93,8 +114,11 @@ export interface PaperAccountConfig {
 /** 模拟交易状态 */
 export type PaperTradeStatus = 'pending' | 'open' | 'closed' | 'cancelled' | 'expired' | 'skipped';
 
-/** 平仓原因 */
-export type PaperExitReason = 'stop' | 'take_profit' | 'time';
+/** 平仓原因（背离：stop / take_profit / time；第三推：liquidation / target / macd_shrink / no_breakout / stop / time） */
+export type PaperExitReason = 'stop' | 'take_profit' | 'time' | 'liquidation' | 'target' | 'macd_shrink' | 'no_breakout';
+
+/** 第三推策略的交易特征（同回测 features，含持仓中更新的 breakout） */
+export type FlagTradeFeatures = Record<string, number | string | boolean | null>;
 
 /** 一笔模拟交易（订单 + 持仓 + 结果） */
 export interface PaperTrade {
@@ -133,5 +157,5 @@ export interface PaperTrade {
 
   cancel_reason: string | null;
   last_bar_time: number;         // 已处理到的最后一根 5m open_time（重启续跑用）
-  features: DivergenceFeatures;
+  features: DivergenceFeatures | FlagTradeFeatures;
 }

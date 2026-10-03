@@ -5,7 +5,7 @@
  *   1. 恢复进行中的模拟交易（pending/open）
  *   2. 预热：按日表顺序读取最近 N 天全市场 5m（每表一次扫描），喂给检测器/撮合引擎续跑，不产生新订单
  *   3. 独立订阅全市场 5m K线 WS（看门狗自动重连）；同币串行处理，发现缺K线时先用 REST 补齐
- *   4. 每根收盘 5m：撮合 → 5m 检测 → 聚合 15m 检测 → 新订单/状态变化入库
+ *   4. 每根收盘 5m：第三推识别 → 撮合 → 5m 背离检测 → 聚合 15m 检测 → 新订单/开仓/状态变化入库
  *
  * 策略与账户参数见 src/services/paper_trading/paper_strategies.ts
  *
@@ -26,7 +26,7 @@ import { PaperTradingRepository } from '@/database/paper_trading_repository';
 import { PaperEngine } from '@/services/paper_trading/paper_engine';
 import { PaperTradingService } from '@/services/paper_trading/paper_trading_service';
 import { PAPER_ACCOUNT, PAPER_STRATEGIES } from '@/services/paper_trading/paper_strategies';
-import { PaperBar, PaperTrade } from '@/services/paper_trading/paper_types';
+import { DivergenceFeatures, PaperBar, PaperTrade, is_flag_strategy } from '@/services/paper_trading/paper_types';
 
 // ==================== 配置 ====================
 
@@ -96,7 +96,13 @@ function log_trade(t: PaperTrade, prev_status: string | null): void {
       console.log(`⏭️  ${tag} 信号跳过（${t.cancel_reason}）反转K线 ${bj(t.setup_time)}`);
       return;
     }
-    const f = t.features;
+    if (t.status === 'open') {   // 第三推：确认K线收盘直接开仓
+      const g = t.features as Record<string, any>;
+      console.log(`\n🎯 ${tag} 开仓 做多 ${px(t.fill_price)}  爆仓价 ${px(t.base_stop)}  目标 ${px(t.take_profit)}  区间上沿 ${px(g.box_top)}  ` +
+        `第三推 ${bj(t.trigger_time)}  第一波 ${(g.leg_pct * 100).toFixed(1)}%  前波数 ${g.pre_waves}`);
+      return;
+    }
+    const f = t.features as DivergenceFeatures;
     console.log(`\n📝 ${tag} 挂单 ${t.side === 'short' ? '做空' : '做多'}  触发价 ${px(t.entry_trigger)}  止损 ${px(t.stop_price)}  ` +
       `反转K线 ${bj(t.setup_time)}  DIF比 ${f.dif_ratio.toFixed(2)} 红柱比 ${f.hist_ratio.toFixed(2)} 前波 ${f.imp_pct.toFixed(1)}% 末段 ${f.leg_pct.toFixed(1)}%`);
     return;
@@ -128,7 +134,7 @@ async function handle_bar(symbol: string, bar: PaperBar, live: boolean): Promise
   const res = service.process_5m(symbol, bar, live);
   stats.bars++;
   if (bar.open_time > stats.last_bar_time) stats.last_bar_time = bar.open_time;
-  if (live) stats.signals += res.setups.length;
+  if (live) stats.signals += res.setups.length + res.flag_events.length;
 
   for (const t of res.changed) {
     const prev = before.get(t) ?? null;
@@ -141,6 +147,7 @@ async function handle_bar(symbol: string, bar: PaperBar, live: boolean): Promise
   }
   for (const t of res.submitted) {
     if (t.status === 'pending') stats.orders++;
+    if (t.status === 'open') stats.fills++;
     log_trade(t, null);
     await persist(t);
   }
@@ -305,12 +312,19 @@ async function heartbeat(): Promise<void> {
 
 async function main(): Promise<void> {
   console.log('═'.repeat(65));
-  console.log('            模拟盘（MACD 顶背离 + 反转K线）');
+  console.log('       模拟盘（MACD 顶背离 + 反转K线 / 第三推确认做多）');
   console.log('═'.repeat(65));
   for (const s of PAPER_STRATEGIES) {
-    console.log(`   ${s.enabled ? '✅' : '⏸️ '} ${s.id}: ${s.name}  止损缓冲 ${s.stop_atr_buffer}ATR  止盈 ${s.take_profit_r}R  持仓上限 ${s.max_hold_bars} 根`);
+    const on = s.enabled ? '✅' : '⏸️ ';
+    if (is_flag_strategy(s)) {
+      const p = s.params;
+      console.log(`   ${on} ${s.id}: ${s.name}  ${p.margin}U×${p.leverage}倍 ${p.stop_pct === null ? '不设止损' : `止损 ${p.stop_pct * 100}%`}  ` +
+        `第一波 ${p.leg_min_pct * 100}%~${p.leg_max_pct * 100}%  ${p.breakout_wait_bars} 根未破离场  持仓上限 ${p.max_hold_bars} 根`);
+    } else {
+      console.log(`   ${on} ${s.id}: ${s.name}  止损缓冲 ${s.stop_atr_buffer}ATR  止盈 ${s.take_profit_r}R  持仓上限 ${s.max_hold_bars} 根`);
+    }
   }
-  console.log(`   每笔风险 ${PAPER_ACCOUNT.risk_per_trade_usdt}U  单边手续费 ${PAPER_ACCOUNT.fee_rate * 100}%  单币单仓 ${PAPER_ACCOUNT.one_position_per_symbol}`);
+  console.log(`   背离每笔风险 ${PAPER_ACCOUNT.risk_per_trade_usdt}U  单边手续费 ${PAPER_ACCOUNT.fee_rate * 100}%  单币单仓 ${PAPER_ACCOUNT.one_position_per_symbol}`);
 
   ConfigManager.getInstance().initialize();
   repo = new PaperTradingRepository();
