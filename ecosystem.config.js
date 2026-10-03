@@ -43,6 +43,18 @@ module.exports = {
       autorestart: true
     },
     {
+      // 实盘：MACD 顶背离 S1/S2（LIVE_TRADING_MODE=live 才真实下单，否则影子模式）
+      // 密钥 LIVE_BINANCE_API_KEY / LIVE_BINANCE_API_SECRET；控制开关见 scripts/live_control.ts
+      name: "live",
+      script: "scripts/run_live_trader.ts",
+      interpreter: "node",
+      interpreter_args: "-r ts-node/register -r tsconfig-paths/register",
+      env: { TS_NODE_TRANSPILE_ONLY: "true", NODE_ENV: "production" },
+      max_memory_restart: "500M",
+      kill_timeout: 5000,
+      autorestart: true
+    },
+    {
       // 日线趋势线突破每日任务：回填日线 + 扫描入库，跑完即退出
       // 币安日线 00:00 UTC 收盘，服务器为北京时间 → 每天 08:10 拉起
       name: "daily-breakout",

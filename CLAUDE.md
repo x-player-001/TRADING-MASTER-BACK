@@ -29,12 +29,13 @@ OI 监控、成交量异动、盘口、形态扫描、支撑阻力等作为**辅
 | `trend` | `scripts/run_trend_follow_monitor.ts` | **核心**：全市场 5m WS 监控 + 分级报警 |
 | `alerts` | `scripts/evaluate_alert_outcomes.ts --loop` | 报警事后评估器（常驻） |
 | `paper` | `scripts/run_paper_trading.ts` | 模拟盘：独立订阅全市场 5m，MACD 顶背离（条件单）+ 第三推确认做多（直接开仓）→ 模拟撮合（见下） |
+| `live` | `scripts/run_live_trader.ts` | **实盘**：MACD 顶背离 S1/S2，信号同模拟盘，交易所条件单撮合（见下「实盘交易」） |
 | `daily-breakout` | `scripts/run_daily_breakout_job.ts` | 日线趋势线突破：每天 08:10（北京）回填日线 + 扫描入库，跑完退出（pm2 cron） |
 
 ```bash
 npm run build          # swc 编译到 dist/
 pm2 restart api        # 更新 api 需先 build
-pm2 restart trend alerts paper
+pm2 restart trend alerts paper live
 ```
 
 > ⚠️ **本机无法访问币安 API**，涉及行情拉取的脚本必须在服务器执行。
@@ -171,6 +172,7 @@ npx ts-node -r tsconfig-paths/register scripts/dev/analysis/analyze_trend_signal
 |---|---|
 | **趋势跟随** | `trend_follow_watch_contexts`、`trend_follow_alerts`、`trend_follow_entry_triggers`、`trend_follow_alert_outcomes` |
 | **策略回测结果** | `strategy_backtest_runs`（一次回测：策略/参数/区间/汇总）、`strategy_backtest_trades`（逐笔交易含特征与画图标注 JSON） |
+| **实盘** | `live_trades`、`live_events`、`live_control`、`live_runtime_status` |
 | **模拟盘** | `paper_trades`（信号→挂单→持仓→平仓全生命周期，唯一键 strategy_id+symbol+setup_time）、`paper_runtime_status`（进程心跳） |
 | **K线回放模拟交易** | `replay_sessions`、`replay_orders`、`replay_positions`、`replay_fills` |
 | **EMA20 推动** | `ema20_push_contexts`、`ema20_push_records` |
@@ -206,6 +208,17 @@ npx ts-node -r tsconfig-paths/register scripts/dev/analysis/analyze_trend_signal
   识别与出场用 `strategy_backtest/strategies/flag_third_push_core.ts`（逐根增量，回测与模拟盘共用一份代码），`tests/paper_trading/flag_paper_parity.test.ts` 逐笔对拍 + 重启续跑一致
 - 进程重启从 `paper_trades` 恢复进行中交易，按 `last_bar_time` 续跑；启动预热按日表扫最近 4 天 5m
 - 与回测对拍：`scripts/dev/verify/verify_paper_trading_parity.ts`（服务器跑，5m 读 `/root/kline_cache/5m`，回测事件读 `/tmp/macd_div/rev_*.csv`）
+
+## 💰 实盘交易（MACD 顶背离 S1 / S2）
+
+`src/services/live_trading/` + `src/api/binance_live_client.ts`，运维文档 `docs/LIVE_TRADING.md`。**不复用** `src/trading/` 旧系统。
+
+- 信号直接复用模拟盘检测器与 `PAPER_STRATEGIES` 参数；入场 = STOP 卖出条件单（IOC 限价），止损 STOP_MARKET / 止盈 TAKE_PROFIT_MARKET（closePosition，CONTRACT_PRICE）
+- 交易所是唯一事实来源：用户数据流只唤醒同步，状态一律 REST 查询；先落库再下单，client id `LV{id}E/I/S{n}/T{n}/X{n}` 保证结果未知时可查询、不重复下单
+- 风控：每笔 2U、同时 3 笔、日亏损 8U、两策略合计单币单仓、error 状态禁止开新仓；`live_control` 表开关（running/paused/flatten），CLI `scripts/live_control.ts`
+- 密钥只读 `LIVE_BINANCE_API_KEY/SECRET`；`LIVE_TRADING_MODE=live` 才真实下单，否则影子模式
+- 表：`live_trades`（与 `paper_trades` 同唯一键可对拍）、`live_events`、`live_control`、`live_runtime_status`
+- 单测 `tests/live_trading/`（模拟交易所全生命周期）；接口零风险验证 `scripts/dev/verify/verify_live_api.ts`（服务器跑）
 
 ## 🧪 策略回测结果（通用）
 
