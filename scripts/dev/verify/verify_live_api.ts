@@ -72,6 +72,9 @@ async function main(): Promise<void> {
       quantity: format_step(qty, rules.step_size), time_in_force: 'IOC',
     });
     ok(`STOP + IOC 条件单已挂：algoId ${placed.algo_id} 状态 ${placed.status} 触发 ${trigger} 限价 ${limit} 数量 ${qty}`);
+    const q0 = await c.get_algo_order(client_id);
+    console.log(`   挂单后立即按 clientAlgoId 查询：${q0 ? q0.status : '查不到（交易所约 1 秒查询延迟，执行器已容错）'}`);
+    await sleep(1500);
     const q1 = await c.get_algo_order(client_id);
     console.log(`${q1?.status === 'NEW' ? '✅' : '❌'} 按 clientAlgoId 查询：${q1?.status}`);
     const open = await c.get_open_algo_orders(symbol);

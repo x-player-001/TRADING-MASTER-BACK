@@ -31,7 +31,8 @@ const ALIVE_ALGO = new Set(['NEW', 'TRIGGERING', 'TRIGGERED']);
 const PROTECT_MAX_ATTEMPTS = 3;
 const FLATTEN_MAX_ATTEMPTS = 5;
 const SETTLE_MAX_ATTEMPTS = 6;          // 平仓后成交明细未齐时最多重试次数
-const PLACING_TIMEOUT_MS = 120_000;     // 结果未知的入场单超过该时长仍查不到 → 视为未下单
+const PLACING_TIMEOUT_MS = 120_000;     // 入场单在信号后该时长内查不到不下结论（结果未知 / 交易所查询延迟）
+const PROTECT_GRACE_MS = 15_000;        // 保护单挂出后该时长内查不到视为存活（实测条件单挂出约 1 秒内按 client id 查询返回 -2013）
 const SHADOW_BRACKET: LeverageBracket = { max_leverage: 20, notional_cap: Infinity, maint_margin_ratio: 0.02 };
 
 /** 交易持久化 */
@@ -96,6 +97,7 @@ export class LiveExecutor {
   private readonly strategies: Map<string, DivergenceStrategyConfig>;
   private readonly settle_attempts = new Map<number, number>();
   private readonly flatten_attempts = new Map<number, number>();
+  private readonly placed_at = new Map<string, number>();   // client id → 本进程挂出时刻（查询延迟宽限）
   private readonly now: () => number;
 
   constructor(private readonly d: LiveExecutorDeps) {
@@ -233,6 +235,7 @@ export class LiveExecutor {
     t.entry_mode = 'algo';
     await this.save(t);
     try {
+      this.placed_at.set(cid.entry(id), this.now());
       await gw.new_algo_order({
         symbol: t.symbol, side: 'SELL', type: 'STOP', client_algo_id: cid.entry(id),
         trigger_price: format_step(t.entry_trigger, rules.tick_size),
@@ -323,7 +326,7 @@ export class LiveExecutor {
       const order = await gw.get_order(t.symbol, { client_order_id: cid.ioc(id) });
       if (order) return this.handle_entry_order(t, order);
     } else if (t.entry_mode === 'algo') {
-      const algo = await gw.get_algo_order(cid.entry(id));
+      const algo = await this.find_algo(t.symbol, cid.entry(id));
       if (algo) {
         t.status = 'pending';
         await this.save(t);
@@ -339,8 +342,10 @@ export class LiveExecutor {
   /** pending：入场条件单是否触发 / 结束 */
   private async sync_pending(t: LiveTrade): Promise<void> {
     const gw = this.d.gateway!;
-    const algo = await gw.get_algo_order(cid.entry(t.id!));
+    const algo = await this.find_algo(t.symbol, cid.entry(t.id!));
     if (!algo) {
+      // 刚挂出的条件单交易所约 1 秒内查不到：信号后宽限期内不下结论
+      if (this.now() - t.signal_time <= PLACING_TIMEOUT_MS) return;
       if (await this.recover_fill_from_position(t)) return;
       await this.finish_cancelled(t, t.cancel_reason ?? 'entry_not_found');
       return;
@@ -509,13 +514,16 @@ export class LiveExecutor {
   private async ensure_stop(t: LiveTrade): Promise<boolean> {
     const gw = this.d.gateway!, id = t.id!, rules = this.d.rules(t.symbol)!;
     if (t.sl_seq > 0) {
-      const cur = await gw.get_algo_order(cid.sl(id, t.sl_seq));
+      const sl_id = cid.sl(id, t.sl_seq);
+      const cur = await this.find_algo(t.symbol, sl_id);
       if (cur && ALIVE_ALGO.has(cur.status)) return true;
+      if (!cur && this.recently_placed(sl_id)) return true;
     }
     for (let attempt = 1; attempt <= PROTECT_MAX_ATTEMPTS; attempt++) {
       t.sl_seq++;
       await this.save(t);
       const client_id = cid.sl(id, t.sl_seq);
+      this.placed_at.set(client_id, this.now());
       try {
         await gw.new_algo_order({
           symbol: t.symbol, side: 'BUY', type: 'STOP_MARKET', client_algo_id: client_id,
@@ -548,13 +556,16 @@ export class LiveExecutor {
       if (t.take_profit === null) return;
     }
     if (t.tp_seq > 0) {
-      const cur = await gw.get_algo_order(cid.tp(id, t.tp_seq));
+      const tp_id = cid.tp(id, t.tp_seq);
+      const cur = await this.find_algo(t.symbol, tp_id);
       if (cur && ALIVE_ALGO.has(cur.status)) return;
+      if (!cur && this.recently_placed(tp_id)) return;
     }
     for (let attempt = 1; attempt <= PROTECT_MAX_ATTEMPTS; attempt++) {
       t.tp_seq++;
       await this.save(t);
       const client_id = cid.tp(id, t.tp_seq);
+      this.placed_at.set(client_id, this.now());
       try {
         await gw.new_algo_order({
           symbol: t.symbol, side: 'BUY', type: 'TAKE_PROFIT_MARKET', client_algo_id: client_id,
@@ -661,6 +672,7 @@ export class LiveExecutor {
     this.active.delete(id);
     this.settle_attempts.delete(id);
     this.flatten_attempts.delete(id);
+    this.forget_placed(id);
     await this.save(t);
     await this.log(t, 'closed', { exit_reason: t.exit_reason, exit_price: t.exit_price, pnl: t.pnl, fees, funding });
     const emoji = t.pnl >= 0 ? '✅' : '❌';
@@ -671,7 +683,7 @@ export class LiveExecutor {
   private async finish_cancelled(t: LiveTrade, reason: string): Promise<void> {
     t.status = 'cancelled';
     t.cancel_reason = reason;
-    if (t.id !== undefined) this.active.delete(t.id);
+    if (t.id !== undefined) { this.active.delete(t.id); this.forget_placed(t.id); }
     await this.save(t);
     await this.log(t, 'cancelled', { reason });
   }
@@ -851,6 +863,32 @@ export class LiveExecutor {
   /** 查询条件单，出错返回 null（只用于结果未知时的确认） */
   private async safe_get_algo(client_id: string): Promise<AlgoOrderInfo | null> {
     try { return await this.d.gateway!.get_algo_order(client_id); } catch { return null; }
+  }
+
+  /**
+   * 查条件单：按 client id 查不到时再查当前条件单列表
+   * （实测条件单挂出后约 1 秒内按 client id 查询返回 -2013，不能据此判定不存在）
+   */
+  private async find_algo(symbol: string, client_id: string): Promise<AlgoOrderInfo | null> {
+    const gw = this.d.gateway!;
+    const a = await gw.get_algo_order(client_id);
+    if (a) return a;
+    const open = await gw.get_open_algo_orders(symbol);
+    return open.find(x => x.client_algo_id === client_id) ?? null;
+  }
+
+  /** 清理某交易的挂单时刻记录 */
+  private forget_placed(id: number): void {
+    for (const k of [...this.placed_at.keys()]) {
+      const m = /^LV(\d+)/.exec(k);
+      if (m && Number(m[1]) === id) this.placed_at.delete(k);
+    }
+  }
+
+  /** 本进程刚挂出的单（查询延迟宽限期内） */
+  private recently_placed(client_id: string): boolean {
+    const at = this.placed_at.get(client_id);
+    return at !== undefined && this.now() - at <= PROTECT_GRACE_MS;
   }
 
   /** 执行单笔交易的操作，异常只记录（状态保持，下次同步重试） */

@@ -23,6 +23,9 @@ export class FakeExchange implements ExchangeGateway {
   fee_rate = 0.0005;
   leverage = new Map<string, number>();
   calls: string[] = [];
+  /** 查询延迟：条件单创建后该时长内按 client id / 列表都查不到（模拟实测的 -2013 延迟） */
+  query_lag_ms = 0;
+  private created_at = new Map<string, number>();
   private faults: Fault[] = [];
   private next_id = 1000;
 
@@ -107,13 +110,19 @@ export class FakeExchange implements ExchangeGateway {
       close_position: !!p.close_position, actual_order_id: null, update_time: this.clock(),
     };
     this.algos.set(p.client_algo_id, a);
+    this.created_at.set(p.client_algo_id, this.clock());
     if (f) throw f.error;   // 已执行但返回结果未知
     return { ...a };
   }
 
+  private visible(client_algo_id: string): boolean {
+    return this.clock() - (this.created_at.get(client_algo_id) ?? -Infinity) >= this.query_lag_ms;
+  }
+
   async get_algo_order(client_algo_id: string): Promise<AlgoOrderInfo | null> {
+    this.calls.push(`get_algo:${client_algo_id}`);
     const a = this.algos.get(client_algo_id);
-    return a ? { ...a } : null;
+    return a && this.visible(client_algo_id) ? { ...a } : null;
   }
 
   async cancel_algo_order(client_algo_id: string): Promise<void> {
@@ -125,7 +134,7 @@ export class FakeExchange implements ExchangeGateway {
   }
 
   async get_open_algo_orders(symbol?: string): Promise<AlgoOrderInfo[]> {
-    return [...this.algos.values()].filter(a => a.status === 'NEW' && (!symbol || a.symbol === symbol)).map(a => ({ ...a }));
+    return [...this.algos.values()].filter(a => a.status === 'NEW' && (!symbol || a.symbol === symbol) && this.visible(a.client_algo_id)).map(a => ({ ...a }));
   }
 
   async new_order(p: NewOrderParams): Promise<OrderInfo> {

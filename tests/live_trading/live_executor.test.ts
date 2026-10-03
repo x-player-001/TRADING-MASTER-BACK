@@ -248,6 +248,59 @@ describe('LiveExecutor 入场单', () => {
   });
 });
 
+describe('LiveExecutor 交易所查询延迟（实测挂单后约 1 秒查不到）', () => {
+  it('入场单刚挂出查不到 → 不判定取消，延迟过后正常为 pending', async () => {
+    const c = make();
+    c.ex.query_lag_ms = 1500;
+    const t = (await c.exec.submit_setup('macd_top_div_15m', setup()))!;
+    expect(t.status).toBe('pending');          // submit 内即时同步查不到，仍保持 pending
+    await c.exec.sync_symbol(SYM);
+    expect(t.status).toBe('pending');
+    expect(c.ex.algos.get(cid.entry(t.id!))!.status).toBe('NEW');
+    c.clock.now += 2000;
+    await c.exec.sync_symbol(SYM);
+    expect(t.status).toBe('pending');
+  });
+
+  it('止损刚挂出查不到 → 不重复挂止损', async () => {
+    const c = make();
+    c.ex.query_lag_ms = 1500;
+    const t = (await c.exec.submit_setup('macd_top_div_15m', setup()))!;
+    c.clock.now += 5000;
+    c.ex.set_price(SYM, 99.5);
+    await c.exec.sync_symbol(SYM);            // 成交 → 挂止损止盈 → open
+    expect(t.status).toBe('open');
+    await c.exec.sync_symbol(SYM);            // 同一时刻再同步（推送触发），止损仍查不到
+    await c.exec.sync_symbol(SYM);
+    expect(t.sl_seq).toBe(1);
+    expect(t.tp_seq).toBe(1);
+    c.clock.now += 2000;
+    await c.exec.sync_symbol(SYM);
+    expect(t.sl_seq).toBe(1);
+  });
+
+  it('宽限期过后仍查不到（真的不存在）→ 重挂止损', async () => {
+    const c = make();
+    const t = await open_trade(c);
+    c.ex.algos.delete(cid.sl(t.id!, 1));
+    c.clock.now += 20_000;
+    await c.exec.sync_symbol(SYM);
+    expect(t.sl_seq).toBe(2);
+  });
+
+  it('入场单信号后 2 分钟仍查不到且无持仓 → 取消', async () => {
+    const c = make();
+    const t = (await c.exec.submit_setup('macd_top_div_15m', setup()))!;
+    c.ex.algos.delete(cid.entry(t.id!));
+    await c.exec.sync_symbol(SYM);
+    expect(t.status).toBe('pending');
+    c.clock.now = SIGNAL + 130_000;
+    await c.exec.sync_symbol(SYM);
+    expect(t.status).toBe('cancelled');
+    expect(t.cancel_reason).toBe('entry_not_found');
+  });
+});
+
 describe('LiveExecutor 保护单', () => {
   it('止损单被外部撤掉 → 同步时重挂（序号递增）', async () => {
     const c = make();
